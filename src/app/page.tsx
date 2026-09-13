@@ -1,66 +1,46 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
-import { SplashScreen } from "@/components/splash-screen";
-import { TagEntry } from "@/components/tag-entry";
-import { ChatApp } from "@/components/chat/chat-app";
+import { ChatScreen } from "@/components/fast/chat-screen";
+import { GateScreen } from "@/components/fast/gate-screen";
+import { HubScreen } from "@/components/fast/hub-screen";
+import { SplashScreen } from "@/components/fast/splash-screen";
+import { useSessionManager } from "@/lib/fast/session-manager";
 
-const TAG_KEY = "fg26-tag";
-
-function subscribe(callback: () => void) {
-  window.addEventListener("storage", callback);
-  return () => window.removeEventListener("storage", callback);
-}
-
-function getTagSnapshot(): string | null {
-  return window.localStorage.getItem(TAG_KEY);
-}
-
-function getTagServerSnapshot(): string | null {
-  return null;
-}
-
+/**
+ * FAST — secure session chat.
+ * Flow: splash (logo only) -> access gate ("187") -> hub <-> chat.
+ * Multiple sessions can be open at once; each holds its own keys in RAM.
+ */
 export default function Page() {
-  const [splashDone, setSplashDone] = useState(false);
-
-  // Tag persisted in localStorage — re-renders on cross-tab storage events too
-  const storedTag = useSyncExternalStore(
-    subscribe,
-    getTagSnapshot,
-    getTagServerSnapshot
-  );
-
-  const enter = useCallback((t: string) => {
-    try {
-      window.localStorage.setItem(TAG_KEY, t);
-    } catch {
-      /* private mode — tag lives for this session only */
-    }
-    window.dispatchEvent(new Event("storage"));
-  }, []);
-
-  const reset = useCallback(() => {
-    try {
-      window.localStorage.removeItem(TAG_KEY);
-    } catch {
-      /* ignore */
-    }
-    window.dispatchEvent(new Event("storage"));
-  }, []);
+  const mgr = useSessionManager();
 
   return (
-    <div className="min-h-dvh bg-[#070707] text-neutral-100">
-      {/* Splash — logo only, overlays everything while the chat preloads */}
-      {!splashDone && <SplashScreen onFinish={() => setSplashDone(true)} />}
+    <div className="min-h-dvh bg-black text-neutral-100 flex flex-col">
+      {mgr.phase === "splash" && <SplashScreen onComplete={() => mgr.setPhase("gate")} />}
 
-      {storedTag ? (
-        <ChatApp user={storedTag} onResetTag={reset} />
-      ) : (
-        <TagEntry onEnter={enter} />
-      )}
+      {mgr.phase === "gate" && <GateScreen onUnlock={mgr.unlock} />}
 
-      {/* film grain over everything */}
-      <div className="grain" aria-hidden="true" />
+      {mgr.phase === "app" &&
+        (mgr.activeSession ? (
+          <ChatScreen
+            session={mgr.activeSession}
+            myFp={mgr.identityFp}
+            onBack={() => mgr.setActiveCode(null)}
+            onSend={(text) => mgr.sendMessage(mgr.activeSession.code, text)}
+            onDelete={(code) => mgr.deleteSession(code)}
+          />
+        ) : (
+          <HubScreen
+            identityFp={mgr.identityFp}
+            sessions={mgr.sessions}
+            busy={mgr.connecting}
+            onOpen={(code) => void mgr.openSession(code)}
+            onStart={mgr.startSession}
+            onJoin={mgr.joinSession}
+            onDelete={mgr.deleteSession}
+            onClose={mgr.closeSession}
+          />
+        ))}
     </div>
   );
 }

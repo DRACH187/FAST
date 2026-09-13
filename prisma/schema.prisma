@@ -7,22 +7,67 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Channel {
-  id        String    @id @default(cuid())
-  slug      String    @unique
-  name      String
-  tagline   String?
-  createdAt DateTime  @default(now())
-  messages  Message[]
+// A session is just a 6-letter rendezvous code.
+// The server NEVER sees plaintext: only opaque ciphertext blobs.
+model Session {
+  id        String          @id @default(cuid())
+  code      String          @unique // 6 uppercase letters — the share code
+  createdAt DateTime        @default(now())
+  deletedAt DateTime? // set when the session is destroyed for everyone
+
+  participants Participant[]
+  messages     EncryptedMessage[]
+  keyEnvelopes KeyEnvelope[]
+
+  @@index([createdAt])
 }
 
-model Message {
+// A participant = an ephemeral browser device.
+// Identity = fingerprint of its public key. No accounts, no passwords.
+model Participant {
+  id          String   @id @default(cuid())
+  sessionId   String
+  fingerprint String // SHA-256 (truncated) of the participant's public key
+  publicKey   String // base64 SPKI public key — the ONLY public material stored
+  joinedAt    DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, fingerprint])
+  @@index([sessionId])
+}
+
+// Persisted message = ciphertext + IV + sender fingerprint + counter.
+// The server cannot read any of it. Decryption happens only in the browser
+// that holds the session key in RAM.
+model EncryptedMessage {
+  id          String   @id @default(cuid())
+  sessionId   String
+  senderFp    String // fingerprint of sender's identity key
+  counter     Int // ratchet counter -> unique per-message key
+  iv          String // base64 96-bit AES-GCM IV
+  ciphertext  String // base64 AES-256-GCM ciphertext of the payload
+  createdAt   DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+// Outbound session-key distribution: the session key wrapped (encrypted)
+// per-recipient with an ephemeral ECDH exchange. Server stores the blob,
+// but without the recipient's private key (which never leaves the browser)
+// it is mathematically unusable.
+model KeyEnvelope {
   id        String   @id @default(cuid())
-  content   String
-  author    String
-  channelId String
-  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  sessionId String
+  forFp     String // recipient fingerprint
+  epk       String // base64 ephemeral public key used for the wrap
+  iv        String // base64 AES-GCM IV for the wrap
+  payload   String // base64 wrapped session key ciphertext
   createdAt DateTime @default(now())
 
-  @@index([channelId, createdAt])
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, forFp])
 }

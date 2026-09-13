@@ -1,14 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import {
-  Geist,
-  Geist_Mono,
-  Pirata_One,
-  Mr_Dafoe,
-  UnifrakturCook,
-  Oswald,
-} from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
+import { Toaster } from "@/components/ui/sonner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,42 +13,20 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// Chicano tattoo blackletter — headers & channel names
-const pirata = Pirata_One({
-  weight: "400",
-  variable: "--font-pirata",
-  subsets: ["latin"],
-});
-
-// Flowing Chicano script — names, signatures & flourishes
-const mrDafoe = Mr_Dafoe({
-  weight: "400",
-  variable: "--font-mrdafoe",
-  subsets: ["latin"],
-});
-
-// Gothic blackletter — small stamps & labels
-const unifraktur = UnifrakturCook({
-  weight: "700",
-  variable: "--font-unifraktur",
-  subsets: ["latin"],
-});
-
-// Condensed street label font
-const oswald = Oswald({
-  variable: "--font-oswald",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "Fast Guns 26 — Street Chat",
+  title: "FAST — Secure Sessions",
   description:
-    "Sleek dark-mode street chat dripping in Chicano script. Fast Guns 26 — pull up, claim yo tag, and speak on it.",
-  keywords: ["chat", "street", "chicano", "dark mode", "fast guns"],
+    "Sleek, zero-knowledge chat sessions. Messages are end-to-end encrypted in your browser; the server only ever handles ciphertext.",
+  applicationName: "FAST",
+  keywords: ["chat", "encrypted", "e2ee", "sessions", "secure"],
 };
 
 export const viewport: Viewport = {
-  themeColor: "#070707",
+  themeColor: "#000000",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -65,11 +36,19 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning className="dark">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} ${pirata.variable} ${mrDafoe.variable} ${unifraktur.variable} ${oswald.variable} antialiased bg-background text-foreground`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased bg-background text-foreground`}>
         {children}
-        <Toaster />
+        <Toaster
+          theme="dark"
+          position="top-center"
+          toastOptions={{
+            style: {
+              background: "#0d0d0d",
+              border: "1px solid #262626",
+              color: "#fafafa",
+            },
+          }}
+        />
       </body>
     </html>
   );
