@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
@@ -18,11 +18,10 @@ import {
   ShieldAlert,
   ShieldCheck,
   Trash2,
-  Users,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
-import { ScreenShell } from "@/components/fast/motion";
-import { FastButton, FastModal, FastMenuItem, FastPopover } from "@/components/fast/primitives";
+import { REDUCED_MOTION, ScreenShell, pressFeedback } from "@/components/fast/motion";
+import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/components/fast/primitives";
 import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
@@ -30,6 +29,25 @@ import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
 
 gsap.registerPlugin(useGSAP);
+
+const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const dayFmt = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short" });
+
+/** HH:MM, 24h — rendered inside every text bubble. */
+function formatClock(ms: number): string {
+  if (!ms || !Number.isFinite(ms)) return "";
+  return clockFmt.format(new Date(ms));
+}
+
+/** "TODAY" / "YESTERDAY" / "12 JUN" — transcript date separators. */
+function dayLabel(d: Date): string {
+  const n = new Date();
+  const startToday = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  const t = d.getTime();
+  if (t >= startToday) return "TODAY";
+  if (t >= startToday - 86_400_000) return "YESTERDAY";
+  return dayFmt.format(d).toUpperCase();
+}
 
 type ChatProps = {
   session: SessionView;
@@ -48,10 +66,20 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
   const [codeOpen, setCodeOpen] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [newBelow, setNewBelow] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const kbRef = useRef<HTMLDivElement>(null);
+  const newChipRef = useRef<HTMLButtonElement>(null);
+  const prevCount = useRef(session.messages.length);
+
+  // one 30s tick drives the header wipe chip
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Mobile keyboards: size the chat to the VISUAL viewport so the composer
   // always sits above the keyboard (iOS Safari keeps the layout viewport
@@ -89,8 +117,35 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setAtBottom(bottom);
+    if (bottom) setNewBelow(false);
   }, []);
+
+  // messages landed while the user was scrolled up -> raise the "▼ NEW" chip
+  useEffect(() => {
+    if (session.messages.length > prevCount.current && !atBottom) setNewBelow(true);
+    prevCount.current = session.messages.length;
+  }, [session.messages.length, atBottom]);
+
+  // GSAP: the chip pops in when it appears
+  useGSAP(
+    () => {
+      if (newBelow && !REDUCED_MOTION && newChipRef.current) {
+        gsap.fromTo(
+          newChipRef.current,
+          { opacity: 0, y: 8, scale: 0.9 },
+          { opacity: 1, y: 0, scale: 1, duration: 0.25, ease: "power3.out" }
+        );
+      }
+    },
+    { dependencies: [newBelow] }
+  );
+
+  const jumpToLatest = useCallback(() => {
+    setNewBelow(false);
+    scrollToBottom(true);
+  }, [scrollToBottom]);
 
   // data-saving: restore + persist the composer draft (tab-scoped)
   useEffect(() => {
@@ -119,49 +174,59 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
     }
   }, [draft, onSend, scrollToBottom, sending, session.hasKey, session.code]);
 
-  const grouped = useMemo(() => {
-    const groups: { senderFp: string; mine: boolean; items: DecryptedMessage[] }[] = [];
+  // transcript sections: day separators + consecutive-sender groups
+  const sections = useMemo(() => {
+    const out: { key: string; label: string; groups: { senderFp: string; mine: boolean; items: DecryptedMessage[] }[] }[] = [];
     for (const m of session.messages) {
-      const last = groups[groups.length - 1];
-      if (last && last.senderFp === m.senderFp && last.mine === m.mine) {
-        last.items.push(m);
+      const d = new Date(m.createdAt);
+      const valid = !Number.isNaN(d.getTime());
+      const key = valid ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : "?";
+      let sec = out[out.length - 1];
+      if (!sec || sec.key !== key) {
+        sec = { key, label: valid ? dayLabel(d) : "—", groups: [] };
+        out.push(sec);
+      }
+      const g = sec.groups[sec.groups.length - 1];
+      if (g && g.senderFp === m.senderFp && g.mine === m.mine) {
+        g.items.push(m);
       } else {
-        groups.push({ senderFp: m.senderFp, mine: m.mine, items: [m] });
+        sec.groups.push({ senderFp: m.senderFp, mine: m.mine, items: [m] });
       }
     }
-    return groups;
+    return out;
   }, [session.messages]);
 
-  const otherCount = useMemo(() => {
-    const others = new Set(session.presence.filter((fp) => fp !== myFp));
-    return others.size;
-  }, [session.presence, myFp]);
+  const live = session.presence.length;
 
   return (
     <div ref={kbRef} className="flex h-dvh flex-col overflow-hidden">
     <ScreenShell
       as="main"
-      className="relative flex min-h-0 flex-1 flex-col bg-black"
+      className="fast-grain relative flex min-h-0 flex-1 flex-col bg-black"
     >
       {/* header */}
       <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
-        <div className="flex h-14 items-center gap-2 px-3">
+        <div className="flex h-14 items-center gap-1.5 px-2.5">
           <button
             aria-label="Back to sessions"
             onClick={onBack}
-            className="flex size-11 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
+            className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
           >
             <ArrowLeft className="size-5" aria-hidden />
           </button>
 
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <div className="flex flex-col leading-tight">
-              <span className="font-mono text-sm font-bold tracking-[0.22em] text-white">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-0 flex-col leading-tight">
+              <span className="truncate font-mono text-sm font-bold tracking-[0.22em] text-white">
                 {session.code}
               </span>
-              <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-500">
-                <Users className="size-3" aria-hidden />
-                {otherCount > 0 ? `${otherCount + 1} live` : "solo"}
+              <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-500">
+                <span className="flex items-center gap-0.5" aria-hidden>
+                  {Array.from({ length: Math.min(live, 3) }).map((_, i) => (
+                    <span key={i} className="size-1 rounded-full bg-neutral-300" />
+                  ))}
+                </span>
+                {live > 1 ? `${live} live` : "solo"}
                 {session.hasKey ? (
                   <Lock className="size-3 text-neutral-400" aria-label="Session key active" />
                 ) : (
@@ -172,6 +237,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
                 )}
               </span>
             </div>
+            <WipeChip expiresAt={session.expiresAt} now={now} compact className="ml-auto" />
           </div>
 
           {session.hasKey && (
@@ -190,7 +256,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
               <button
                 onClick={toggle}
                 aria-label="Session menu"
-                className="flex size-11 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
+                className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
               >
                 <MoreVertical className="size-5" aria-hidden />
               </button>
@@ -229,14 +295,6 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
         </div>
       </header>
 
-      {/* key pending banner */}
-      {!session.hasKey && (
-        <div className="flex items-center justify-center gap-2 border-b border-neutral-900 bg-neutral-950 px-4 py-2 text-[11px] text-neutral-400">
-          <KeyRound className="size-3.5 animate-fast-pulse" aria-hidden />
-          Awaiting session key from a member…
-        </div>
-      )}
-
       {/* transcript */}
       <div
         ref={scrollRef}
@@ -246,96 +304,140 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
         aria-label="Encrypted transcript"
       >
         {session.messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-            <div className="flex size-14 items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-950">
-              <Lock className="size-6 text-neutral-500" aria-hidden />
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl border border-neutral-900 bg-neutral-950">
+              <Lock className="size-5 text-neutral-600" aria-hidden />
             </div>
-            <p className="max-w-[240px] text-xs leading-relaxed text-neutral-500">
-              Sealed channel. Everything typed here is encrypted in your browser
-              before it ever leaves. Photos burn after viewing — nothing is
-              stored, anywhere.
+            <p className="max-w-[230px] text-xs leading-relaxed text-neutral-600">
+              No messages yet. Everything here is sealed on this device — and
+              the whole room wipes in five hours.
             </p>
           </div>
         ) : (
-          <div className="mx-auto flex max-w-md flex-col gap-1.5">
-            {grouped.map((group, gi) => (
-              <div
-                key={`${group.senderFp}-${gi}`}
-                className={`flex flex-col gap-1 ${group.mine ? "items-end" : "items-start"}`}
-              >
-                {!group.mine && (
-                  <span className="px-1 font-mono text-[10px] tracking-wider text-neutral-600">
-                    {group.senderFp.slice(0, 4)}·{group.senderFp.slice(4, 8)}
+          <div className="mx-auto flex max-w-md flex-col">
+            {sections.map((sec) => (
+              <Fragment key={sec.key}>
+                <div className="my-4 flex items-center gap-3" role="separator" aria-label={sec.label}>
+                  <span className="h-px flex-1 bg-neutral-900" aria-hidden />
+                  <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
+                    {sec.label}
                   </span>
-                )}
-                {group.items.map((m) =>
-                  m.kind === "photo" ? (
-                    <PhotoBubble key={m.id} message={m} mine={group.mine} />
-                  ) : (
-                    <Bubble key={m.id} message={m} />
-                  )
-                )}
-                <span className="px-1 font-mono text-[9px] text-neutral-700">
-                  {formatTime(group.items[group.items.length - 1].ts)}
-                </span>
-              </div>
+                  <span className="h-px flex-1 bg-neutral-900" aria-hidden />
+                </div>
+                {sec.groups.map((group, gi) => (
+                  <div
+                    key={`${group.senderFp}-${gi}`}
+                    className={`flex flex-col gap-1 ${group.mine ? "items-end" : "items-start"}`}
+                  >
+                    {!group.mine && (
+                      <span className="px-1 font-mono text-[10px] tracking-wider text-neutral-600">
+                        {group.senderFp.slice(0, 4)}·{group.senderFp.slice(4, 8)}
+                      </span>
+                    )}
+                    {group.items.map((m) =>
+                      m.kind === "photo" ? (
+                        <PhotoBubble key={m.id} message={m} mine={group.mine} />
+                      ) : (
+                        <Bubble key={m.id} message={m} />
+                      )
+                    )}
+                  </div>
+                ))}
+              </Fragment>
             ))}
             <div className="h-2" />
           </div>
         )}
       </div>
 
-      {/* jump to latest */}
-      {!atBottom && (
-        <button
-          onClick={() => scrollToBottom(true)}
-          aria-label="Jump to latest message"
-          className="absolute bottom-28 right-4 z-10 flex size-11 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg outline-none transition-colors hover:text-white"
-        >
-          <ArrowDown className="size-4" aria-hidden />
-        </button>
+      {/* jump to latest + "new" chip when messages land while scrolled up */}
+      {(!atBottom || newBelow) && (
+        <div className="absolute bottom-28 right-4 z-10 flex flex-col items-end gap-2">
+          {newBelow && (
+            <button
+              ref={newChipRef}
+              onClick={jumpToLatest}
+              aria-label="New messages — jump to latest"
+              className="flex h-8 items-center gap-1.5 rounded-full bg-white px-3 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-black shadow-[0_8px_24px_rgba(0,0,0,0.7)] outline-none"
+            >
+              <ArrowDown className="size-3" aria-hidden />
+              New
+            </button>
+          )}
+          {!atBottom && (
+            <button
+              onClick={jumpToLatest}
+              aria-label="Jump to latest message"
+              className="flex size-11 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg outline-none transition-colors hover:text-white"
+            >
+              <ArrowDown className="size-4" aria-hidden />
+            </button>
+          )}
+        </div>
       )}
 
       {/* composer (sticky footer) */}
-      <footer className="mt-auto border-t border-neutral-900 bg-black/90 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md">
+      <footer className="mt-auto border-t border-neutral-900 bg-black/90 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2.5 backdrop-blur-md">
+        {!session.hasKey && (
+          <div className="mb-2.5 flex justify-center">
+            <span
+              className="animate-fast-pulse rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-400"
+              aria-live="polite"
+            >
+              Awaiting key…
+            </span>
+          </div>
+        )}
         <div className="mx-auto flex max-w-md items-end gap-2">
           <button
-            onClick={() => setCameraOpen(true)}
+            onClick={(e) => {
+              pressFeedback(e.currentTarget);
+              setCameraOpen(true);
+            }}
             disabled={!session.hasKey}
             aria-label="Take photo"
             className="flex size-11 shrink-0 items-center justify-center rounded-full border border-neutral-800 text-neutral-300 outline-none transition-colors hover:border-neutral-600 hover:text-white disabled:pointer-events-none disabled:opacity-30"
           >
             <Camera className="size-5" aria-hidden />
           </button>
-          <textarea
-            ref={taRef}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              const el = e.target;
-              el.style.height = "auto";
-              el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            placeholder={session.hasKey ? "Message" : "Locked until key arrives"}
-            disabled={!session.hasKey}
-            rows={1}
-            aria-label="Message"
-            className="max-h-[120px] min-h-[44px] flex-1 resize-none rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-60"
-          />
-          <button
-            onClick={() => void send()}
-            disabled={!session.hasKey || !draft.trim() || sending}
-            aria-label="Send message"
-            className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white text-black outline-none transition-all hover:bg-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+          <div
+            className={`flex flex-1 items-end gap-1.5 rounded-[24px] border bg-neutral-950 py-1 pl-4 pr-1 transition-colors ${
+              session.hasKey ? "border-neutral-800 focus-within:border-neutral-500" : "border-neutral-900 opacity-70"
+            }`}
           >
-            <SendHorizontal className="size-5" aria-hidden />
-          </button>
+            <textarea
+              ref={taRef}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                const el = e.target;
+                el.style.height = "auto";
+                el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder={session.hasKey ? "Message" : "Locked"}
+              disabled={!session.hasKey}
+              rows={1}
+              aria-label="Message"
+              className="max-h-[120px] min-h-[40px] flex-1 resize-none bg-transparent py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 disabled:cursor-not-allowed"
+            />
+            <button
+              onClick={(e) => {
+                pressFeedback(e.currentTarget);
+                void send();
+              }}
+              disabled={!session.hasKey || !draft.trim() || sending}
+              aria-label="Send message"
+              className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white text-black outline-none transition-all hover:bg-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+            >
+              <SendHorizontal className="size-5" aria-hidden />
+            </button>
+          </div>
         </div>
       </footer>
 
@@ -354,22 +456,30 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
 
       {/* code dialog */}
       <FastModal open={codeOpen} onClose={() => setCodeOpen(false)} label="Session code">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
+        <div className="flex flex-col items-center gap-5 text-center">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.35em] text-neutral-500">
             Session code
           </h2>
           <button
-            onClick={() => {
+            onClick={(e) => {
+              pressFeedback(e.currentTarget);
               void navigator.clipboard.writeText(session.code);
               toast.success("Code copied");
             }}
-            className="flex min-h-[44px] w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 py-4 outline-none transition-colors hover:border-neutral-600"
+            aria-label="Copy session code"
+            className="flex min-h-[56px] w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 bg-black py-4 outline-none transition-all hover:border-neutral-500 active:scale-[0.98]"
           >
-            <span className="font-mono text-2xl font-bold tracking-[0.3em] text-white">
+            <span className="font-mono text-2xl font-bold tracking-[0.3em] text-white [padding-left:0.3em]">
               {session.code}
             </span>
             <Copy className="size-4 text-neutral-400" aria-hidden />
           </button>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-neutral-400">Anyone with this code can join while it lives.</p>
+            <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-600">
+              This session wipes itself after 5 hours
+            </p>
+          </div>
         </div>
       </FastModal>
 
@@ -377,17 +487,17 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
       <FastModal
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        label={`Delete ${session.code} for everyone`}
+        label={`Wipe ${session.code} for everyone`}
       >
         <div className="flex flex-col gap-4 text-center">
           <div>
             <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
               <ShieldAlert className="size-4 text-neutral-300" aria-hidden />
-              Delete {session.code} for everyone?
+              Wipe {session.code} for everyone?
             </h2>
             <p className="mt-2 text-xs leading-relaxed text-neutral-500">
               Every member is ejected immediately and the ciphertext history is
-              erased. There is no undo.
+              erased from all of them. There is no undo.
             </p>
           </div>
           <div className="flex flex-col gap-2">
@@ -398,9 +508,9 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
                   toast.error(err instanceof Error ? err.message : "Delete failed")
                 );
               }}
-              className="w-full"
+              className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
             >
-              Delete for everyone
+              Wipe for everyone
             </FastButton>
             <FastButton variant="ghost" className="w-full" onClick={() => setDeleteOpen(false)}>
               Cancel
@@ -432,10 +542,12 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-700 bg-neutral-950 px-3.5 py-2.5 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-3.5 py-2.5 will-change-transform"
       >
-        <ShieldAlert className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
-        <span className="text-xs italic text-neutral-500">Undecryptable — integrity check failed</span>
+        <ShieldAlert className="size-3.5 shrink-0 text-neutral-400" aria-hidden />
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-400">
+          Unreadable — integrity check failed
+        </span>
       </div>
     );
   }
@@ -446,10 +558,13 @@ function Bubble({ message }: { message: DecryptedMessage }) {
         className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-3.5 py-2.5 will-change-transform"
       >
         <Lock className="size-3 shrink-0 text-neutral-600" aria-hidden />
-        <span className="text-xs italic text-neutral-600">Sealed — arrived before your key</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-600">
+          Sealed — key not held
+        </span>
       </div>
     );
   }
+  const clock = formatClock(message.ts || Date.parse(message.createdAt));
   return (
     <div
       ref={ref}
@@ -460,6 +575,11 @@ function Bubble({ message }: { message: DecryptedMessage }) {
       }`}
     >
       {message.text}
+      {clock && (
+        <span className="mt-1 block text-right font-mono text-[9px] tabular-nums text-neutral-500">
+          {clock}
+        </span>
+      )}
     </div>
   );
 }
@@ -603,9 +723,4 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
       </span>
     </div>
   );
-}
-
-function formatTime(ts: number): string {
-  if (!ts) return "";
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

@@ -1,29 +1,43 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import Image from "next/image";
+import { useCallback, useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
   ArrowRight,
   ChevronRight,
   Copy,
+  Fingerprint,
   KeyRound,
   Map as MapIcon,
   Plus,
-  ShieldCheck,
   Trash2,
-  Users,
   X,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
-import { ScreenShell, staggerAnimChildren } from "@/components/fast/motion";
-import { FastButton, FastInput, FastModal } from "@/components/fast/primitives";
+import { REDUCED_MOTION, ScreenShell, pressFeedback, staggerAnimChildren } from "@/components/fast/motion";
+import { FastButton, FastInput, FastModal, WipeChip } from "@/components/fast/primitives";
 import type { SessionView } from "@/lib/fast/session-manager";
 
 gsap.registerPlugin(useGSAP);
 
 const CODE_RE = /^[A-Z]{6}$/;
+
+const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const dayFmt = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short" });
+
+/** "14:32" today, "12 JUN" earlier, "NEW" when nothing has landed yet. */
+function lastActivityLabel(s: SessionView): string {
+  const last = s.messages[s.messages.length - 1];
+  if (!last) return "NEW";
+  const ts = last.ts || Date.parse(last.createdAt);
+  if (!Number.isFinite(ts) || ts <= 0) return "NEW";
+  const d = new Date(ts);
+  const n = new Date();
+  const sameDay =
+    d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return sameDay ? clockFmt.format(d) : dayFmt.format(d).toUpperCase();
+}
 
 type HubProps = {
   identityFp: string;
@@ -49,12 +63,18 @@ export function HubScreen({
   onOpenMap,
 }: HubProps) {
   const shellRef = useRef<HTMLDivElement>(null);
-  const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteCode, setDeleteCode] = useState("");
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
+
+  // one 30s tick drives every wipe-countdown chip — rows never run timers
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // GSAP: staggered hub entrance
   useGSAP(
@@ -74,7 +94,6 @@ export function HubScreen({
   const submitJoin = useCallback(
     async (code: string) => {
       if (!CODE_RE.test(code)) return;
-      setJoinOpen(false);
       try {
         await onJoin(code);
         setJoinCode("");
@@ -83,6 +102,14 @@ export function HubScreen({
       }
     },
     [onJoin]
+  );
+
+  const onJoinInput = useCallback(
+    (v: string) => {
+      setJoinCode(v);
+      if (v.length === 6) void submitJoin(v);
+    },
+    [submitJoin]
   );
 
   const submitDelete = useCallback(async () => {
@@ -104,123 +131,152 @@ export function HubScreen({
   }, []);
 
   return (
-    <ScreenShell as="main" className="flex min-h-dvh flex-col">
+    <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col">
       <div ref={shellRef} className="contents">
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-8 px-5 pb-6 pt-12">
-        {/* brand */}
-        <header data-anim className="flex flex-col items-center gap-3">
-          <Image
-            src="/fast-logo.png"
-            alt="FAST logo"
-            width={1254}
-            height={1254}
-            priority
-            draggable={false}
-            className="h-auto w-28 mix-blend-screen sm:w-32"
-          />
-          <div className="flex items-center gap-1.5 text-neutral-500">
-            <ShieldCheck className="size-3.5" aria-hidden />
-            <span className="font-mono text-[10px] uppercase tracking-[0.3em]">
-              End-to-end encrypted
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-7 px-5 pb-6 pt-[max(2rem,calc(env(safe-area-inset-top)+1.5rem))]">
+          {/* discreet wordmark + device fingerprint chip */}
+          <header data-anim className="flex items-center justify-between gap-3">
+            <div className="flex flex-col">
+              <span className="font-mono text-xs font-semibold uppercase tracking-[0.55em] text-neutral-100">
+                Fast
+              </span>
+              <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.32em] text-neutral-600">
+                Sessions
+              </span>
+            </div>
+            <span
+              title="This device's fingerprint — public material only"
+              className="flex items-center gap-1.5 rounded-full border border-neutral-900 px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-neutral-500"
+            >
+              <Fingerprint className="size-3 text-neutral-600" aria-hidden />
+              {identityFp.slice(0, 4)}·{identityFp.slice(4, 8)}
             </span>
-          </div>
-        </header>
+          </header>
 
-        {/* actions */}
-        <section data-anim aria-label="Session actions" className="grid gap-3">
-          <ActionCard
-            icon={Plus}
-            solid
-            title="Start session"
-            subtitle="Generate a fresh 6-letter code"
-            onClick={handleStart}
-            disabled={busy}
-          />
-          <ActionCard
-            icon={KeyRound}
-            title="Join session"
-            subtitle="Enter a 6-letter code"
-            onClick={() => setJoinOpen(true)}
-            disabled={busy}
-          />
-          <ActionCard
-            icon={MapIcon}
-            title="Surroundings map"
-            subtitle="South Africa · gang hotspot intel"
-            onClick={onOpenMap}
-          />
-          <ActionCard
-            icon={Trash2}
-            ghost
-            title="Delete session"
-            subtitle="Erase it for every participant"
-            onClick={() => setDeleteOpen(true)}
-            disabled={busy}
-          />
-        </section>
+          {/* actions: start / join */}
+          <section data-anim aria-label="Session actions" className="flex flex-col gap-2.5">
+            <FastButton
+              size="lg"
+              onClick={handleStart}
+              disabled={busy}
+              className="min-h-[52px] w-full font-mono text-[11px] uppercase tracking-[0.28em]"
+            >
+              <Plus className="size-4" aria-hidden />
+              Start new session
+            </FastButton>
 
-        {/* open sessions */}
-        <section data-anim aria-label="Open sessions" className="flex flex-col gap-3">
-          <h2 className="font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-600">
-            Open sessions {sessions.length > 0 && `· ${sessions.length}`}
-          </h2>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void submitJoin(joinCode);
+              }}
+              className="flex flex-col gap-2.5 sm:flex-row"
+            >
+              <FastInput
+                value={joinCode}
+                onChange={(e) => onJoinInput(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6))}
+                placeholder="ENTER CODE"
+                aria-label="6-letter session code"
+                inputMode="text"
+                autoCapitalize="characters"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={6}
+                className="min-h-[52px] flex-1 rounded-xl text-center font-mono text-base font-bold tracking-[0.35em] uppercase placeholder:font-normal placeholder:tracking-[0.3em]"
+              />
+              <FastButton
+                type="submit"
+                variant="outline"
+                size="lg"
+                disabled={busy || !CODE_RE.test(joinCode)}
+                className="min-h-[52px] font-mono text-[11px] uppercase tracking-[0.28em] sm:w-32"
+              >
+                Join
+              </FastButton>
+            </form>
+          </section>
 
-          {sessions.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-neutral-900 p-5 text-center text-xs text-neutral-600">
-              No sessions open. You can hold several at once.
+          {/* open sessions */}
+          <section data-anim aria-label="Open sessions" className="flex flex-col gap-3">
+            <h2 className="font-mono text-[10px] uppercase tracking-[0.32em] text-neutral-600">
+              Open sessions {sessions.length > 0 && `· ${sessions.length}`}
+            </h2>
+
+            {sessions.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <ul className="grid gap-2.5">
+                {sessions.map((s) => (
+                  <SessionRow
+                    key={s.code}
+                    session={s}
+                    now={now}
+                    onOpen={() => onOpen(s.code)}
+                    onClose={() => setLeaveCode(s.code)}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* quieter utilities */}
+          <section data-anim aria-label="More" className="flex flex-col gap-2">
+            <ActionRow
+              icon={MapIcon}
+              label="Surroundings map"
+              hint="South Africa · live hotspot intel"
+              onClick={onOpenMap}
+            />
+            <ActionRow
+              icon={Trash2}
+              label="Wipe a session"
+              hint="Erase it for every participant"
+              onClick={() => setDeleteOpen(true)}
+              disabled={busy}
+            />
+          </section>
+        </div>
+
+        {/* sticky footer */}
+        <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+          <div className="flex flex-col items-center gap-1.5 border-t border-neutral-900 pt-4 text-center">
+            <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-600">
+              Keys live in this tab only
             </p>
-          ) : (
-            <ul className="grid gap-2.5">
-              {sessions.map((s) => (
-                <SessionRow
-                  key={s.code}
-                  session={s}
-                  onOpen={() => onOpen(s.code)}
-                  onClose={() => setLeaveCode(s.code)}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
+            <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-700">
+              Every chat wipes itself after 5 hours
+            </p>
+          </div>
+        </footer>
       </div>
 
-      {/* sticky footer */}
-      <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
-        <div className="flex flex-col items-center gap-1 border-t border-neutral-900 pt-4 text-center">
-          <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-neutral-600">
-            Keys live in this tab only
-          </p>
-          <p className="font-mono text-[10px] text-neutral-700">
-            device {identityFp.slice(0, 4)}·{identityFp.slice(4, 8)}
-          </p>
-        </div>
-      </footer>
-
-      {/* created code */}
+      {/* created code — share it while it lives */}
       <FastModal open={created !== null} onClose={() => setCreated(null)} label="Session created">
         <div className="flex flex-col items-center gap-5 text-center">
-          <div>
-            <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
-              Session created
-            </h2>
-            <p className="mt-2 text-xs text-neutral-500">
-              Share the code — it works from anywhere.
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-3 py-1">
-            <span className="font-mono text-3xl font-bold tracking-[0.3em] text-white">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.35em] text-neutral-500">
+            Session created
+          </h2>
+          <button
+            aria-label="Copy session code"
+            onClick={(e) => {
+              pressFeedback(e.currentTarget);
+              if (created) copyCode(created);
+            }}
+            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 bg-black py-6 outline-none transition-all hover:border-neutral-500 active:scale-[0.98]"
+          >
+            <span className="font-mono text-[2rem] font-bold leading-none tracking-[0.28em] text-white [padding-left:0.28em]">
               {created}
             </span>
-            <button
-              aria-label="Copy session code"
-              onClick={() => created && copyCode(created)}
-              className="flex size-10 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 outline-none transition-colors hover:border-neutral-500 hover:text-white"
-            >
-              <Copy className="size-4" aria-hidden />
-            </button>
+            <Copy className="size-4 shrink-0 text-neutral-500" aria-hidden />
+          </button>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-neutral-400">Anyone with this code can join while it lives.</p>
+            <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-600">
+              This session wipes itself after 5 hours
+            </p>
           </div>
           <FastButton
-            className="w-full"
+            className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
             onClick={() => {
               const code = created;
               setCreated(null);
@@ -232,75 +288,32 @@ export function HubScreen({
         </div>
       </FastModal>
 
-      {/* join */}
-      <FastModal
-        open={joinOpen}
-        onClose={() => {
-          setJoinOpen(false);
-          setJoinCode("");
-        }}
-        label="Join session"
-      >
-        <div className="flex flex-col gap-4">
-          <div className="text-center">
-            <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
-              Join session
-            </h2>
-            <p className="mt-2 text-xs text-neutral-500">Enter the 6-letter code.</p>
-          </div>
-          <FastInput
-            autoFocus
-            value={joinCode}
-            onChange={(e) => {
-              const v = e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6);
-              setJoinCode(v);
-              if (v.length === 6) void submitJoin(v);
-            }}
-            placeholder="ABCDEF"
-            aria-label="6-letter session code"
-            inputMode="text"
-            autoCapitalize="characters"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={6}
-            className="text-center font-mono text-xl font-bold tracking-[0.4em] uppercase"
-          />
-          <FastButton
-            disabled={!CODE_RE.test(joinCode)}
-            onClick={() => void submitJoin(joinCode)}
-            className="w-full"
-          >
-            Join
-          </FastButton>
-        </div>
-      </FastModal>
-
-      {/* delete for everyone */}
+      {/* wipe for everyone */}
       <FastModal
         open={deleteOpen}
         onClose={() => {
           setDeleteOpen(false);
           setDeleteCode("");
         }}
-        label="Terminate a session"
+        label="Wipe a session for everyone"
       >
         <div className="flex flex-col gap-4">
           <div className="text-center">
             <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
               <Trash2 className="size-4 text-neutral-300" aria-hidden />
-              Terminate a session
+              Wipe a session
             </h2>
             <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-              This erases the code, its membership and the full ciphertext history —
-              for <span className="text-neutral-300">every</span> participant, immediately
-              and irreversibly.
+              The code, its roster and the full ciphertext history are erased
+              for <span className="text-neutral-300">every</span> participant —
+              immediately, irreversibly.
             </p>
           </div>
           <FastInput
             value={deleteCode}
             onChange={(e) => setDeleteCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6))}
             placeholder="CODE"
-            aria-label="Session code to delete"
+            aria-label="Session code to wipe"
             autoCapitalize="characters"
             autoComplete="off"
             spellCheck={false}
@@ -311,9 +324,9 @@ export function HubScreen({
             <FastButton
               disabled={!CODE_RE.test(deleteCode.trim())}
               onClick={() => void submitDelete()}
-              className="w-full"
+              className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
             >
-              Delete for everyone
+              Wipe for everyone
             </FastButton>
             <FastButton
               variant="ghost"
@@ -339,19 +352,20 @@ export function HubScreen({
           <div className="text-center">
             <h2 className="text-sm font-medium text-neutral-100">Close {leaveCode} here?</h2>
             <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-              Your device discards its key material for this session. Others keep chatting —
-              to return you will need a member to hand you the key again.
+              This device destroys its key material for the session. Everyone
+              else keeps talking — to return you will need a fresh key
+              hand-off from a member.
             </p>
           </div>
           <div className="flex flex-col gap-2">
             <FastButton
-              className="w-full"
+              className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
               onClick={() => {
                 if (leaveCode) onClose(leaveCode);
                 setLeaveCode(null);
               }}
             >
-              Close session here
+              Close & discard key
             </FastButton>
             <FastButton variant="ghost" className="w-full" onClick={() => setLeaveCode(null)}>
               Stay
@@ -359,59 +373,88 @@ export function HubScreen({
           </div>
         </div>
       </FastModal>
-      </div>
     </ScreenShell>
   );
 }
 
 // ---------------------------------------------------------------- pieces
 
-type ActionCardProps = {
+/** Quiet utility row (map, wipe). */
+type ActionRowProps = {
   icon: typeof Plus;
-  title: string;
-  subtitle: string;
+  label: string;
+  hint: string;
   onClick: () => void;
   disabled?: boolean;
-  solid?: boolean;
-  ghost?: boolean;
 };
 
-function ActionCard({ icon: Icon, title, subtitle, onClick, disabled, solid, ghost }: ActionCardProps) {
+function ActionRow({ icon: Icon, label, hint, onClick, disabled }: ActionRowProps) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`group flex min-h-[64px] w-full items-center gap-4 rounded-2xl border p-4 text-left outline-none transition-all duration-200 focus-visible:border-neutral-500 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50 ${
-        ghost
-          ? "border-neutral-900 bg-transparent hover:border-neutral-700 hover:bg-neutral-950"
-          : "border-neutral-800/80 bg-neutral-950 hover:border-neutral-600 hover:bg-neutral-900"
-      }`}
+      className="group flex min-h-[48px] w-full items-center gap-3 rounded-xl border border-neutral-900 px-3.5 py-2.5 text-left outline-none transition-colors duration-200 focus-visible:border-neutral-600 hover:border-neutral-700 disabled:pointer-events-none disabled:opacity-50"
     >
-      <span
-        className={`flex size-10 shrink-0 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105 ${
-          solid ? "bg-white text-black" : ghost ? "border border-neutral-800 text-neutral-400" : "bg-neutral-800 text-neutral-100"
-        }`}
-      >
-        <Icon className="size-5" aria-hidden />
-      </span>
+      <Icon className="size-4 shrink-0 text-neutral-500 transition-colors group-hover:text-neutral-300" aria-hidden />
       <span className="flex-1">
-        <span className="block text-sm font-medium text-neutral-100">{title}</span>
-        <span className="block text-xs text-neutral-500">{subtitle}</span>
+        <span className="block text-xs font-medium text-neutral-300">{label}</span>
+        <span className="block text-[10px] text-neutral-600">{hint}</span>
       </span>
       <ChevronRight
-        className="size-4 text-neutral-600 transition-transform duration-200 group-hover:translate-x-0.5"
+        className="size-3.5 text-neutral-700 transition-transform duration-200 group-hover:translate-x-0.5"
         aria-hidden
       />
     </button>
   );
 }
 
+/** Ghosted six-cell code motif for the empty state. */
+function EmptyState() {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useGSAP(
+    () => {
+      const cells = ref.current?.querySelectorAll("[data-ghost-cell]");
+      if (REDUCED_MOTION || !cells || cells.length === 0) return;
+      gsap.fromTo(
+        cells,
+        { opacity: 0, y: 6 },
+        { opacity: 1, y: 0, duration: 0.55, stagger: 0.07, delay: 0.25, ease: "power2.out" }
+      );
+    },
+    { scope: ref }
+  );
+
+  return (
+    <div ref={ref} className="rounded-2xl border border-dashed border-neutral-900 px-6 py-8">
+      <div aria-hidden className="flex items-center justify-center gap-1.5">
+        {"FAST26".split("").map((ch, i) => (
+          <span
+            key={i}
+            data-ghost-cell
+            className="flex size-8 items-center justify-center rounded-lg border border-neutral-800/60 bg-neutral-950/60 font-mono text-[11px] text-neutral-700"
+          >
+            {ch}
+          </span>
+        ))}
+      </div>
+      <p className="mt-5 text-center text-xs text-neutral-500">No sessions open.</p>
+      <p className="mx-auto mt-1.5 max-w-[250px] text-center text-[11px] leading-relaxed text-neutral-600">
+        Start one above and share the six-letter code. Several can run at
+        once — each wipes itself after five hours.
+      </p>
+    </div>
+  );
+}
+
 function SessionRow({
   session,
+  now,
   onOpen,
   onClose,
 }: {
   session: SessionView;
+  now: number;
   onOpen: () => void;
   onClose: () => void;
 }) {
@@ -429,43 +472,65 @@ function SessionRow({
     { scope: rowRef }
   );
 
+  const live = session.presence.length;
+  const solo = live <= 1;
+
   return (
     <li ref={rowRef} className="relative will-change-transform">
       <button
         onClick={onOpen}
-        className="group flex min-h-[60px] w-full items-center gap-3 rounded-2xl border border-neutral-800/80 bg-neutral-950 px-4 py-3.5 text-left outline-none transition-colors duration-200 hover:border-neutral-600 hover:bg-neutral-900 focus-visible:border-neutral-500"
+        className="group flex w-full flex-col gap-2.5 rounded-2xl border border-neutral-800/80 bg-neutral-950 px-4 py-3.5 text-left outline-none transition-colors duration-200 focus-visible:border-neutral-500 hover:border-neutral-600 hover:bg-neutral-900"
       >
-        <span className="font-mono text-base font-semibold tracking-[0.22em] text-neutral-100">
-          {session.code}
+        <span className="flex items-center gap-3">
+          <span className="font-mono text-lg font-bold tracking-[0.26em] text-white">
+            {session.code}
+          </span>
+          <span className="flex-1" />
+          {session.unread > 0 && (
+            <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold text-black">
+              {session.unread > 99 ? "99+" : session.unread}
+            </span>
+          )}
+          <ArrowRight
+            className="size-4 text-neutral-600 transition-transform duration-200 group-hover:translate-x-0.5"
+            aria-hidden
+          />
         </span>
-        <span className="flex items-center gap-1 text-[11px] text-neutral-500">
-          <Users className="size-3" aria-hidden />
-          {session.presence.length}
-        </span>
-        {!session.hasKey && (
+        <span className="flex items-center gap-2.5">
           <span
-            className="flex animate-fast-pulse items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-neutral-500"
-            title="Waiting for a member to hand you the session key"
+            className="flex items-center gap-1.5"
+            title={solo ? "Only you are here right now" : `${live} participants syncing live`}
           >
-            <KeyRound className="size-3" aria-hidden />
-            key
+            <span className="flex items-center gap-1" aria-hidden>
+              {Array.from({ length: Math.min(live, 4) }).map((_, i) => (
+                <span key={i} className="size-1.5 rounded-full bg-neutral-200" />
+              ))}
+            </span>
+            <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-400">
+              {solo ? "SOLO" : `${live} LIVE`}
+            </span>
           </span>
-        )}
-        <span className="flex-1" />
-        {session.unread > 0 && (
-          <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[10px] font-bold text-black">
-            {session.unread > 99 ? "99+" : session.unread}
+          <span aria-hidden className="size-0.5 rounded-full bg-neutral-700" />
+          <span className="font-mono text-[9px] tabular-nums tracking-[0.12em] text-neutral-600" title="Last activity">
+            {lastActivityLabel(session)}
           </span>
-        )}
-        <ArrowRight
-          className="size-4 text-neutral-600 transition-transform duration-200 group-hover:translate-x-0.5"
-          aria-hidden
-        />
+          {!session.hasKey && (
+            <span
+              className="flex animate-fast-pulse items-center gap-1 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500"
+              title="Waiting for a member to hand you the session key"
+            >
+              <KeyRound className="size-3" aria-hidden />
+              key
+            </span>
+          )}
+          <span className="flex-1" />
+          <WipeChip expiresAt={session.expiresAt} now={now} />
+        </span>
       </button>
       <button
         onClick={onClose}
         aria-label={`Close session ${session.code} on this device`}
-        className="absolute -right-2 -top-2 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-500 outline-none transition-colors hover:border-neutral-500 hover:text-white"
+        className="absolute -right-1.5 -top-1.5 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-500 outline-none transition-colors after:absolute after:-inset-2.5 after:rounded-full after:content-[''] hover:border-neutral-500 hover:text-white focus-visible:border-neutral-400 focus-visible:text-white"
       >
         <X className="size-3.5" aria-hidden />
       </button>

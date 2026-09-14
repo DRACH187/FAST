@@ -6,14 +6,21 @@
  * Basemap: REAL Google Maps tiles (mt*.google.com raster endpoint — no API
  * key required) rendered through Leaflet and pushed through a grayscale
  * filter so the whole map stays strictly black/white/grey. A satellite
- * layer is one tap away, filtered the same way.
+ * layer is one tap away, filtered the same way. The viewport is hard-locked
+ * to South Africa (maxBoundsViscosity 1.0) and geolocation is intentionally
+ * NOT used anywhere.
  *
  * Hotspot intel: Gemini free flash model via /api/map/hotspots (curated
- * offline fallback built in). Markers are bespoke divIcons; the detail
- * panel, filters and footer are hand-rolled — zero default Leaflet chrome.
+ * offline fallback built in). While the map is open the feed auto-syncs
+ * every 10 minutes (matching the server TTL); a NEXT SYNC countdown chip
+ * ticks in the footer and resets after every fetch. Markers are bespoke
+ * divIcons; the detail panel, analytics dashboard, filters and footer are
+ * hand-rolled — zero default Leaflet chrome.
  *
- * Geolocation is intentionally NOT used anywhere. Motion is GSAP-driven and
- * respects prefers-reduced-motion.
+ * Analytics: toggleable monochrome dashboard (KPI row, threat distribution,
+ * province breakdown, top documented groups, trend vs last sync). Bottom
+ * sheet on mobile, right card on sm+. Motion is GSAP-driven and respects
+ * prefers-reduced-motion.
  */
 
 import {
@@ -27,6 +34,7 @@ import { createPortal } from "react-dom";
 import type * as LeafletNS from "leaflet";
 import {
   ArrowLeft,
+  BarChart3,
   Crosshair,
   Layers,
   MapPinOff,
@@ -64,6 +72,9 @@ type FeedSource = "gemini" | "fallback" | "cache";
 
 type Feed = { hotspots: Hotspot[]; source: FeedSource; updatedAt: string; reason?: string };
 
+/** Previous feed snapshot kept in memory for the TREND VS LAST SYNC panel. */
+type Snapshot = { hotspots: Hotspot[]; updatedAt: string };
+
 const PROVINCE_ORDER = [
   "Eastern Cape",
   "Free State",
@@ -82,10 +93,30 @@ const SOURCE_BADGE: Record<FeedSource, string> = {
   fallback: "OFFLINE DATASET",
 };
 
-/** South Africa, with a little breathing room. */
-const SA_BOUNDS: LeafletNS.LatLngBoundsExpression = [
+const THREAT_RANK: Record<Threat, number> = { MODERATE: 0, HIGH: 1, SEVERE: 2 };
+
+function threatChipClass(threat: Threat): string {
+  if (threat === "SEVERE") return "border-white bg-white text-black";
+  if (threat === "HIGH") return "border-neutral-400 text-neutral-200";
+  return "border-neutral-700 text-neutral-400";
+}
+
+// ---------------------------------------------------------------- constants
+
+/** Client auto-sync cadence — mirrors CACHE_TTL_MS on /api/map/hotspots. */
+const SYNC_INTERVAL_MS = 10 * 60 * 1000;
+/** After a failed sync, back off before the next attempt. */
+const ERROR_RETRY_MS = 30 * 1000;
+
+/** South Africa, with a little breathing room — the fit/recentre target. */
+const SA_BOUNDS: [[number, number], [number, number]] = [
   [-34.95, 16.3],
   [-21.9, 33.3],
+];
+/** Hard panning limit: South Africa plus a small margin. */
+const SA_LIMITS: [[number, number], [number, number]] = [
+  [-35.4, 15.7],
+  [-21.5, 33.9],
 ];
 const FIT_PAD: LeafletNS.FitBoundsOptions = { padding: [24, 24], animate: !REDUCED_MOTION };
 
@@ -95,6 +126,16 @@ const GOOGLE_SUBDOMAINS = ["mt0", "mt1", "mt2", "mt3"];
 
 function hotspotKey(h: Hotspot): string {
   return `${h.province}|${h.area.toLowerCase()}`;
+}
+
+function formatUtc(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+function formatCountdown(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 /** WeakMap so the zoom layer can rebind area labels without rebuilds. */
@@ -119,6 +160,7 @@ function injectMapStyles() {
   border-radius: 9999px; cursor: pointer; background: transparent; border: none;
   padding: 0; outline: none;
 }
+.fast-hspot:focus-visible { outline: 2px solid #ffffff; outline-offset: 2px; }
 .fast-hspot-ring {
   position: absolute; inset: 0; border-radius: 9999px;
   border: 1px solid #ffffff; pointer-events: none;
@@ -156,6 +198,20 @@ function injectMapStyles() {
   document.head.appendChild(style);
 }
 
+// ------------------------------------------------------------ KPI card
+
+function Kpi({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-900 bg-black/60 p-3">
+      <span className="block font-mono text-lg leading-none tabular-nums text-white">{value}</span>
+      <span className="mt-1.5 block font-mono text-[8px] uppercase tracking-widest text-neutral-500">
+        {label}
+      </span>
+      {note && <span className="mt-0.5 block text-[9px] leading-snug text-neutral-600">{note}</span>}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------ screen
 
 export function MapScreen({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -171,6 +227,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   const [query, setQuery] = useState("");
   const [province, setProvince] = useState<string>("ALL");
   const [selected, setSelected] = useState<Hotspot | null>(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
 
   const [tilesDown, setTilesDown] = useState(false);
   const [zoom, setZoom] = useState(6);
@@ -178,8 +235,16 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   /** bumped once the Leaflet map + marker layer exist — retriggers markers */
   const [mapReady, setMapReady] = useState(0);
 
+  /** 1-second heartbeat while the map is open — drives the countdown. */
+  const [nowSec, setNowSec] = useState(() => Date.now());
+  /** epoch ms of the next scheduled intel sync (null until a fetch lands). */
+  const [nextSyncAt, setNextSyncAt] = useState<number | null>(null);
+  /** previous feed snapshot (state mirrors an in-memory ref for render). */
+  const [prevSnapshot, setPrevSnapshot] = useState<Snapshot | null>(null);
+
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const analyticsRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletNS.Map | null>(null);
   const layerRef = useRef<LeafletNS.LayerGroup | null>(null);
@@ -188,13 +253,20 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   const markerEls = useRef(new Map<string, HTMLElement>());
   const tileStats = useRef({ errored: 0, loaded: 0 });
 
+  const haveFeedRef = useRef(false);
+  const inflightRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const feedRef = useRef<Feed | null>(null);
+  const prevSnapshotRef = useRef<Snapshot | null>(null);
+
   // open/close mount dance (derive during render — the React-sanctioned
-  // pattern, same as FastModal): reopening starts with a clean detail panel.
+  // pattern, same as FastModal): reopening starts with clean panels.
   if (open !== shownOpen) {
     setShownOpen(open);
     if (open) {
       setMounted(true);
       setSelected(null);
+      setAnalyticsOpen(false);
     }
   }
 
@@ -214,7 +286,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
       gsap.fromTo(
         overlayRef.current,
         { opacity: 0, scale: 0.98 },
-        { opacity: 1, scale: 1, duration: 0.3, ease: "power2.out" }
+        { opacity: 1, scale: 1, duration: 0.34, ease: "power3.out" }
       );
     },
     { dependencies: [mounted] }
@@ -227,7 +299,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     if (!el) return;
     gsap.to(el, {
       opacity: 0,
-      duration: REDUCED_MOTION ? 0 : 0.18,
+      duration: REDUCED_MOTION ? 0 : 0.2,
       ease: "power2.in",
       onComplete: () => setMounted(false),
     });
@@ -237,7 +309,11 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // panels dismiss first, the map itself only on a second Esc
+      if (selected) setSelected(null);
+      else if (analyticsOpen) setAnalyticsOpen(false);
+      else onClose();
     };
     window.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -246,12 +322,12 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [open, onClose]);
+  }, [open, onClose, selected, analyticsOpen]);
 
   // ------------------------------------------------------- data fetch
-  const haveFeedRef = useRef(false);
-
   const load = useCallback(async (signal: AbortSignal, opts: { refresh?: boolean } = {}) => {
+    if (inflightRef.current) return;
+    inflightRef.current = true;
     if (opts.refresh) setRefreshing(true);
     else setLoading(true);
     setError(null);
@@ -270,19 +346,34 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         | null;
       if (!res.ok || !body?.ok || !Array.isArray(body.hotspots)) {
         setError(body?.error ?? `Intel feed error (HTTP ${res.status})`);
+        // back off, then the scheduler retries automatically
+        setNextSyncAt(Date.now() + ERROR_RETRY_MS);
         return;
       }
       haveFeedRef.current = true;
-      setFeed({
+      const nextFeed: Feed = {
         hotspots: body.hotspots,
         source: body.source ?? "fallback",
         updatedAt: body.updatedAt ?? new Date().toISOString(),
         reason: typeof body.reason === "string" ? body.reason : undefined,
-      });
+      };
+      // keep the outgoing feed as the previous snapshot for TREND VS LAST SYNC
+      const outgoing = feedRef.current;
+      if (outgoing) {
+        const snap: Snapshot = { hotspots: outgoing.hotspots, updatedAt: outgoing.updatedAt };
+        prevSnapshotRef.current = snap;
+        setPrevSnapshot(snap);
+      }
+      feedRef.current = nextFeed;
+      lastFetchAtRef.current = Date.now();
+      setFeed(nextFeed);
+      setNextSyncAt(Date.now() + SYNC_INTERVAL_MS);
     } catch (err) {
       if ((err as Error | null)?.name === "AbortError") return;
       setError("Network error — could not reach the intel feed.");
+      setNextSyncAt(Date.now() + ERROR_RETRY_MS);
     } finally {
+      inflightRef.current = false;
       if (!signal.aborted) {
         setLoading(false);
         setRefreshing(false);
@@ -290,12 +381,44 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     }
   }, []);
 
+  // first open per mount: exactly one initial fetch
   useEffect(() => {
     if (!mounted || haveFeedRef.current) return;
     const ctrl = new AbortController();
     void load(ctrl.signal);
     return () => ctrl.abort();
   }, [mounted, attempt, load]);
+
+  // reopening after the sync window elapsed: refresh immediately
+  useEffect(() => {
+    if (!open || !mounted) return;
+    if (!haveFeedRef.current) return; // first open — the initial loader owns it
+    if (lastFetchAtRef.current && Date.now() - lastFetchAtRef.current >= SYNC_INTERVAL_MS) {
+      const ctrl = new AbortController();
+      void load(ctrl.signal);
+    }
+  }, [open, mounted, load]);
+
+  // 1s heartbeat while the map is open
+  useEffect(() => {
+    if (!open) return;
+    setNowSec(Date.now());
+    const id = window.setInterval(() => setNowSec(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [open]);
+
+  // scheduled 10-minute auto-sync (also fires the moment the countdown lapses)
+  useEffect(() => {
+    if (!open || !feed) return;
+    if (nextSyncAt === null) {
+      setNextSyncAt(Date.now() + SYNC_INTERVAL_MS);
+      return;
+    }
+    if (nowSec >= nextSyncAt) {
+      const ctrl = new AbortController();
+      void load(ctrl.signal);
+    }
+  }, [nowSec, open, feed, nextSyncAt, load]);
 
   // ----------------------------------------------------- Leaflet lifecycle
   useEffect(() => {
@@ -312,13 +435,14 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         attributionControl: false,
         minZoom: 5,
         maxZoom: 16,
-        maxBounds: L.latLngBounds([-36.5, 14.0], [-20.0, 35.8]),
-        maxBoundsViscosity: 0.85,
+        // South Africa ONLY: rigid bounds, no ocean-drifting
+        maxBounds: L.latLngBounds(SA_LIMITS),
+        maxBoundsViscosity: 1.0,
         zoomSnap: 0.5,
         worldCopyJump: false,
         keyboard: true,
       });
-      map.fitBounds(L.latLngBounds(SA_BOUNDS as unknown as [[number, number], [number, number]]), FIT_PAD);
+      map.fitBounds(L.latLngBounds(SA_BOUNDS), FIT_PAD);
       mapRef.current = map;
 
       tileStats.current = { errored: 0, loaded: 0 };
@@ -445,7 +569,10 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         });
         const marker = L.marker([h.lat, h.lng], { icon, keyboard: false });
         markerHotspots.set(marker, h);
-        marker.on("click", () => setSelected(h));
+        marker.on("click", () => {
+          setAnalyticsOpen(false);
+          setSelected(h);
+        });
         marker.addTo(layer);
         if (currentZoom >= 9) {
           marker.bindTooltip(h.area, {
@@ -493,11 +620,29 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         gsap.fromTo(
           panelRef.current,
           { opacity: 0, y: 16, scale: 0.985 },
-          { opacity: 1, y: 0, scale: 1, duration: 0.28, ease: "power3.out", overwrite: "auto" }
+          { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: "power3.out", overwrite: "auto" }
         );
       }
     },
     { dependencies: [selected] }
+  );
+
+  // ---------------------------------------------- analytics panel motion
+  useGSAP(
+    () => {
+      if (!analyticsOpen || !analyticsRef.current) return;
+      if (REDUCED_MOTION) {
+        gsap.set(analyticsRef.current, { opacity: 1, x: 0, y: 0 });
+        return;
+      }
+      const desktop = window.matchMedia("(min-width: 640px)").matches;
+      gsap.fromTo(
+        analyticsRef.current,
+        desktop ? { opacity: 0, x: 24 } : { opacity: 0, y: 28 },
+        { opacity: 1, x: 0, y: 0, duration: 0.34, ease: "power3.out", overwrite: "auto" }
+      );
+    },
+    { dependencies: [analyticsOpen] }
   );
 
   // marker highlight follows selection without rebuilding markers
@@ -507,6 +652,13 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
       el.classList.toggle("fast-hspot-active", key === activeKey);
     }
   }, [selected, filtered]);
+
+  // drop a stale selection if its area vanished after a refresh
+  useEffect(() => {
+    if (!selected || !feed) return;
+    const key = hotspotKey(selected);
+    if (!feed.hotspots.some((h) => hotspotKey(h) === key)) setSelected(null);
+  }, [feed, selected]);
 
   const zoomStep = useCallback((dir: 1 | -1) => {
     const map = mapRef.current;
@@ -518,20 +670,114 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   const recenter = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.flyToBounds(
-      SA_BOUNDS as unknown as LeafletNS.LatLngBoundsLiteral,
-      { ...FIT_PAD, duration: REDUCED_MOTION ? 0 : 0.7 }
-    );
+    map.flyToBounds(SA_BOUNDS, { ...FIT_PAD, duration: REDUCED_MOTION ? 0 : 0.7 });
     setSelected(null);
   }, []);
+
+  const manualRefresh = useCallback(() => {
+    const ctrl = new AbortController();
+    void load(ctrl.signal, { refresh: true });
+  }, [load]);
+
+  // ----------------------------------------------- analytics computation
+  const analytics = useMemo(() => {
+    const hs = feed?.hotspots ?? [];
+    const dist = [0, 0, 0, 0, 0]; // index 0 -> intensity 1
+    const provMap = new Map<string, { count: number; max: number }>();
+    const gangMap = new Map<string, { areas: string[]; threat: Threat }>();
+    const provinceSet = new Set<string>();
+    let intensitySum = 0;
+    let severeAreas = 0;
+
+    for (const h of hs) {
+      provinceSet.add(h.province);
+      const level = Math.min(5, Math.max(1, Math.round(h.intensity)));
+      dist[level - 1] += 1;
+      intensitySum += h.intensity;
+
+      const p = provMap.get(h.province) ?? { count: 0, max: 0 };
+      p.count += 1;
+      p.max = Math.max(p.max, h.intensity);
+      provMap.set(h.province, p);
+
+      if (h.intensity === 5 || h.gangs.some((g) => g.threat === "SEVERE")) severeAreas += 1;
+
+      for (const g of h.gangs) {
+        const entry = gangMap.get(g.name) ?? { areas: [], threat: "MODERATE" as Threat };
+        if (!entry.areas.includes(h.area)) entry.areas.push(h.area);
+        if (THREAT_RANK[g.threat] > THREAT_RANK[entry.threat]) entry.threat = g.threat;
+        gangMap.set(g.name, entry);
+      }
+    }
+
+    const provinceRows = [...provMap.entries()]
+      .map(([name, v]) => ({ name, count: v.count, max: v.max }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+    const topGroups = [...gangMap.entries()]
+      .map(([name, v]) => ({ name, areas: v.areas, threat: v.threat }))
+      .sort((a, b) => b.areas.length - a.areas.length || a.name.localeCompare(b.name))
+      .slice(0, 6);
+
+    return {
+      areas: hs.length,
+      groups: gangMap.size,
+      provincesAffected: provinceSet.size,
+      avgIntensity: hs.length ? Math.round((intensitySum / hs.length) * 10) / 10 : 0,
+      severeAreas,
+      dist,
+      maxDist: Math.max(1, ...dist),
+      provinces: provinceRows,
+      topGroups,
+    };
+  }, [feed]);
+
+  /** Deltas between the previous snapshot and the current feed. */
+  const trend = useMemo(() => {
+    if (!feed || !prevSnapshot) return null;
+    const prevMap = new Map(prevSnapshot.hotspots.map((h) => [hotspotKey(h), h]));
+    const curMap = new Map(feed.hotspots.map((h) => [hotspotKey(h), h]));
+    const appeared: string[] = [];
+    const gone: string[] = [];
+    const changed: { area: string; from: number; to: number }[] = [];
+
+    for (const h of feed.hotspots) {
+      const prev = prevMap.get(hotspotKey(h));
+      if (!prev) appeared.push(h.area);
+      else if (prev.intensity !== h.intensity) {
+        changed.push({ area: h.area, from: prev.intensity, to: h.intensity });
+      }
+    }
+    for (const [key, h] of prevMap) {
+      if (!curMap.has(key)) gone.push(h.area);
+    }
+    changed.sort(
+      (a, b) =>
+        Math.abs(b.to - b.from) - Math.abs(a.to - a.from) || a.area.localeCompare(b.area)
+    );
+
+    return {
+      appeared,
+      gone,
+      changed: changed.slice(0, 5),
+      changedTotal: changed.length,
+      vsLabel: formatUtc(prevSnapshot.updatedAt),
+    };
+  }, [feed, prevSnapshot]);
+
+  // countdown label (recomputed on every 1s heartbeat)
+  const syncing = loading || refreshing;
+  const countdownLabel = syncing
+    ? "SYNCING"
+    : nextSyncAt === null
+      ? "--:--"
+      : formatCountdown(Math.max(0, nextSyncAt - nowSec));
 
   // ----------------------------------------------------------- render
   if (!open && !mounted) return null;
   if (typeof window === "undefined") return null;
 
-  const asOf = feed
-    ? new Date(feed.updatedAt).toISOString().slice(0, 16).replace("T", " ") + " UTC"
-    : null;
+  const asOf = feed ? formatUtc(feed.updatedAt) : null;
 
   return createPortal(
     <div
@@ -542,12 +788,12 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
       className="fixed inset-0 z-[90] flex flex-col bg-black"
     >
       {/* ------------------------------------------------------- header */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-900 px-3 sm:px-4">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-900 px-2 sm:gap-3 sm:px-4">
         <button
           type="button"
           onClick={onClose}
           aria-label="Close map"
-          className="flex size-9 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
+          className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
         >
           <ArrowLeft className="size-4" aria-hidden />
         </button>
@@ -556,7 +802,10 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             Surroundings — South Africa
           </h2>
           <p className="truncate text-[10px] text-neutral-500">
-            Google Maps · community safety intel · geolocation disabled by design
+            <span className="sm:hidden">Community safety intel</span>
+            <span className="hidden sm:inline">
+              Google Maps · community safety intel · geolocation disabled by design
+            </span>
           </p>
         </div>
         {feed && (
@@ -567,12 +816,24 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         <button
           type="button"
           onClick={() => {
-            const ctrl = new AbortController();
-            void load(ctrl.signal, { refresh: true });
+            setAnalyticsOpen((v) => !v);
+            setSelected(null);
           }}
+          aria-label="Toggle analytics"
+          aria-expanded={analyticsOpen}
+          aria-controls="map-analytics"
+          className={`flex size-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-neutral-900 hover:text-white ${
+            analyticsOpen ? "bg-neutral-900 text-white" : "text-neutral-400"
+          }`}
+        >
+          <BarChart3 className="size-4" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={manualRefresh}
           disabled={refreshing || loading}
           aria-label="Refresh AI intel"
-          className="flex size-9 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-40"
+          className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-40"
         >
           <RefreshCw className={`size-4${refreshing ? " animate-spin" : ""}`} aria-hidden />
         </button>
@@ -580,7 +841,11 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 
       {/* ---------------------------------------------------------- map */}
       <div className="relative flex-1 overflow-hidden bg-black">
-        <div ref={hostRef} className="absolute inset-0 z-0" aria-label="Interactive Google map of South Africa with documented hotspot areas" />
+        <div
+          ref={hostRef}
+          className="absolute inset-0 z-0"
+          aria-label="Interactive Google map of South Africa with documented hotspot areas"
+        />
 
         {/* search + province chips */}
         <div className="pointer-events-none absolute inset-x-3 top-3 z-[700] flex flex-col gap-2">
@@ -594,7 +859,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search area or gang…"
               aria-label="Search area or gang"
-              className="h-10 w-full rounded-full border border-neutral-800 bg-neutral-950 pl-9 pr-3 font-mono text-[11px] uppercase tracking-wider text-neutral-200 outline-none transition-colors placeholder:text-neutral-600 focus:border-neutral-600"
+              className="h-11 w-full rounded-full border border-neutral-800 bg-black/80 pl-9 pr-3 font-mono text-[11px] uppercase tracking-wider text-neutral-200 outline-none backdrop-blur-sm transition-colors placeholder:text-neutral-600 focus:border-neutral-600"
             />
           </div>
           {(provinces.length > 0 || !!feed) && (
@@ -607,10 +872,10 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
                     type="button"
                     aria-pressed={active}
                     onClick={() => setProvince(p)}
-                    className={`min-h-[32px] shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9px] uppercase tracking-widest transition-colors ${
+                    className={`min-h-[36px] shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9px] uppercase tracking-widest backdrop-blur-sm transition-colors ${
                       active
                         ? "border-white bg-white text-black"
-                        : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:border-neutral-600 hover:text-white"
+                        : "border-neutral-800 bg-black/80 text-neutral-400 hover:border-neutral-600 hover:text-white"
                     }`}
                   >
                     {p}
@@ -620,20 +885,20 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             </div>
           )}
           {error && feed && (
-            <div className="pointer-events-auto flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5">
+            <div className="pointer-events-auto flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1 backdrop-blur-sm">
               <TriangleAlert className="size-3 text-neutral-500" aria-hidden />
               <span className="text-[10px] text-neutral-400">{error}</span>
               <button
                 type="button"
                 onClick={() => setAttempt((a) => a + 1)}
-                className="min-h-[32px] font-mono text-[9px] uppercase tracking-widest text-neutral-200 underline-offset-2 hover:underline"
+                className="min-h-[44px] px-2 font-mono text-[9px] uppercase tracking-widest text-neutral-200 underline-offset-2 hover:underline"
               >
                 Retry
               </button>
             </div>
           )}
           {tilesDown && !error && (
-            <div className="pointer-events-none flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5">
+            <div className="pointer-events-none flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 backdrop-blur-sm">
               <TriangleAlert className="size-3 text-neutral-500" aria-hidden />
               <span className="text-[10px] text-neutral-400">
                 Google tiles unreachable — hotspots still plotted
@@ -641,7 +906,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             </div>
           )}
           {feed?.source === "fallback" && (
-            <div className="pointer-events-none flex max-w-full items-center gap-2 self-start rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5">
+            <div className="pointer-events-none flex max-w-full items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 backdrop-blur-sm">
               <TriangleAlert className="size-3 shrink-0 text-neutral-500" aria-hidden />
               <span className="truncate text-[10px] text-neutral-400">
                 {feed.reason === "no-key"
@@ -673,7 +938,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
               type="button"
               aria-label={label}
               onClick={action}
-              className="flex size-11 items-center justify-center rounded-xl border border-neutral-800 bg-black/90 text-neutral-300 transition-colors hover:border-neutral-600 hover:text-white"
+              className="flex size-11 items-center justify-center rounded-xl border border-neutral-800 bg-black/90 text-neutral-300 backdrop-blur-sm transition-colors hover:border-neutral-600 hover:text-white"
             >
               <Icon className="size-4" aria-hidden />
             </button>
@@ -683,7 +948,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         {/* hint — mobile users learn pinch/drag */}
         {zoom < 7 && !loading && !!feed && (
           <div className="pointer-events-none absolute bottom-3 left-1/2 z-[690] -translate-x-1/2">
-            <span className="whitespace-nowrap rounded-full border border-neutral-800 bg-neutral-950/80 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500">
+            <span className="whitespace-nowrap rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500 backdrop-blur-sm">
               Drag · pinch or scroll to zoom
             </span>
           </div>
@@ -700,7 +965,8 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 
         {/* hard error state (no data at all) */}
         {error && !feed && !loading && (
-          <div className="absolute inset-0 z-[640] flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center">
+          <div className="absolute inset-0 z-[640] flex flex-col items-center justify-center gap-3 bg-black/85 px-6 text-center backdrop-blur-sm">
+            <TriangleAlert className="size-5 text-neutral-500" aria-hidden />
             <span className="font-mono text-[11px] uppercase tracking-[0.25em] text-neutral-300">
               Intel feed unavailable
             </span>
@@ -708,7 +974,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             <button
               type="button"
               onClick={() => setAttempt((a) => a + 1)}
-              className="rounded-full border border-neutral-700 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-900"
+              className="min-h-[44px] rounded-full border border-neutral-700 px-4 font-mono text-[10px] uppercase tracking-widest text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-900"
             >
               Retry
             </button>
@@ -718,9 +984,221 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         {/* empty search result */}
         {feed && !loading && filtered.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[640] flex items-center justify-center">
-            <span className="rounded-full border border-neutral-800 bg-neutral-950/90 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-500">
+            <span className="rounded-full border border-neutral-800 bg-black/85 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-500 backdrop-blur-sm">
               No areas match
             </span>
+          </div>
+        )}
+
+        {/* --------------------------------------------- analytics panel */}
+        {analyticsOpen && feed && (
+          <div
+            ref={analyticsRef}
+            id="map-analytics"
+            role="region"
+            aria-label="Surroundings analytics"
+            className="absolute inset-x-0 bottom-0 z-[760] max-h-[70dvh] overflow-y-auto rounded-t-2xl border-t border-neutral-800 bg-neutral-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-16 sm:max-h-[calc(100%-6rem)] sm:w-96 sm:rounded-2xl sm:border sm:pb-4"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <h3 className="font-mono text-[10px] font-medium uppercase tracking-widest text-neutral-100">
+                  Analytics
+                </h3>
+                <span className="shrink-0 rounded-full border border-neutral-700 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider text-neutral-400">
+                  {SOURCE_BADGE[feed.source]}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAnalyticsOpen(false)}
+                aria-label="Close analytics"
+                className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-white"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+
+            {/* KPI row */}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Kpi label="Areas tracked" value={String(analytics.areas)} />
+              <Kpi label="Documented groups" value={String(analytics.groups)} />
+              <Kpi label="Provinces affected" value={`${analytics.provincesAffected}/9`} />
+              <Kpi label="Avg intensity" value={analytics.avgIntensity.toFixed(1)} />
+              <div className="col-span-2">
+                <Kpi
+                  label="Severe areas"
+                  value={String(analytics.severeAreas)}
+                  note="Intensity 5 or any SEVERE-documented group"
+                />
+              </div>
+            </div>
+
+            {/* threat distribution */}
+            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Threat distribution">
+              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
+                Threat distribution
+              </h4>
+              <div className="mt-2 space-y-1.5">
+                {[1, 2, 3, 4, 5].map((level) => {
+                  const count = analytics.dist[level - 1];
+                  const pct = Math.round((count / analytics.maxDist) * 100);
+                  return (
+                    <div key={level} className="flex items-center gap-2">
+                      <span className="w-6 shrink-0 font-mono text-[9px] uppercase text-neutral-500">
+                        L{level}
+                      </span>
+                      <div
+                        className="h-2.5 flex-1 overflow-hidden rounded-full bg-neutral-800"
+                        role="img"
+                        aria-label={`Intensity ${level}: ${count} ${count === 1 ? "area" : "areas"}`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-white"
+                          style={{ width: `${count === 0 ? 0 : Math.max(6, pct)}%` }}
+                        />
+                      </div>
+                      <span className="w-5 shrink-0 text-right font-mono text-[10px] tabular-nums text-neutral-300">
+                        {count}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* province breakdown */}
+            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Province breakdown">
+              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
+                Province breakdown
+              </h4>
+              <ul className="mt-2 space-y-1.5">
+                {analytics.provinces.map((p) => (
+                  <li
+                    key={p.name}
+                    className="flex items-center gap-2"
+                    aria-label={`${p.name}: ${p.count} ${p.count === 1 ? "area" : "areas"}, peak intensity ${p.max} of 5`}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-300">{p.name}</span>
+                    <span className="shrink-0 font-mono text-[9px] tabular-nums text-neutral-500">
+                      ×{p.count}
+                    </span>
+                    <span className="flex shrink-0 gap-0.5" aria-hidden>
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <span
+                          key={n}
+                          className={`h-1 w-2.5 rounded-full ${n <= p.max ? "bg-white" : "bg-neutral-800"}`}
+                        />
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            {/* top documented groups */}
+            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Top documented groups">
+              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
+                Top documented groups
+              </h4>
+              <ul className="mt-2 space-y-2">
+                {analytics.topGroups.map((g, i) => (
+                  <li key={g.name} className="rounded-xl border border-neutral-900 p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 font-mono text-[9px] tabular-nums text-neutral-600">
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                        <span className="truncate text-xs text-neutral-200">{g.name}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="rounded-full border border-neutral-800 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-neutral-400">
+                          {g.areas.length} {g.areas.length === 1 ? "AREA" : "AREAS"}
+                        </span>
+                        <span
+                          className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${threatChipClass(g.threat)}`}
+                        >
+                          {g.threat}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="mt-1 truncate text-[10px] text-neutral-500" title={g.areas.join(" · ")}>
+                      {g.areas.join(" · ")}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            {/* trend vs last sync */}
+            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Trend versus last sync">
+              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
+                Trend vs last sync
+              </h4>
+              {!trend ? (
+                <div className="mt-2 rounded-xl border border-dashed border-neutral-800 p-3 text-center">
+                  <p className="font-mono text-[9px] uppercase tracking-widest text-neutral-400">
+                    First snapshot — baseline stored
+                  </p>
+                  <p className="mt-1 text-[10px] text-neutral-600">
+                    New, gone and shifted areas appear here after the next sync.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 rounded-lg bg-neutral-900/60 px-2.5 py-2">
+                    <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
+                      New areas
+                    </span>
+                    <span
+                      className="font-mono text-[10px] tabular-nums text-neutral-100"
+                      title={trend.appeared.join(", ") || undefined}
+                    >
+                      +{trend.appeared.length}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-lg bg-neutral-900/60 px-2.5 py-2">
+                    <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
+                      Areas gone
+                    </span>
+                    <span
+                      className="font-mono text-[10px] tabular-nums text-neutral-100"
+                      title={trend.gone.join(", ") || undefined}
+                    >
+                      -{trend.gone.length}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-neutral-900/60 px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
+                        Intensity shifts
+                      </span>
+                      <span className="font-mono text-[10px] tabular-nums text-neutral-100">
+                        {trend.changedTotal}
+                      </span>
+                    </div>
+                    {trend.changed.length > 0 && (
+                      <ul className="mt-1.5 space-y-1">
+                        {trend.changed.map((c) => (
+                          <li key={c.area} className="flex items-center justify-between gap-2">
+                            <span className="truncate font-mono text-[10px] text-neutral-300">{c.area}</span>
+                            <span className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400">
+                              {c.from}→{c.to}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <p className="text-[9px] text-neutral-600">vs snapshot {trend.vsLabel}</p>
+                </div>
+              )}
+            </section>
+
+            {asOf && (
+              <p className="mt-4 border-t border-neutral-900 pt-2.5 text-[9px] text-neutral-600">
+                Feed generated {asOf}
+              </p>
+            )}
           </div>
         )}
 
@@ -728,7 +1206,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         {selected && (
           <div
             ref={panelRef}
-            className="absolute inset-x-0 bottom-0 z-[750] max-h-[62vh] overflow-y-auto rounded-t-2xl border-t border-neutral-800 bg-neutral-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-sm sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-16 sm:max-h-none sm:w-80 sm:rounded-2xl sm:border sm:pb-4"
+            className="absolute inset-x-0 bottom-0 z-[750] max-h-[62vh] overflow-y-auto rounded-t-2xl border-t border-neutral-800 bg-neutral-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-16 sm:max-h-[calc(100%-6rem)] sm:w-80 sm:overflow-y-auto sm:rounded-2xl sm:border sm:pb-4"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -741,9 +1219,9 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
                 type="button"
                 onClick={() => setSelected(null)}
                 aria-label="Close details"
-                className="flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-white"
+                className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-white"
               >
-                <X className="size-3.5" aria-hidden />
+                <X className="size-4" aria-hidden />
               </button>
             </div>
 
@@ -780,13 +1258,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs text-neutral-200">{g.name}</span>
                       <span
-                        className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${
-                          g.threat === "SEVERE"
-                            ? "border-white bg-white text-black"
-                            : g.threat === "HIGH"
-                              ? "border-neutral-400 text-neutral-200"
-                              : "border-neutral-700 text-neutral-400"
-                        }`}
+                        className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${threatChipClass(g.threat)}`}
                       >
                         {g.threat}
                       </span>
@@ -805,14 +1277,33 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
       {/* ------------------------------------------------------- footer */}
       <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-neutral-900 px-3 py-2 sm:px-4">
         <span className="text-[9px] text-neutral-600">Basemap © Google</span>
-        <span className="text-[9px] text-neutral-600">
+        <span className="hidden text-[9px] text-neutral-600 md:inline">
           Area-level awareness info only. Not law enforcement guidance.
         </span>
-        {asOf && <span className="text-[9px] text-neutral-600">AS OF {asOf}</span>}
-        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full border border-neutral-800 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-neutral-500">
-          <MapPinOff className="size-3" aria-hidden />
-          Geo: Off
-        </span>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {asOf && (
+            <span className="hidden text-[9px] text-neutral-600 lg:inline">AS OF {asOf}</span>
+          )}
+          <span
+            aria-label={
+              syncing ? "Intel sync in progress" : "Time until the next intel sync"
+            }
+            className="inline-flex items-center gap-1.5 rounded-full border border-neutral-800 bg-black/80 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-400 backdrop-blur-sm"
+          >
+            {syncing ? (
+              <span className="animate-fast-pulse tracking-widest">SYNCING</span>
+            ) : (
+              <>
+                <span className="text-neutral-600">NEXT SYNC</span>
+                <span className="tabular-nums text-neutral-200">{countdownLabel}</span>
+              </>
+            )}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-neutral-800 bg-black/80 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-500 backdrop-blur-sm">
+            <MapPinOff className="size-3" aria-hidden />
+            Geo: Off
+          </span>
+        </div>
       </footer>
     </div>,
     document.body

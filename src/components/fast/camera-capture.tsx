@@ -5,6 +5,7 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Camera, RefreshCcw, SwitchCamera, X } from "lucide-react";
 import { toast } from "@/components/fast/toast";
+import { REDUCED_MOTION, pressFeedback } from "@/components/fast/motion";
 
 gsap.registerPlugin(useGSAP);
 
@@ -54,6 +55,8 @@ export function CameraCapture({
   const [facing, setFacing] = useState<"environment" | "user">("environment");
   const [working, setWorking] = useState(false);
   const [flash, setFlash] = useState(false);
+  const flashRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -100,6 +103,28 @@ export function CameraCapture({
     gsap.fromTo(root.current, { opacity: 0 }, { opacity: 1, duration: 0.25, ease: "power2.out" });
   });
 
+  // GSAP: shutter flash (white wash fading out) + bottom controls rise on every stage swap
+  useGSAP(
+    () => {
+      if (REDUCED_MOTION) return;
+      if (flash && flashRef.current) {
+        gsap.fromTo(
+          flashRef.current,
+          { opacity: 0.85 },
+          { opacity: 0, duration: 0.32, ease: "power2.out" }
+        );
+      }
+      if (controlsRef.current) {
+        gsap.fromTo(
+          controlsRef.current,
+          { opacity: 0, y: 14 },
+          { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }
+        );
+      }
+    },
+    { dependencies: [flash, stage, mode] }
+  );
+
   // paint the pending capture once the review canvas is actually mounted
   useEffect(() => {
     if (stage !== "confirm") return;
@@ -128,7 +153,7 @@ export function CameraCapture({
     if (!video || video.readyState < 2) return;
     setWorking(true);
     setFlash(true);
-    window.setTimeout(() => setFlash(false), 180);
+    window.setTimeout(() => setFlash(false), 360); // unmount after the GSAP fade
     try {
       const bytes = await downscaleToJpeg(video, video.videoWidth, video.videoHeight);
       stopStream();
@@ -189,13 +214,14 @@ export function CameraCapture({
           {stage === "viewfinder" ? "camera · ram only" : "review · ram only"}
         </span>
         <button
-          onClick={() => {
+          onClick={(e) => {
+            pressFeedback(e.currentTarget);
             stopStream();
             pendingBytes.current = null;
             onClose();
           }}
           aria-label="Cancel capture"
-          className="flex size-10 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
+          className="flex size-11 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
         >
           <X className="size-5" aria-hidden />
         </button>
@@ -236,12 +262,12 @@ export function CameraCapture({
           <canvas ref={canvasRef} className="absolute inset-0 size-full object-contain" aria-label="Captured photo preview" />
         )}
 
-        {/* shutter flash */}
-        {flash && <div aria-hidden className="absolute inset-0 bg-white/80" />}
+        {/* shutter flash — GSAP-faded white wash */}
+        {flash && <div ref={flashRef} aria-hidden className="pointer-events-none absolute inset-0 bg-white" />}
       </div>
 
       {/* bottom controls */}
-      <div className="px-6 pb-[max(1.4rem,env(safe-area-inset-bottom))] pt-4">
+      <div ref={controlsRef} className="px-6 pb-[max(1.4rem,env(safe-area-inset-bottom))] pt-4">
         {stage === "viewfinder" && mode === "live" && (
           <div className="mx-auto flex max-w-md items-center justify-between">
             <button
@@ -253,13 +279,16 @@ export function CameraCapture({
             </button>
 
             <button
-              onClick={() => void shoot()}
+              onClick={(e) => {
+                pressFeedback(e.currentTarget);
+                void shoot();
+              }}
               disabled={working}
               aria-label="Take photo"
-              className="group relative flex size-[74px] items-center justify-center rounded-full outline-none disabled:opacity-60"
+              className="group relative flex size-16 items-center justify-center rounded-full outline-none disabled:opacity-60"
             >
               <span className="absolute inset-0 rounded-full border-2 border-white transition-transform group-active:scale-90" aria-hidden />
-              <span className="size-[58px] rounded-full bg-white transition-transform group-active:scale-90" aria-hidden />
+              <span className="size-12 rounded-full bg-white transition-transform group-active:scale-90" aria-hidden />
             </button>
 
             <button
@@ -279,14 +308,20 @@ export function CameraCapture({
         {stage === "confirm" && (
           <div className="mx-auto flex max-w-md items-center justify-center gap-3">
             <button
-              onClick={retake}
+              onClick={(e) => {
+                pressFeedback(e.currentTarget);
+                retake();
+              }}
               className="flex min-h-[44px] items-center gap-2 rounded-full border border-neutral-700 px-5 text-sm text-neutral-300 outline-none transition-colors hover:border-neutral-500 hover:text-white"
             >
               <RefreshCcw className="size-4" aria-hidden />
               Retake
             </button>
             <button
-              onClick={confirm}
+              onClick={(e) => {
+                pressFeedback(e.currentTarget);
+                confirm();
+              }}
               className="flex min-h-[44px] items-center gap-2 rounded-full bg-white px-6 text-sm font-medium text-black outline-none transition-colors hover:bg-neutral-200"
             >
               Send · burns after view

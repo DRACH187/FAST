@@ -44,6 +44,11 @@ type DeltaBody = {
   ok?: boolean;
   alive?: boolean;
   terminated?: boolean;
+  /** true when the termination came from the 5h retention window */
+  expired?: boolean;
+  createdAt?: string;
+  expiresAt?: string;
+  serverNow?: string;
   cursor?: Cursors;
   presence?: string[];
   members?: { fingerprint: string; publicKey: string }[];
@@ -54,13 +59,15 @@ type DeltaBody = {
   error?: string;
 };
 
+export type SessionMeta = { createdAt: string; expiresAt: string };
+
 export type TransportEvents = {
   presence: { code: string; fingerprints: string[]; members: Record<string, string> };
   messages: { code: string; messages: WireMessage[]; initial: boolean };
   key: { code: string; envelopes: WireEnvelope[] };
   keyrequest: { code: string; fingerprints: string[]; members: Record<string, string> };
   photo: { code: string; photos: WirePhoto[] };
-  terminated: { code: string };
+  terminated: { code: string; reason: "deleted" | "expired" };
 };
 
 type EventName = keyof TransportEvents;
@@ -87,6 +94,8 @@ class Transport {
   private dead = new Map<string, number>();
   private seenPresence = new Map<string, string>(); // code -> last presence signature
   private info = new Map<string, { fp: string; publicKey: string; creator: boolean }>();
+  private meta = new Map<string, SessionMeta>(); // code -> retention window
+  private skew = new Map<string, number>(); // code -> serverNow - Date.now() ms
   private pollingNow = new Set<string>();
 
   on<K extends EventName>(event: K, handler: (data: TransportEvents[K]) => void): () => void {
@@ -96,6 +105,16 @@ class Transport {
 
   isJoined(code: string): boolean {
     return this.loop.get(code) === true;
+  }
+
+  /** Retention window for a session (from the last sync payload). */
+  getMeta(code: string): SessionMeta | null {
+    return this.meta.get(code) ?? null;
+  }
+
+  /** serverNow - localNow, so clients can correct countdowns for clock skew. */
+  getSkew(code: string): number {
+    return this.skew.get(code) ?? 0;
   }
 
   // ------------------------------------------------------------- lifecycle
@@ -154,6 +173,8 @@ class Transport {
     this.backoff.delete(code);
     this.dead.delete(code);
     this.seenPresence.delete(code);
+    this.meta.delete(code);
+    this.skew.delete(code);
   }
 
   stopAll() {
@@ -253,9 +274,20 @@ class Transport {
   private dispatch(code: string, body: DeltaBody, wasInitial = false) {
     if (!body || body.ok !== true) return;
 
+    // retention-window metadata rides on every payload
+    if (body.createdAt && body.expiresAt) {
+      this.meta.set(code, { createdAt: body.createdAt, expiresAt: body.expiresAt });
+    }
+    if (body.serverNow) {
+      const at = Date.parse(body.serverNow);
+      if (Number.isFinite(at)) this.skew.set(code, at - Date.now());
+    }
+
     if (body.terminated) {
       this.stop(code);
-      this.handlers.terminated.forEach((h) => h({ code }));
+      this.handlers.terminated.forEach((h) =>
+        h({ code, reason: body.expired ? "expired" : "deleted" })
+      );
       return;
     }
 
@@ -272,7 +304,8 @@ class Transport {
       }
       if (n >= DEAD_LIMIT) {
         this.stop(code);
-        this.handlers.terminated.forEach((h) => h({ code }));
+        // a vanished room with a known 5h deadline reads as expired
+        this.handlers.terminated.forEach((h) => h({ code, reason: "deleted" }));
       }
       return;
     }

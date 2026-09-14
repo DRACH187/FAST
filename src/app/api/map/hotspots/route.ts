@@ -9,17 +9,21 @@ import { geminiApiKey, geminiGenerate } from "@/lib/fast/ai";
  * Area-level, public-information awareness data only (open-source reporting /
  * academic research on documented gang activity). NOT law-enforcement guidance.
  *
- * Pipeline: rate limit -> in-memory 24h cache (serverless-safe) -> optional
- * SQLite MapCache (self-host only) -> Gemini FREE flash model (JSON mode) ->
- * strict zod validation + sanitisation -> curated offline fallback. The key
- * NEVER leaves the server; the response body only ever carries the sanitised
- * dataset. `?refresh=1` skips the caches for a fresh AI generation.
+ * Pipeline: rate limit -> in-memory 10-minute cache (serverless-safe) ->
+ * optional SQLite MapCache (self-host only) -> Gemini FREE flash model (JSON
+ * mode) -> strict zod validation + sanitisation -> curated offline fallback.
+ * The key NEVER leaves the server; the response body only ever carries the
+ * sanitised dataset. `?refresh=1` skips the caches for a fresh AI generation.
+ *
+ * The 10-minute TTL matches the client's auto-sync cadence (MapScreen re-polls
+ * every 10 minutes while the map is open), so each scheduled sync can pick up
+ * a genuinely regenerated feed.
  */
 
 export const dynamic = "force-dynamic";
 
 const CACHE_ID = "sa-gang-hotspots";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 // process-wide memory cache — survives across requests in the same lambda /
 // server process, which is the only storage guarantee on Vercel
@@ -134,7 +138,8 @@ function sanitizeHotspots(input: unknown[]): SanitizedHotspot[] {
       gangs,
     });
     seen.add(key);
-    if (out.length === 24) break;
+    // cap mirrors the prompt's 20-28 band (keeps feed size predictable)
+    if (out.length === 28) break;
   }
   return out;
 }
@@ -143,7 +148,7 @@ function sanitizeHotspots(input: unknown[]): SanitizedHotspot[] {
 
 const PROMPT = `You are an open-source intelligence summarizer for COMMUNITY SAFETY AWARENESS in South Africa, writing for a neutral public-information display.
 
-Return a STRICT JSON array of 14 to 24 objects. Each object MUST have exactly this shape:
+Return a STRICT JSON array of 20 to 28 objects. Each object MUST have exactly this shape:
 {
   "area": string (township or suburb name),
   "province": one of "Eastern Cape" | "Free State" | "Gauteng" | "KwaZulu-Natal" | "Limpopo" | "Mpumalanga" | "North West" | "Northern Cape" | "Western Cape",
@@ -156,8 +161,9 @@ Return a STRICT JSON array of 14 to 24 objects. Each object MUST have exactly th
 
 Hard requirements:
 - Coordinates must be real populated places in South Africa with correct latitude/longitude (latitude between -35 and -22, longitude between 16 and 34). Area-level granularity ONLY — never street-level, never personal.
+- SPAN ALL NINE PROVINCES: include documented areas in Eastern Cape, Free State, Gauteng, KwaZulu-Natal, Limpopo, Mpumalanga, North West, Northern Cape and Western Cape wherever documentation supports them. Where a province has thin street-gang documentation, include its most-reported township and attribute only what public research supports (for example the Numbers prison gangs 26s, 27s, 28s, which correctional research documents nationally).
 - Base everything on widely published news reporting and academic research. Use well-documented gang names only (for example Cape Flats street gangs, or the Numbers prison gangs 26s, 27s, 28s as documented in public research). Do not invent names.
-- Include the following areas where documentation supports them: Western Cape Cape Flats (Manenberg, Mitchells Plain, Hanover Park, Lavender Hill, Athlone, Elsies River, Khayelitsha), Gauteng (Westbury, Eldorado Park, Hillbrow, Alexandra), KwaZulu-Natal (Umlazi, Chatsworth), Eastern Cape Northern Areas (Gelvandale, Helenvale).
+- Include the following areas where documentation supports them: Western Cape Cape Flats (Manenberg, Mitchells Plain, Hanover Park, Lavender Hill, Athlone, Elsies River, Delft, Nyanga, Gugulethi, Khayelitsha), Gauteng (Westbury, Eldorado Park, Hillbrow, Alexandra, Katlehong, Thokoza, Reiger Park), KwaZulu-Natal (Umlazi, Chatsworth, KwaMashu, Wentworth), Eastern Cape Northern Areas (Gelvandale, Helenvale).
 - No instructions, no safety-advice framing, no glorification, no sensationalism. Neutral, encyclopedic tone.
 - Output ONLY the JSON array. No markdown, no commentary, no code fences.`;
 
@@ -192,7 +198,17 @@ async function fetchFromGemini(): Promise<SanitizedHotspot[] | null> {
 
 // ---------------------------------------------------------------- fallback
 
+/**
+ * Curated offline dataset — 28 documented areas spanning all nine provinces.
+ * Gang names are restricted to structures named in published news reporting
+ * and academic research (Cape Flats street gangs, Numbers prison gangs 26s /
+ * 27s / 28s, and names used in provincial press coverage). Provinces with
+ * thin street-gang documentation carry only Numbers-gang references as
+ * documented in national correctional research. Wording is neutral and
+ * encyclopedic throughout.
+ */
 const FALLBACK: SanitizedHotspot[] = [
+  // ---------------------------------------------------------- Western Cape
   {
     area: "Manenberg",
     province: "Western Cape",
@@ -217,6 +233,19 @@ const FALLBACK: SanitizedHotspot[] = [
     gangs: [
       { name: "Americans", threat: "SEVERE", notes: "Documented as the dominant structure in the area." },
       { name: "Cairo Gang", threat: "HIGH", notes: "Referenced in long-running public reporting." },
+    ],
+  },
+  {
+    area: "Nyanga",
+    province: "Western Cape",
+    lat: -33.9876,
+    lng: 18.5819,
+    intensity: 5,
+    summary:
+      "Township repeatedly recorded among the country's highest contact-crime policing precincts; public reporting documents entrenched group violence and extortion.",
+    gangs: [
+      { name: "Boko Haram", threat: "HIGH", notes: "Name used in published police and press reporting on Nyanga-Philippi East group violence." },
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in correctional research." },
     ],
   },
   {
@@ -246,18 +275,6 @@ const FALLBACK: SanitizedHotspot[] = [
     ],
   },
   {
-    area: "Athlone",
-    province: "Western Cape",
-    lat: -33.9462,
-    lng: 18.6392,
-    intensity: 3,
-    summary:
-      "Central Cape Town suburb whose gang history is extensively covered in research; current activity concentrates around specific streets.",
-    gangs: [
-      { name: "Ugly Americans", threat: "MODERATE", notes: "Historic gang documented in the Athlone area." },
-    ],
-  },
-  {
     area: "Elsies River",
     province: "Western Cape",
     lat: -33.9324,
@@ -280,9 +297,49 @@ const FALLBACK: SanitizedHotspot[] = [
       "Cape Town's largest township; documented violence is driven by a mix of gang structures, extortion networks and opportunistic crime.",
     gangs: [
       { name: "26s", threat: "HIGH", notes: "Numbers prison gang with documented township presence." },
-      { name: "28s", threat: "HIGH", notes: "Numbers gang referenced in commission-of-inquiry evidence." },
+      { name: "28s", threat: "SEVERE", notes: "Numbers gang extensively documented in commission-of-inquiry and academic evidence." },
     ],
   },
+  {
+    area: "Delft",
+    province: "Western Cape",
+    lat: -33.9925,
+    lng: 18.6296,
+    intensity: 4,
+    summary:
+      "Cape Flats township repeatedly named in public reporting for gang shootings, service-delivery protests and sustained anti-gang policing operations.",
+    gangs: [
+      { name: "Americans", threat: "HIGH", notes: "Cape-linked street structure named in reporting on Delft shootings." },
+      { name: "28s", threat: "MODERATE", notes: "Numbers structures referenced in regional research." },
+    ],
+  },
+  {
+    area: "Gugulethi",
+    province: "Western Cape",
+    lat: -33.9889,
+    lng: 18.5907,
+    intensity: 4,
+    summary:
+      "Cape Flats township with a long-documented history of street gangs and, more recently, extortion networks reported by community structures.",
+    gangs: [
+      { name: "Americans", threat: "HIGH", notes: "Cape-linked structure named in long-running public reporting." },
+      { name: "28s", threat: "MODERATE", notes: "Numbers gang referenced in regional corrections research." },
+    ],
+  },
+  {
+    area: "Ocean View",
+    province: "Western Cape",
+    lat: -34.1211,
+    lng: 18.4161,
+    intensity: 3,
+    summary:
+      "Southern Peninsula community where sustained community studies and local reporting document street-gang activity and substance-economy violence.",
+    gangs: [
+      { name: "Americans", threat: "MODERATE", notes: "Cape-linked street structure referenced in community research." },
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in regional research." },
+    ],
+  },
+  // --------------------------------------------------------------- Gauteng
   {
     area: "Westbury",
     province: "Gauteng",
@@ -321,17 +378,54 @@ const FALLBACK: SanitizedHotspot[] = [
     ],
   },
   {
-    area: "Alexandra",
+    area: "Katlehong",
     province: "Gauteng",
-    lat: -26.1007,
-    lng: 28.1012,
-    intensity: 3,
+    lat: -26.3581,
+    lng: 28.1578,
+    intensity: 4,
     summary:
-      "Johannesburg township where reporting records localized group formation around taxi and informal-economy routes rather than turf wars.",
+      "Large Ekurhuleni township where reporting records armed groups around the taxi and informal economies alongside historically documented hostel conflict.",
     gangs: [
       { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in township research." },
     ],
   },
+  {
+    area: "Reiger Park",
+    province: "Gauteng",
+    lat: -26.2011,
+    lng: 28.2317,
+    intensity: 4,
+    summary:
+      "Boksburg community repeatedly covered in East Rand reporting for gang shootings and substance-economy violence.",
+    gangs: [
+      { name: "Americans", threat: "HIGH", notes: "Cape-linked street structure named in East Rand public reporting." },
+    ],
+  },
+  {
+    area: "Thokoza",
+    province: "Gauteng",
+    lat: -26.3575,
+    lng: 28.1424,
+    intensity: 3,
+    summary:
+      "Ekurhuleni township with a documented history of hostel-linked armed conflict; contemporary reporting records drug-economy group activity.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in township research." },
+    ],
+  },
+  {
+    area: "Sharpeville",
+    province: "Gauteng",
+    lat: -26.6884,
+    lng: 27.8648,
+    intensity: 3,
+    summary:
+      "Vaal township whose public reporting documents group violence around shebeen economies and periodic mass shooting incidents.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in regional research." },
+    ],
+  },
+  // -------------------------------------------------------- KwaZulu-Natal
   {
     area: "Umlazi",
     province: "KwaZulu-Natal",
@@ -357,6 +451,32 @@ const FALLBACK: SanitizedHotspot[] = [
     ],
   },
   {
+    area: "KwaMashu",
+    province: "KwaZulu-Natal",
+    lat: -29.7406,
+    lng: 30.9942,
+    intensity: 3,
+    summary:
+      "Durban north-west township named in KwaZulu-Natal reporting for group violence around drug-trade disputes and taxi routes.",
+    gangs: [
+      { name: "28s", threat: "MODERATE", notes: "Numbers gang influence documented in published research." },
+    ],
+  },
+  {
+    area: "Wentworth",
+    province: "KwaZulu-Natal",
+    lat: -29.9461,
+    lng: 30.9403,
+    intensity: 3,
+    summary:
+      "Durban south community where long-running reporting documents gang and substance-economy violence near the industrial basin.",
+    gangs: [
+      { name: "26s", threat: "HIGH", notes: "Numbers structures documented in Durban-area research." },
+      { name: "28s", threat: "MODERATE", notes: "Referenced in regional corrections literature." },
+    ],
+  },
+  // ---------------------------------------------------------- Eastern Cape
+  {
     area: "Gelvandale",
     province: "Eastern Cape",
     lat: -33.9255,
@@ -380,6 +500,72 @@ const FALLBACK: SanitizedHotspot[] = [
     gangs: [
       { name: "28s", threat: "HIGH", notes: "Numbers gang documented in Northern Areas research." },
       { name: "Americans", threat: "HIGH", notes: "Long-documented street structure in the area." },
+    ],
+  },
+  // ------------------------------------------------------------ Free State
+  {
+    area: "Botshabelo",
+    province: "Free State",
+    lat: -29.2333,
+    lng: 26.6333,
+    intensity: 3,
+    summary:
+      "Large Free State township east of Bloemfontein; public research documents youth-gang formation and Numbers-gang influence linked to regional correctional facilities.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures documented in national corrections research." },
+      { name: "28s", threat: "MODERATE", notes: "Referenced in Free State correctional research." },
+    ],
+  },
+  // --------------------------------------------------------------- Limpopo
+  {
+    area: "Seshego",
+    province: "Limpopo",
+    lat: -23.8614,
+    lng: 29.4436,
+    intensity: 2,
+    summary:
+      "Polokwane township where provincial reporting records occasional group violence and drug-economy activity rather than entrenched turf structures.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in national corrections research." },
+    ],
+  },
+  // ------------------------------------------------------------- Mpumalanga
+  {
+    area: "eMbalenhle",
+    province: "Mpumalanga",
+    lat: -26.5356,
+    lng: 29.0619,
+    intensity: 2,
+    summary:
+      "Secunda-adjacent township named in provincial reporting for sporadic group violence around informal economies.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in national corrections research." },
+    ],
+  },
+  // -------------------------------------------------------------- North West
+  {
+    area: "Jouberton",
+    province: "North West",
+    lat: -26.8697,
+    lng: 26.6453,
+    intensity: 2,
+    summary:
+      "Klerksdorp township where reporting documents periodic group violence and substance-economy activity.",
+    gangs: [
+      { name: "28s", threat: "MODERATE", notes: "Numbers structures referenced in national corrections research." },
+    ],
+  },
+  // ---------------------------------------------------------- Northern Cape
+  {
+    area: "Galeshewe",
+    province: "Northern Cape",
+    lat: -28.7186,
+    lng: 24.7569,
+    intensity: 2,
+    summary:
+      "Kimberley township, among the Northern Cape's largest; public research documents Numbers-gang influence linked to regional correctional facilities.",
+    gangs: [
+      { name: "26s", threat: "MODERATE", notes: "Numbers structures referenced in national corrections research." },
     ],
   },
 ];
@@ -460,7 +646,7 @@ export async function GET(req: Request) {
 
   const updatedAt = new Date();
 
-  // 6. Cache for the next 24h (memory always; SQLite best-effort self-host).
+  // 6. Cache for the next 10 minutes (memory always; SQLite best-effort self-host).
   memCache = { hotspots, source, updatedAt: updatedAt.getTime() };
   try {
     await db.mapCache.upsert({

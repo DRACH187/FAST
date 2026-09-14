@@ -13,12 +13,20 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/**
+ * DISCRETION: the site is deliberately anonymous to outsiders.
+ *  - tab title is a blank-ish glyph, the app name never appears in metadata
+ *  - nothing about encryption, sessions or the map leaks into the page head
+ *  - indexing is refused at every layer (robots meta + X-Robots-Tag header
+ *    in next.config.ts) so the deployment stays out of search results
+ */
 export const metadata: Metadata = {
-  title: "FAST — Secure Sessions",
-  description:
-    "Sleek, zero-knowledge chat sessions. Messages are end-to-end encrypted in your browser; the server only ever handles ciphertext.",
-  applicationName: "FAST",
-  keywords: ["chat", "encrypted", "e2ee", "sessions", "secure"],
+  title: "—",
+  applicationName: " ",
+  description: " ",
+  keywords: [],
+  robots: { index: false, follow: false, nocache: true, googleBot: { index: false, follow: false } },
+  referrer: "no-referrer",
 };
 
 export const viewport: Viewport = {

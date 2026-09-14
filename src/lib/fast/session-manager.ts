@@ -30,11 +30,13 @@ import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
 import * as vault from "@/lib/fast/vault-db";
 
-export type Phase = "splash" | "loading" | "gate" | "app";
+export type Phase = "splash" | "gate" | "app";
 
 export type SessionView = {
   code: string;
   createdAt: string;
+  /** hard wipe deadline (ISO) — every chat self-destructs 5h after creation */
+  expiresAt: string | null;
   members: Record<string, string>; // fingerprint -> public key
   presence: string[]; // fingerprints currently syncing with the room
   messages: DecryptedMessage[];
@@ -321,7 +323,12 @@ export function useSessionManager() {
       setSessions((prev) =>
         prev.map((s) =>
           s.code === data.code
-            ? { ...s, presence: data.fingerprints, members: { ...s.members, ...data.members } }
+            ? {
+                ...s,
+                presence: data.fingerprints,
+                members: { ...s.members, ...data.members },
+                expiresAt: transport.getMeta(data.code)?.expiresAt ?? s.expiresAt,
+              }
             : s
         )
       );
@@ -451,7 +458,7 @@ export function useSessionManager() {
     [appendMessages, patchSession]
   );
 
-  const onTerminated = useCallback((data: { code: string }) => {
+  const onTerminated = useCallback((data: { code: string; reason: "deleted" | "expired" }) => {
     if (!data || !CODE_RE.test(data.code)) return;
     const code = data.code;
     const wasOpen = sessionsRef.current.some((s) => s.code === code);
@@ -469,10 +476,47 @@ export function useSessionManager() {
     void vault.forgetSession(code); // wipe local vault rows too
     setSessions((prev) => prev.filter((s) => s.code !== code));
     setActiveCode((cur) => (cur === code ? null : cur));
-    if (wasOpen) {
-      toast.success(`Session ${code} was deleted for everyone`);
+    if (wasOpen || sessionsRef.current.length > 0) {
+      if (data.reason === "expired") {
+        toast.success(`Session ${code} auto-wiped after 5 hours`);
+      } else {
+        toast.success(`Session ${code} was deleted for everyone`);
+      }
     }
   }, []);
+
+  /**
+   * Local enforcement of the 5h retention window: even if the server never
+   * gets consulted again (offline, cold lambda, closed room), the client
+   * evicts and burns everything itself the moment the deadline passes.
+   */
+  const onTerminatedRef = useRef(onTerminated);
+  useEffect(() => {
+    onTerminatedRef.current = onTerminated;
+  }, [onTerminated]);
+
+  useEffect(() => {
+    if (phase !== "app") return;
+    const tick = () => {
+      for (const s of sessionsRef.current) {
+        if (!s.expiresAt) continue;
+        const at = Date.parse(s.expiresAt) - transport.getSkew(s.code);
+        if (Number.isFinite(at) && Date.now() >= at) {
+          onTerminatedRef.current({ code: s.code, reason: "expired" });
+        }
+      }
+    };
+    const id = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(id);
+  }, [phase]);
+
+  /** pull the retention window off the transport and mirror it into view */
+  const syncExpiry = useCallback((code: string) => {
+    const meta = transport.getMeta(code);
+    if (meta?.expiresAt) {
+      patchSession(code, { expiresAt: meta.expiresAt });
+    }
+  }, [patchSession]);
 
   useEffect(() => {
     if (phase !== "app") return;
@@ -503,12 +547,13 @@ export function useSessionManager() {
           create: opts.create,
         });
         registered.current.add(code);
+        syncExpiry(code);
         return { members, fingerprint: identity.fingerprint };
       } finally {
         setConnecting(false);
       }
     },
-    []
+    [syncExpiry]
   );
 
   const startSession = useCallback(async () => {
@@ -522,6 +567,7 @@ export function useSessionManager() {
       {
         code,
         createdAt: new Date().toISOString(),
+        expiresAt: transport.getMeta(code)?.expiresAt ?? new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
         members,
         presence: [identityRef.current?.fingerprint ?? ""],
         messages: [],
@@ -561,6 +607,7 @@ export function useSessionManager() {
           {
             code,
             createdAt: new Date().toISOString(),
+            expiresAt: transport.getMeta(code)?.expiresAt ?? null,
             members,
             presence: [identity.fingerprint],
             messages: [],
@@ -569,6 +616,7 @@ export function useSessionManager() {
           },
         ];
       });
+      syncExpiry(code);
       setActiveCode(code);
       return code;
     },
@@ -766,6 +814,13 @@ export function useSessionManager() {
     return () => window.removeEventListener("focus", onFocus);
   }, [phase, activeCode]);
 
+  // slow local retention sweep while the app is open (mirrors the server TTL)
+  useEffect(() => {
+    if (phase !== "app") return;
+    const id = window.setInterval(() => void vault.sweepExpired(), 10 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, [phase]);
+
   // ------------------------------------------------- data-saving (vault-db)
 
   /**
@@ -804,6 +859,7 @@ export function useSessionManager() {
                   {
                     code: row.code,
                     createdAt: row.createdAt,
+                    expiresAt: transport.getMeta(row.code)?.expiresAt ?? null,
                     members,
                     presence: [],
                     messages: [],
@@ -813,6 +869,7 @@ export function useSessionManager() {
                 ]
           );
           registered.current.add(row.code);
+          syncExpiry(row.code);
           // restored ciphertext — sealed until the key comes back
           const ids = new Set<string>();
           const entries: DecryptedMessage[] = [];
@@ -851,7 +908,7 @@ export function useSessionManager() {
         }
       }
     },
-    [appendMessages, startKeyPolling]
+    [appendMessages, startKeyPolling, syncExpiry]
   );
 
   // kick the restore exactly once per entry into the app phase
@@ -859,6 +916,8 @@ export function useSessionManager() {
     if (phase !== "app" || restoreKick.current) return;
     restoreKick.current = true;
     void (async () => {
+      // retention first: nothing older than 5h may resurrect from the vault
+      void vault.sweepExpired();
       const identity = await ensureIdentity();
       identityRef.current = identity;
       setIdentityFp(identity.fingerprint);

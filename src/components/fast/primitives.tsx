@@ -17,7 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { Copy } from "lucide-react";
+import { Copy, Timer } from "lucide-react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { REDUCED_MOTION, pressFeedback } from "@/components/fast/motion";
@@ -269,5 +269,75 @@ export function FastMenuItem({
       <Icon className="size-4 text-neutral-500" aria-hidden />
       {label}
     </button>
+  );
+}
+
+// -------------------------------------------------------- wipe countdown
+
+/** Under 20 minutes the wipe is imminent — chips switch to "SOON" + pulse. */
+const SOON_MS = 20 * 60 * 1000;
+
+/**
+ * Compact time-until-wipe formatter shared by the hub rows and the chat
+ * header. Returns "" placeholders:
+ *   "—" when the deadline is unknown, "NOW" when already past,
+ *   "SOON" under 20 minutes, otherwise "4H 12M" / "42M".
+ */
+export function formatTimeLeft(expiresAt: string | null, now: number): string {
+  if (!expiresAt) return "—";
+  const at = Date.parse(expiresAt);
+  if (!Number.isFinite(at)) return "—";
+  const left = at - now;
+  if (left <= 0) return "NOW";
+  if (left < SOON_MS) return "SOON";
+  const h = Math.floor(left / 3_600_000);
+  const m = Math.floor((left % 3_600_000) / 60_000);
+  return h > 0 ? `${h}H ${String(m).padStart(2, "0")}M` : `${m}M`;
+}
+
+/**
+ * Monochrome hard-wipe countdown chip. `now` comes from the owner screen's
+ * single 30s tick — chips never run their own intervals.
+ * `compact` renders an icon + "4H 12M" (chat header); full renders
+ * "WIPES IN 4H 12M" (hub rows). Pulses gently when the wipe is imminent.
+ */
+export function WipeChip({
+  expiresAt,
+  now,
+  compact = false,
+  className = "",
+}: {
+  expiresAt: string | null;
+  now: number;
+  compact?: boolean;
+  className?: string;
+}) {
+  const t = formatTimeLeft(expiresAt, now);
+  const unknown = t === "—";
+  const imminent = t === "SOON" || t === "NOW";
+  return (
+    <span
+      title={
+        unknown
+          ? "Wipe deadline unknown — this chat still self-destructs"
+          : "This chat wipes itself 5 hours after it was created"
+      }
+      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] tabular-nums outline-none ${
+        unknown
+          ? "border-neutral-900 text-neutral-600"
+          : imminent
+            ? "animate-fast-pulse border-neutral-600 text-neutral-200"
+            : "border-neutral-800 text-neutral-500"
+      } ${className}`}
+    >
+      {compact ? (
+        <Timer className="size-3" aria-hidden />
+      ) : unknown ? null : imminent ? (
+        "WIPES"
+      ) : (
+        "WIPES IN"
+      )}
+      {t}
+    </span>
   );
 }

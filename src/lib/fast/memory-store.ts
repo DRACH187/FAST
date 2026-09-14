@@ -35,6 +35,12 @@ export const PRESENCE_TTL_MS = 15_000;
 const KEY_REQUEST_TTL_MS = 45_000;
 /** Ephemeral photos live in RAM for exactly this long, then vanish. */
 export const PHOTO_TTL_MS = 60_000;
+/**
+ * HARD RETENTION LIMIT — every chat wipes itself 5 hours after its session
+ * was created. The server purges the transcript, terminates the room, and
+ * every member's next sync evicts itself and burns its local copy too.
+ */
+export const SESSION_TTL_MS = 5 * 60 * 60 * 1000;
 
 export type WireBlob = {
   id: string;
@@ -74,6 +80,8 @@ type SessionRec = {
   photos: (PhotoBlob & { seq: number })[];
   keyRequests: Map<string, number>; // fp -> requested-at ms
   terminated: boolean;
+  /** true once the 5h retention window elapsed — distinct from user delete */
+  expired: boolean;
   lastActivity: number;
 };
 
@@ -108,7 +116,21 @@ function gcSession(s: SessionRec) {
   s.lastActivity = now;
 }
 
+/** Has the 5-hour retention window elapsed for this session? */
+function isExpired(s: SessionRec): boolean {
+  return Date.now() - s.createdAt.getTime() > SESSION_TTL_MS;
+}
+
 function gcGlobal() {
+  const now = Date.now();
+  // hard-kill anything past the 5h retention window regardless of capacity
+  for (const [code, s] of sessions) {
+    if (!s.terminated && isExpired(s)) expireSession(s);
+    if (s.terminated && now - s.lastActivity > 60_000) {
+      sessions.delete(code);
+      presence.delete(code);
+    }
+  }
   if (sessions.size <= MAX_SESSIONS) return;
   // drop the least recently active sessions (terminated first)
   const entries = [...sessions.values()].sort((a, b) => {
@@ -122,13 +144,49 @@ function gcGlobal() {
   }
 }
 
+/**
+ * 5h retention enforcement: burn the ENTIRE transcript + key envelopes +
+ * photos, drop the roster, then soft-terminate so every member's next poll
+ * learns the room is gone and wipes its local copy too.
+ */
+function expireSession(s: SessionRec) {
+  s.messages = [];
+  s.envelopes = [];
+  s.photos = [];
+  s.keyRequests = new Map();
+  s.participants = new Map();
+  s.terminated = true;
+  s.expired = true;
+  s.lastActivity = Date.now();
+}
+
 // ----------------------------------------------------------------- queries
 
 function getSession(code: string): SessionRec | null {
   if (!CODE_RE.test(code)) return null;
   const s = sessions.get(code) ?? null;
-  if (s && !s.terminated) gcSession(s);
+  if (s && !s.terminated) {
+    if (isExpired(s)) {
+      expireSession(s);
+      return s; // still addressable this tick so clients learn "expired"
+    }
+    gcSession(s);
+  }
   return s;
+}
+
+export function isExpiredSession(code: string): boolean {
+  return sessions.get(code)?.expired ?? false;
+}
+
+/** Age metadata for countdown UIs (all ISO strings). */
+export function sessionMeta(code: string): { createdAt: string; expiresAt: string } | null {
+  const s = sessions.get(code);
+  if (!s) return null;
+  return {
+    createdAt: s.createdAt.toISOString(),
+    expiresAt: new Date(s.createdAt.getTime() + SESSION_TTL_MS).toISOString(),
+  };
 }
 
 export function sessionExists(code: string): boolean {
@@ -157,6 +215,7 @@ export function provisionSession(code: string): { created: boolean } {
     photos: [],
     keyRequests: new Map(),
     terminated: false,
+    expired: false,
     lastActivity: Date.now(),
   });
   return { created: true };
@@ -178,12 +237,22 @@ export function terminateSession(code: string): boolean {
   const s = getSession(code);
   if (!s) return false;
   s.terminated = true;
+  s.expired = false; // user-initiated delete, not the retention window
   s.lastActivity = Date.now();
   return true;
 }
 
 export function isTerminated(code: string): boolean {
   return sessions.get(code)?.terminated ?? false;
+}
+
+/**
+ * Manually enforce the retention window (used by the sync route on every
+ * mutation so expiry never depends on gc timing).
+ */
+export function enforceTtl(code: string): void {
+  const s = sessions.get(code);
+  if (s && !s.terminated && isExpired(s)) expireSession(s);
 }
 
 export function upsertParticipant(code: string, fingerprint: string, publicKey: string): boolean {

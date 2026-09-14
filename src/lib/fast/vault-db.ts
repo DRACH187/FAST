@@ -27,6 +27,12 @@ const S_META = "meta";
 const MAX_WIRE_PER_SESSION = 200;
 const DRAFT_PREFIX = "fast-draft:";
 const MY_FPS_KEY = "my-fps";
+/**
+ * HARD RETENTION LIMIT — the server wipes every chat 5 hours after it was
+ * created; the local vault honours the exact same window so no ciphertext
+ * outlives the room on this device either.
+ */
+const RETENTION_MS = 5 * 60 * 60 * 1000;
 
 export type StoredSession = {
   code: string;
@@ -78,6 +84,41 @@ function asPromise<T>(req: IDBRequest<T>): Promise<T> {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error("indexeddb request failed"));
   });
+}
+
+// ------------------------------------------------------------------ retention
+
+/**
+ * Purge every stored session row and ciphertext blob older than 5 hours
+ * (mirrors the server-side retention window). Called on app entry and on a
+ * slow interval; safe to call repeatedly.
+ */
+export async function sweepExpired(): Promise<void> {
+  const conn = await db();
+  if (!conn) return;
+  const cutoff = Date.now() - RETENTION_MS;
+  try {
+    const sessions = (await (async () => {
+      const tx = conn.transaction(S_SESSIONS);
+      return asPromise(tx.objectStore(S_SESSIONS).getAll()) as Promise<StoredSession[]>;
+    })()) as StoredSession[];
+
+    const staleRows = sessions.filter((s) => {
+      const at = Date.parse(s.createdAt);
+      return Number.isFinite(at) && at < cutoff;
+    });
+    if (staleRows.length === 0) return;
+
+    const tx = conn.transaction([S_SESSIONS, S_WIRE], "readwrite");
+    const sStore = tx.objectStore(S_SESSIONS);
+    const wStore = tx.objectStore(S_WIRE);
+    for (const row of staleRows) {
+      sStore.delete(row.code);
+      wStore.delete(IDBKeyRange.bound([row.code, ""], [row.code, "\uffff"]));
+    }
+  } catch {
+    /* ignore — worst case a stale sealed blob lingers until the next sweep */
+  }
 }
 
 // ---------------------------------------------------------------- sessions

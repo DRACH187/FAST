@@ -18,6 +18,10 @@ import * as store from "@/lib/fast/memory-store";
  * Every mutation returns the SAME delta payload as a poll, so a send also
  * acts as an immediate poll (zero extra round trips).
  *
+ * RETENTION: every payload carries createdAt / expiresAt / serverNow. A
+ * session is hard-wiped 5 hours after creation — the server burns the whole
+ * transcript and flags `expired` so every client evicts and purges locally.
+ *
  * Consolidating everything into one function is what makes this work on
  * Vercel: a route = a function = one warm process holding the room state.
  * The creator re-asserts `create: true` on every sync, so even a cold
@@ -103,6 +107,7 @@ export async function POST(req: Request, { params }: Ctx) {
     if (create || store.sessionExists(code)) {
       store.provisionSession(code);
       store.upsertParticipant(code, fp, body.publicKey);
+      store.enforceTtl(code);
       return syncPayload(code, fp, cursors, true);
     }
     return json({ ok: true, alive: false });
@@ -118,6 +123,7 @@ export async function POST(req: Request, { params }: Ctx) {
       // unknown room -> poll-style answer lets the client self-heal
       return json({ ok: true, alive: false });
     }
+    store.enforceTtl(code);
     store.addKeyRequest(code, fp);
     return syncPayload(code, fp, cursors, false);
   }
@@ -140,6 +146,7 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ ok: false, error: "Invalid message blob" }, 400);
     }
     if (!store.sessionExists(code)) return json({ ok: true, alive: false });
+    store.enforceTtl(code);
     store.addMessage(code, {
       id: m.id,
       senderFp: m.senderFp,
@@ -163,6 +170,7 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ ok: false, error: "Invalid envelope" }, 400);
     }
     if (!store.sessionExists(code)) return json({ ok: true, alive: false });
+    store.enforceTtl(code);
     store.addEnvelope(code, { forFp: e.forFp, fromFp: e.fromFp, epk: e.epk, iv: e.iv, payload: e.payload });
     return syncPayload(code, fp, cursors, false);
   }
@@ -185,6 +193,7 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ ok: false, error: "Invalid photo blob" }, 400);
     }
     if (!store.sessionExists(code)) return json({ ok: true, alive: false });
+    store.enforceTtl(code);
     // RAM-ONLY with a hard 60s TTL — the server forwards and forgets.
     store.addPhoto(code, {
       id: p.id,
@@ -206,6 +215,7 @@ export async function POST(req: Request, { params }: Ctx) {
       return syncPayload(code, fp, cursors, true);
     }
     if (!known) return json({ ok: true, alive: false });
+    store.enforceTtl(code);
     store.touchPresence(code, fp);
     return syncPayload(code, fp, cursors, false);
   }
@@ -219,7 +229,14 @@ type DeltaResponse = {
   ok: boolean;
   alive: boolean;
   terminated?: boolean;
+  /** true when the termination came from the 5h retention window */
+  expired?: boolean;
+  /** actual session creation time (ISO) */
   createdAt?: string;
+  /** createdAt + 5h — the hard wipe deadline (ISO) */
+  expiresAt?: string;
+  /** server clock at response time — lets clients correct for skew */
+  serverNow?: string;
   cursor?: { msg: number; env: number; photo: number };
   presence?: string[];
   members?: { fingerprint: string; publicKey: string }[];
@@ -237,13 +254,17 @@ function syncPayload(
 ): Response {
   if (!store.sessionExists(code)) return json({ ok: true, alive: false });
 
+  const meta = store.sessionMeta(code);
   const presence = store.touchPresence(code, fp);
   const cursor = store.headSeq(code);
   const payload: DeltaResponse = {
     ok: true,
     alive: true,
     terminated: store.isTerminated(code) || undefined,
-    createdAt: new Date().toISOString(),
+    expired: store.isExpiredSession(code) || undefined,
+    createdAt: meta?.createdAt,
+    expiresAt: meta?.expiresAt,
+    serverNow: new Date().toISOString(),
     cursor,
     presence,
     members: store

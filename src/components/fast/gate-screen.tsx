@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { Loader2, Lock } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { ScreenShell, shakeElement } from "@/components/fast/motion";
 
@@ -15,7 +14,9 @@ const LEN = 3;
 /**
  * Front door (Layer 3 slice). Constant-time verified access code.
  * Fully bespoke OTP cells (no stock components): auto-advance, backspace
- * navigation, paste support, GSAP stagger entrance and shake-on-reject.
+ * navigation, arrow navigation, paste support, GSAP stagger entrance and
+ * shake-on-reject. Deliberately discreet: a small wordmark, one neutral
+ * line of copy, three cells — nothing else.
  */
 export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promise<void> }) {
   const [digits, setDigits] = useState<string[]>(Array(LEN).fill(""));
@@ -32,8 +33,8 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
       if (!cells || cells.length === 0) return;
       gsap.fromTo(
         cells,
-        { opacity: 0, y: 18, scale: 0.9 },
-        { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.07, delay: 0.1, ease: "power3.out" }
+        { opacity: 0, y: 18, scale: 0.92 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: 0.08, delay: 0.15, ease: "power3.out" }
       );
     },
     { scope: cellsWrap }
@@ -117,56 +118,52 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
   }, []);
 
   return (
-    <ScreenShell as="main" className="flex min-h-dvh flex-col items-center justify-center px-6">
-      <div className="flex w-full max-w-xs flex-col items-center gap-8">
+    <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col items-center justify-center px-6">
+      <div className="flex w-full max-w-xs flex-col items-center gap-10">
+        {/* small wordmark — deliberately discreet */}
         <Image
           src="/fast-logo.png"
-          alt="FAST logo"
+          alt="FAST"
           width={256}
           height={256}
           priority
           draggable={false}
-          className="h-auto w-16 mix-blend-screen opacity-90"
+          className="h-auto w-12 mix-blend-screen opacity-70"
         />
 
-        <div className="flex flex-col items-center gap-2 text-center">
-          <div className="flex items-center gap-2 text-neutral-500">
-            <Lock className="size-3.5" aria-hidden />
-            <span className="font-mono text-[11px] uppercase tracking-[0.3em]">Restricted</span>
+        <div ref={cellsWrap} className="flex flex-col items-center gap-7">
+          <h1 className="font-mono text-[11px] uppercase tracking-[0.42em] text-neutral-500">
+            Enter access code
+          </h1>
+
+          <div className="flex items-center gap-3 sm:gap-4" role="group" aria-label="Access code input">
+            {digits.map((d, i) => (
+              <input
+                key={i}
+                ref={(el) => {
+                  inputs.current[i] = el;
+                }}
+                data-cell
+                value={d}
+                onChange={(e) => setDigit(i, e.target.value)}
+                onKeyDown={(e) => handleKeyDown(i, e)}
+                onPaste={i === 0 ? handlePaste : undefined}
+                inputMode="numeric"
+                autoComplete={i === 0 ? "one-time-code" : "off"}
+                maxLength={1}
+                disabled={busy}
+                aria-label={`Digit ${i + 1} of ${LEN}`}
+                className="size-14 rounded-xl border border-neutral-800 bg-neutral-950 text-center font-mono text-2xl text-neutral-100 caret-transparent outline-none transition-colors focus:border-neutral-300 disabled:opacity-50 sm:size-16"
+              />
+            ))}
           </div>
-          <h1 className="text-sm font-medium text-neutral-200">Enter access code</h1>
         </div>
 
-        <div ref={cellsWrap} className="flex items-center gap-3">
-          {digits.map((d, i) => (
-            <input
-              key={i}
-              ref={(el) => {
-                inputs.current[i] = el;
-              }}
-              data-cell
-              value={d}
-              onChange={(e) => setDigit(i, e.target.value)}
-              onKeyDown={(e) => handleKeyDown(i, e)}
-              onPaste={i === 0 ? handlePaste : undefined}
-              inputMode="numeric"
-              autoComplete={i === 0 ? "one-time-code" : "off"}
-              maxLength={1}
-              disabled={busy}
-              aria-label={`Digit ${i + 1} of ${LEN}`}
-              className="size-14 rounded-xl border border-neutral-800 bg-neutral-950 text-center font-mono text-xl text-neutral-100 caret-transparent outline-none transition-colors focus:border-neutral-400 disabled:opacity-50"
-            />
-          ))}
-        </div>
-
-        <div className="flex h-5 items-center font-mono text-[11px] tracking-wider text-neutral-600" aria-live="polite">
+        <div className="flex h-4 items-center font-mono text-[10px] tracking-[0.3em] text-neutral-700" aria-live="polite">
           {busy ? (
-            <span className="flex items-center gap-2">
-              <Loader2 className="size-3 animate-spin" aria-hidden />
-              VERIFYING
-            </span>
+            <span className="animate-fast-pulse uppercase">Verifying</span>
           ) : (
-            <span>{LEN} DIGITS</span>
+            <span className="uppercase">{LEN} digits</span>
           )}
         </div>
       </div>
