@@ -65,6 +65,25 @@ model MapCache {
   updatedAt DateTime @default(now())
 }
 
+// WANTED board entry. ZERO-KNOWLEDGE: the server only ever holds AES-256-GCM
+// ciphertext produced in the browser with a key derived from the gate
+// passcode (never transmitted). Title, description, alias, threat, status,
+// bounty and author identity all live inside the encrypted payload; the
+// uploaded image is a separately encrypted blob. Entries self-destruct 24h
+// after creation (enforced on every read + write).
+model WantedPost {
+  id            String   @id // client-minted UUID
+  iv            String // base64 AES-GCM IV for the metadata payload
+  ciphertext    String // base64 encrypted JSON payload (title/desc/etc.)
+  imgIv         String? // base64 AES-GCM IV for the image blob
+  imgCiphertext String? // base64 encrypted JPEG bytes
+  creatorFp     String // sender fingerprint (public material — deletion rights)
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime // createdAt + 24h
+
+  @@index([createdAt])
+}
+
 // Outbound session-key distribution: the session key wrapped (encrypted)
 // per-recipient with an ephemeral ECDH exchange. Server stores the blob,
 // but without the recipient's private key (which never leaves the browser)

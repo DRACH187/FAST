@@ -1,22 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
   ArrowRight,
   ChevronRight,
   Copy,
+  Crosshair,
   Fingerprint,
   KeyRound,
   Map as MapIcon,
+  MessagesSquare,
   Plus,
+  Radio,
+  ShieldCheck,
   Trash2,
   X,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { REDUCED_MOTION, ScreenShell, pressFeedback, staggerAnimChildren } from "@/components/fast/motion";
 import { FastButton, FastInput, FastModal, WipeChip } from "@/components/fast/primitives";
+import { useLivePresence } from "@/lib/fast/live";
+import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 
 gsap.registerPlugin(useGSAP);
@@ -41,6 +48,7 @@ function lastActivityLabel(s: SessionView): string {
 
 type HubProps = {
   identityFp: string;
+  callsign: CallsignIdentity | null;
   sessions: SessionView[];
   busy: boolean;
   onOpen: (code: string) => void;
@@ -49,10 +57,13 @@ type HubProps = {
   onDelete: (code: string) => Promise<void>;
   onClose: (code: string) => void;
   onOpenMap: () => void;
+  onOpenWanted: () => void;
+  onOpenLive: () => void;
 };
 
 export function HubScreen({
   identityFp,
+  callsign,
   sessions,
   busy,
   onOpen,
@@ -61,6 +72,8 @@ export function HubScreen({
   onDelete,
   onClose,
   onOpenMap,
+  onOpenWanted,
+  onOpenLive,
 }: HubProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const [joinCode, setJoinCode] = useState("");
@@ -133,24 +146,87 @@ export function HubScreen({
   return (
     <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col">
       <div ref={shellRef} className="contents">
-        <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-7 px-5 pb-6 pt-[max(2rem,calc(env(safe-area-inset-top)+1.5rem))]">
-          {/* discreet wordmark + device fingerprint chip */}
-          <header data-anim className="flex items-center justify-between gap-3">
-            <div className="flex flex-col">
-              <span className="font-mono text-xs font-semibold uppercase tracking-[0.55em] text-neutral-100">
-                Fast
-              </span>
-              <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.32em] text-neutral-600">
-                Sessions
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-7 px-5 pb-28 pt-[max(1.5rem,calc(env(safe-area-inset-top)+1rem))]">
+          {/* BRAND — sticky: the logo rides at the top of the hub at all times */}
+          <header
+            data-anim
+            className="sticky top-0 z-20 -mx-5 flex flex-col gap-3 border-b border-neutral-900/80 bg-black/85 px-5 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-md"
+          >
+            <div className="flex items-center gap-4 pt-1">
+              <Image
+                src="/fast-logo.png"
+                alt="FAST"
+                width={256}
+                height={256}
+                priority
+                draggable={false}
+                className="h-14 w-14 shrink-0 mix-blend-screen"
+              />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="font-mono text-base font-bold uppercase tracking-[0.5em] text-white">
+                  Fast
+                </span>
+                <span className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
+                  Secure sessions
+                </span>
+              </div>
+              <span
+                title="This device's fingerprint — public material only"
+                className="flex shrink-0 items-center gap-1.5 rounded-full border border-neutral-900 px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-neutral-500"
+              >
+                <Fingerprint className="size-3 text-neutral-600" aria-hidden />
+                {identityFp.slice(0, 4)}·{identityFp.slice(4, 8)}
               </span>
             </div>
-            <span
-              title="This device's fingerprint — public material only"
-              className="flex items-center gap-1.5 rounded-full border border-neutral-900 px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-neutral-500"
-            >
-              <Fingerprint className="size-3 text-neutral-600" aria-hidden />
-              {identityFp.slice(0, 4)}·{identityFp.slice(4, 8)}
-            </span>
+
+            {/* callsign + live counter row */}
+            <div className="flex items-center gap-2">
+              {callsign ? (
+                <span
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5"
+                  title={`Signed in as ${callsign.nickname}`}
+                >
+                  <ShieldCheck className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
+                  <span
+                    className={`truncate text-neutral-200 ${
+                      callsign.role === "boss"
+                        ? "drach-font text-base leading-none text-white"
+                        : "font-mono text-[10px] font-bold uppercase tracking-[0.2em]"
+                    }`}
+                  >
+                    {callsign.nickname}
+                  </span>
+                </span>
+              ) : null}
+              <button
+                onClick={(e) => {
+                  pressFeedback(e.currentTarget);
+                  onOpenLive();
+                }}
+                aria-label="Open the live board"
+                className="group flex min-h-[34px] items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5 outline-none transition-colors hover:border-neutral-600"
+              >
+                <span
+                  aria-hidden
+                  className="size-1.5 animate-fast-pulse rounded-full bg-white"
+                />
+                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-300">
+                  <OnlineCount />
+                </span>
+              </button>
+              <span className="flex-1" />
+              <button
+                onClick={(e) => {
+                  pressFeedback(e.currentTarget);
+                  onOpenLive();
+                }}
+                aria-label="Who is live right now"
+                className="flex min-h-[34px] items-center gap-1.5 rounded-full border border-neutral-900 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500 outline-none transition-colors hover:border-neutral-600 hover:text-neutral-300"
+              >
+                <Radio className="size-3" aria-hidden />
+                Live
+              </button>
+            </div>
           </header>
 
           {/* actions: start / join */}
@@ -222,12 +298,6 @@ export function HubScreen({
           {/* quieter utilities */}
           <section data-anim aria-label="More" className="flex flex-col gap-2">
             <ActionRow
-              icon={MapIcon}
-              label="Surroundings map"
-              hint="South Africa · live hotspot intel"
-              onClick={onOpenMap}
-            />
-            <ActionRow
               icon={Trash2}
               label="Wipe a session"
               hint="Erase it for every participant"
@@ -238,7 +308,7 @@ export function HubScreen({
         </div>
 
         {/* sticky footer */}
-        <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+        <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-24 pt-2">
           <div className="flex flex-col items-center gap-1.5 border-t border-neutral-900 pt-4 text-center">
             <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-600">
               Keys live in this tab only
@@ -249,6 +319,19 @@ export function HubScreen({
           </div>
         </footer>
       </div>
+
+      {/* bottom tab bar — thumb-reachable, 44px+ targets, always visible */}
+      <nav
+        aria-label="Primary"
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-neutral-900 bg-black/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
+      >
+        <div className="mx-auto grid max-w-md grid-cols-4">
+          <TabButton icon={MessagesSquare} label="Sessions" active onClick={() => undefined} />
+          <TabButton icon={Crosshair} label="Wanted" onClick={onOpenWanted} />
+          <TabButton icon={MapIcon} label="Map" onClick={onOpenMap} />
+          <TabButton icon={Radio} label="Live" onClick={onOpenLive} />
+        </div>
+      </nav>
 
       {/* created code — share it while it lives */}
       <FastModal open={created !== null} onClose={() => setCreated(null)} label="Session created">
@@ -378,6 +461,46 @@ export function HubScreen({
 }
 
 // ---------------------------------------------------------------- pieces
+
+/** Live online counter fed by the shared heartbeat store (no extra polling). */
+function OnlineCount() {
+  const { count, error } = useLivePresence();
+  return (
+    <span title={error ? "Heartbeat retrying" : "Operatives online right now"}>
+      {count} on
+    </span>
+  );
+}
+
+/** Bottom-nav tab — icon over label, 44px+ hit target, hairline active state. */
+function TabButton({
+  icon: Icon,
+  label,
+  active = false,
+  onClick,
+}: {
+  icon: typeof Radio;
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={`flex min-h-[56px] flex-col items-center justify-center gap-1 outline-none transition-colors focus-visible:bg-neutral-900 ${
+        active ? "text-white" : "text-neutral-600 hover:text-neutral-300"
+      }`}
+    >
+      <Icon className="size-5" aria-hidden />
+      <span className="font-mono text-[8px] uppercase tracking-[0.22em]">{label}</span>
+      <span
+        aria-hidden
+        className={`h-0.5 w-6 rounded-full ${active ? "bg-white" : "bg-transparent"}`}
+      />
+    </button>
+  );
+}
 
 /** Quiet utility row (map, wipe). */
 type ActionRowProps = {

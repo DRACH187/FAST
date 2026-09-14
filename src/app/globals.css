@@ -194,3 +194,32 @@
     display: none;
   }
 }
+
+/* -------- DRACH — boss callsign typography (blackletter + glow) ----------
+   Self-hosted Pirata One (12 KB woff2, /fonts). The boss callsign renders
+   in this face everywhere it appears: hub chip, live board, chat sender
+   labels, the in-session strip and boss-tier alerts. Monochrome glow keeps
+   the zero-colour contract while making the name unmistakable. */
+@font-face {
+  font-family: "Pirata One";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/pirata-one.woff2") format("woff2");
+}
+
+.drach-font {
+  font-family: "Pirata One", "Blackletter", serif;
+  letter-spacing: 0.08em;
+  text-shadow:
+    0 0 2px rgba(255, 255, 255, 0.85),
+    0 0 14px rgba(255, 255, 255, 0.35),
+    0 0 34px rgba(255, 255, 255, 0.14);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drach-font {
+    text-shadow: none;
+  }
+}
+/* drach v2 */

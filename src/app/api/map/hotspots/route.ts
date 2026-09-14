@@ -59,7 +59,6 @@ const hotspotSchema = z.object({
   summary: z.string(),
   gangs: z.array(gangSchema).min(1).max(6),
 });
-
 const hotspotArraySchema = z.array(hotspotSchema);
 
 export type SanitizedGang = {
@@ -124,7 +123,7 @@ function sanitizeHotspots(input: unknown[]): SanitizedHotspot[] {
         threat: g.threat,
         notes: cleanText(g.notes, 140),
       });
-      if (gangs.length === 4) break;
+      if (gangs.length === 5) break;
     }
     if (gangs.length === 0) continue;
 
@@ -138,8 +137,8 @@ function sanitizeHotspots(input: unknown[]): SanitizedHotspot[] {
       gangs,
     });
     seen.add(key);
-    // cap mirrors the prompt's 20-28 band (keeps feed size predictable)
-    if (out.length === 28) break;
+    // cap mirrors the prompt's 30-40 band (keeps feed size predictable)
+    if (out.length === 40) break;
   }
   return out;
 }
@@ -148,27 +147,29 @@ function sanitizeHotspots(input: unknown[]): SanitizedHotspot[] {
 
 const PROMPT = `You are an open-source intelligence summarizer for COMMUNITY SAFETY AWARENESS in South Africa, writing for a neutral public-information display.
 
-Return a STRICT JSON array of 20 to 28 objects. Each object MUST have exactly this shape:
+Return a STRICT JSON array of 30 to 40 objects. Each object MUST have exactly this shape:
 {
-  "area": string (township or suburb name),
+  "area": string (township, suburb or documented neighbourhood),
   "province": one of "Eastern Cape" | "Free State" | "Gauteng" | "KwaZulu-Natal" | "Limpopo" | "Mpumalanga" | "North West" | "Northern Cape" | "Western Cape",
   "lat": number,
   "lng": number,
   "intensity": integer 1-5 (5 = most extensively documented gang activity),
   "summary": string, maximum 220 characters, neutral and factual,
-  "gangs": array of 1 to 4 objects { "name": string, "threat": "MODERATE" | "HIGH" | "SEVERE", "notes": string, maximum 140 characters }
+  "gangs": array of 1 to 5 objects { "name": string, "threat": "MODERATE" | "HIGH" | "SEVERE", "notes": string, maximum 140 characters }
 }
 
 Hard requirements:
+- MAXIMUM COVERAGE: list every area with WELL-DOCUMENTED gang activity you can name accurately. Prioritise depth where the documentation is richest (Western Cape Cape Flats, Gqeberha Northern Areas, Johannesburg corroboration) while still covering all nine provinces.
 - Coordinates must be real populated places in South Africa with correct latitude/longitude (latitude between -35 and -22, longitude between 16 and 34). Area-level granularity ONLY — never street-level, never personal.
 - SPAN ALL NINE PROVINCES: include documented areas in Eastern Cape, Free State, Gauteng, KwaZulu-Natal, Limpopo, Mpumalanga, North West, Northern Cape and Western Cape wherever documentation supports them. Where a province has thin street-gang documentation, include its most-reported township and attribute only what public research supports (for example the Numbers prison gangs 26s, 27s, 28s, which correctional research documents nationally).
-- Base everything on widely published news reporting and academic research. Use well-documented gang names only (for example Cape Flats street gangs, or the Numbers prison gangs 26s, 27s, 28s as documented in public research). Do not invent names.
-- Include the following areas where documentation supports them: Western Cape Cape Flats (Manenberg, Mitchells Plain, Hanover Park, Lavender Hill, Athlone, Elsies River, Delft, Nyanga, Gugulethi, Khayelitsha), Gauteng (Westbury, Eldorado Park, Hillbrow, Alexandra, Katlehong, Thokoza, Reiger Park), KwaZulu-Natal (Umlazi, Chatsworth, KwaMashu, Wentworth), Eastern Cape Northern Areas (Gelvandale, Helenvale).
+- Base everything on widely published news reporting and academic research. Use well-documented gang names only (for example Cape Flats street gangs such as the Americans, Hard Live Kids, Junky Funky Kids, Nice Time Kids, Fast Guns, Clever Kids, Bollie Braders, Cairo Gang; the Numbers prison gangs 26s, 27s, 28s; and structures named in provincial press such as Boko Haram in Nyanga-Philippi). Do not invent names.
+- List EACH gang known to operate in the area (up to 5), with the gang most prominently documented first. The "notes" field should say what public reporting attributes to that gang in THAT area.
+- Include at minimum the following areas where documentation supports them: Western Cape Cape Flats (Manenberg, Mitchells Plain, Hanover Park, Lavender Hill, Athlone, Elsies River, Delft, Nyanga, Gugulethi, Khayelitsha, Philippi, Steenberg, Ottery, Bonteheuwel, Valhalla Park, Beacon Valley, Tafelsig, Rocklands, Lentegeur, Woodlands, Salt River, Woodstock, Paarl, Stellenbosch, Worcester, Beaufort West), Gauteng (Westbury, Eldorado Park, Hillbrow, Alexandra, Katlehong, Thokoza, Reiger Park, Sharpeville, Bekkersdal, Mohlakeng, Tembisa, Mamelodi, Atteridgeville, Soshanguve, Zandspruit, Protea South), KwaZulu-Natal (Umlazi, Chatsworth, KwaMashu, Wentworth, Lamontville, Marianhill, Pietermaritzburg, Empangeni), Eastern Cape Northern Areas (Gelvandale, Helenvale, Bloemendal, Booysen Park, Kwazakhele, New Brighton, Mdantsane, Mthatha), plus documented townships in Free State (Botshabelo, Thabong, Mangaung), Limpopo (Seshego, Mankweng), Mpumalanga (eMbalenhle, KwaGuqa), North West (Jouberton, Ikageng, Galeshewe in Northern Cape).
 - No instructions, no safety-advice framing, no glorification, no sensationalism. Neutral, encyclopedic tone.
 - Output ONLY the JSON array. No markdown, no commentary, no code fences.`;
 
 async function fetchFromGemini(): Promise<SanitizedHotspot[] | null> {
-  const text = await geminiGenerate(PROMPT, 20_000);
+  const text = await geminiGenerate(PROMPT, 30_000);
   if (!text) return null;
 
   // Strip markdown fences if the model wrapped the array anyway.

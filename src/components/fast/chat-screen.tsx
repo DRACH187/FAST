@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
@@ -8,12 +9,15 @@ import {
   ArrowLeft,
   Camera,
   Copy,
+  Crosshair,
+  Crown,
   EyeOff,
   Flame,
   KeyRound,
   Lock,
   Map as MapIcon,
   MoreVertical,
+  Radio,
   SendHorizontal,
   ShieldAlert,
   ShieldCheck,
@@ -25,6 +29,7 @@ import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/co
 import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
+import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
 
@@ -52,14 +57,28 @@ function dayLabel(d: Date): string {
 type ChatProps = {
   session: SessionView;
   myFp: string;
+  callsign: CallsignIdentity | null;
   onBack: () => void;
   onSend: (text: string) => Promise<void>;
   onSendPhoto: (bytes: Uint8Array) => Promise<void>;
   onOpenMap: () => void;
+  onOpenWanted: () => void;
+  onOpenLive: () => void;
   onDelete: (code: string) => Promise<void>;
 };
 
-export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenMap, onDelete }: ChatProps) {
+export function ChatScreen({
+  session,
+  myFp,
+  callsign,
+  onBack,
+  onSend,
+  onSendPhoto,
+  onOpenMap,
+  onOpenWanted,
+  onOpenLive,
+  onDelete,
+}: ChatProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -174,6 +193,23 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
     }
   }, [draft, onSend, scrollToBottom, sending, session.hasKey, session.code]);
 
+  // the boss strip: a boss-attested callsign in the room flips the header
+  // band — driven entirely by the server-attested roster (unforgeable)
+  const bossHere = useMemo(() => {
+    const entry = Object.values(session.roster ?? {}).find((r) => r.role === "boss");
+    return entry ? entry.nickname : null;
+  }, [session.roster]);
+
+  const senderName = useCallback(
+    (fp: string): { name: string; boss: boolean } => {
+      const entry = session.roster?.[fp];
+      if (entry?.nickname) return { name: entry.nickname, boss: entry.role === "boss" };
+      if (fp === myFp && callsign) return { name: callsign.nickname, boss: callsign.role === "boss" };
+      return { name: `${fp.slice(0, 4)}·${fp.slice(4, 8)}`, boss: false };
+    },
+    [session.roster, myFp, callsign]
+  );
+
   // transcript sections: day separators + consecutive-sender groups
   const sections = useMemo(() => {
     const out: { key: string; label: string; groups: { senderFp: string; mine: boolean; items: DecryptedMessage[] }[] }[] = [];
@@ -216,6 +252,15 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
           </button>
 
           <div className="flex min-w-0 flex-1 items-center gap-2">
+            <Image
+              src="/fast-logo.png"
+              alt="FAST"
+              width={256}
+              height={256}
+              priority
+              draggable={false}
+              className="h-8 w-8 shrink-0 mix-blend-screen"
+            />
             <div className="flex min-w-0 flex-col leading-tight">
               <span className="truncate font-mono text-sm font-bold tracking-[0.22em] text-white">
                 {session.code}
@@ -280,6 +325,22 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
                     onOpenMap();
                   }}
                 />
+                <FastMenuItem
+                  icon={Crosshair}
+                  label="Wanted board"
+                  onSelect={() => {
+                    close();
+                    onOpenWanted();
+                  }}
+                />
+                <FastMenuItem
+                  icon={Radio}
+                  label="Live operatives"
+                  onSelect={() => {
+                    close();
+                    onOpenLive();
+                  }}
+                />
                 <div className="mx-1.5 my-1 h-px bg-neutral-800" />
                 <FastMenuItem
                   icon={Trash2}
@@ -294,6 +355,17 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
           </FastPopover>
         </div>
       </header>
+
+      {/* BOSS PRESENT strip — attested, blackletter, unforgeable */}
+      {bossHere && (
+        <div className="relative z-10 flex items-center justify-center gap-2 border-b border-neutral-800 bg-neutral-950 py-1.5">
+          <Crown className="size-3.5 text-neutral-300" aria-hidden />
+          <span className="drach-font text-lg leading-none text-white">{bossHere}</span>
+          <span className="font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-500">
+            is in this session
+          </span>
+        </div>
+      )}
 
       {/* transcript */}
       <div
@@ -329,11 +401,20 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
                     key={`${group.senderFp}-${gi}`}
                     className={`flex flex-col gap-1 ${group.mine ? "items-end" : "items-start"}`}
                   >
-                    {!group.mine && (
-                      <span className="px-1 font-mono text-[10px] tracking-wider text-neutral-600">
-                        {group.senderFp.slice(0, 4)}·{group.senderFp.slice(4, 8)}
-                      </span>
-                    )}
+                    {!group.mine &&
+                      (() => {
+                        const { name, boss } = senderName(group.senderFp);
+                        return boss ? (
+                          <span className="flex items-center gap-1.5 px-1">
+                            <Crown className="size-3 text-neutral-400" aria-hidden />
+                            <span className="drach-font text-base leading-none text-white">{name}</span>
+                          </span>
+                        ) : (
+                          <span className="px-1 font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-500">
+                            {name}
+                          </span>
+                        );
+                      })()}
                     {group.items.map((m) =>
                       m.kind === "photo" ? (
                         <PhotoBubble key={m.id} message={m} mine={group.mine} />

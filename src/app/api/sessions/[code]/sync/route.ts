@@ -1,4 +1,4 @@
-import { clientIp, json, rateLimit } from "@/lib/server-guard";
+import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
 import * as store from "@/lib/fast/memory-store";
 
 /**
@@ -43,6 +43,7 @@ type SyncBody = {
   create?: unknown;
   cursors?: { msg?: unknown; env?: unknown; photo?: unknown };
   publicKey?: unknown;
+  attestation?: unknown;
   message?: { id?: unknown; senderFp?: unknown; counter?: unknown; iv?: unknown; ciphertext?: unknown };
   envelope?: { forFp?: unknown; fromFp?: unknown; epk?: unknown; iv?: unknown; payload?: unknown };
   photo?: { id?: unknown; senderFp?: unknown; counter?: unknown; iv?: unknown; data?: unknown };
@@ -104,9 +105,12 @@ export async function POST(req: Request, { params }: Ctx) {
     if (typeof body.publicKey !== "string" || body.publicKey.length === 0 || body.publicKey.length > MAX_TINY_B64) {
       return json({ ok: false, error: "Invalid identity material" }, 400);
     }
+    // callsign comes ONLY from the server-signed attestation — a client can
+    // never claim a nickname (let alone the boss callsign) it was not given
+    const attested = verifyAttestation(body.attestation, fp);
     if (create || store.sessionExists(code)) {
       store.provisionSession(code);
-      store.upsertParticipant(code, fp, body.publicKey);
+      store.upsertParticipant(code, fp, body.publicKey, attested?.nickname, attested?.role);
       store.enforceTtl(code);
       return syncPayload(code, fp, cursors, true);
     }
@@ -240,6 +244,8 @@ type DeltaResponse = {
   cursor?: { msg: number; env: number; photo: number };
   presence?: string[];
   members?: { fingerprint: string; publicKey: string }[];
+  /** callsign roster — public display material (nickname + role per member) */
+  roster?: { fingerprint: string; nickname: string; role: string }[];
   keyRequests?: string[];
   messages?: store.WireBlob[];
   envelopes?: { id: string; forFp: string; fromFp: string; epk: string; iv: string; payload: string }[];
@@ -270,6 +276,10 @@ function syncPayload(
     members: store
       .listParticipants(code)
       .map((p) => ({ fingerprint: p.fingerprint, publicKey: p.publicKey })),
+    roster: store
+      .listParticipants(code)
+      .filter((p) => p.nickname.length > 0)
+      .map((p) => ({ fingerprint: p.fingerprint, nickname: p.nickname, role: p.role })),
     keyRequests: store.listKeyRequests(code).filter((x) => x !== fp),
     messages: store.listMessages(code, cursors.msg).map(store.toWire.message),
     envelopes: store.listEnvelopes(code, fp, cursors.env).map(store.toWire.envelope),

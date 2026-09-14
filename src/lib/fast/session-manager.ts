@@ -29,8 +29,18 @@ import { api, type WireMessage } from "@/lib/fast/api";
 import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
 import * as vault from "@/lib/fast/vault-db";
+import {
+  clearCallsign,
+  loadCallsign,
+  saveCallsign,
+  registerCallsign,
+  type CallsignIdentity,
+  type StoredCallsign,
+} from "@/lib/fast/identity";
+import { configureHeartbeat, setHeartbeatActive } from "@/lib/fast/live";
+import { stashGatePasscode } from "@/lib/crypto/keyvault";
 
-export type Phase = "splash" | "gate" | "app";
+export type Phase = "splash" | "gate" | "callsign" | "app";
 
 export type SessionView = {
   code: string;
@@ -38,6 +48,8 @@ export type SessionView = {
   /** hard wipe deadline (ISO) — every chat self-destructs 5h after creation */
   expiresAt: string | null;
   members: Record<string, string>; // fingerprint -> public key
+  /** attested callsigns per fingerprint (missing entries = unattested/GHOST) */
+  roster: Record<string, { nickname: string; role: string }>;
   presence: string[]; // fingerprints currently syncing with the room
   messages: DecryptedMessage[];
   hasKey: boolean;
@@ -79,6 +91,7 @@ function sortMessages(list: DecryptedMessage[]): DecryptedMessage[] {
 export function useSessionManager() {
   const [phase, setPhase] = useState<Phase>("splash");
   const [identityFp, setIdentityFp] = useState<string>("");
+  const [callsign, setCallsignState] = useState<StoredCallsign | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [activeCode, setActiveCode] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -87,6 +100,7 @@ export function useSessionManager() {
   const sessionsRef = useRef<SessionView[]>([]);
   const activeCodeRef = useRef<string | null>(null);
   const identityRef = useRef<Awaited<ReturnType<typeof ensureIdentity>> | null>(null);
+  const callsignRef = useRef<StoredCallsign | null>(null);
   const wrappedFor = useRef(new Map<string, Set<string>>()); // code -> fps I already wrapped
   const keyPoll = useRef(new Map<string, ReturnType<typeof setInterval>>());
   /** codes registered with the transport during this tab generation (drives rejoin logic) */
@@ -115,6 +129,14 @@ export function useSessionManager() {
     setSessions((prev) =>
       prev.map((s) => (s.code === code ? { ...s, ...(typeof patch === "function" ? patch(s) : patch) } : s))
     );
+  }, []);
+
+  /** Push a callsign into every consumer: state, mirror, heartbeat feed. */
+  const applyCallsign = useCallback((stored: StoredCallsign, fp?: string) => {
+    callsignRef.current = stored;
+    setCallsignState(stored);
+    if (fp) configureHeartbeat(fp, stored.token);
+    setHeartbeatActive(true);
   }, []);
 
   const appendMessages = useCallback((code: string, incoming: DecryptedMessage[]) => {
@@ -318,8 +340,39 @@ export function useSessionManager() {
   // --------------------------------------------------------- transport wiring
 
   const onPresence = useCallback(
-    (data: { code: string; fingerprints: string[]; members: Record<string, string> }) => {
+    (data: {
+      code: string;
+      fingerprints: string[];
+      members: Record<string, string>;
+      roster: Record<string, { nickname: string; role: string }>;
+    }) => {
       if (!CODE_RE.test(data.code)) return;
+
+      // BOSS ENTRY ALERT — diff the LIVE presence list against the previous
+      // one (members alone can't be used: the server roster keeps departed
+      // devices, so a boss who left and returned must still alert). First
+      // sync after our own join is exempt via the presence seed.
+      const previous = sessionsRef.current.find((s) => s.code === data.code);
+      const priorPresence = previous?.presence ?? [];
+      const me = identityRef.current?.fingerprint;
+      for (const fp of data.fingerprints) {
+        // me = this session's fingerprint; myFps = every fingerprint this
+        // device has EVER sent from (past reloads linger in server rosters —
+        // without this check a reloaded boss alerts about their own ghost)
+        if ((me && fp === me) || myFps.current.has(fp)) continue;
+        if (priorPresence.includes(fp)) continue;
+        const entry = data.roster[fp];
+        if (entry?.role === "boss") {
+          // boss was already on the participant roster vs brand new arrival
+          const wasMember = previous?.members?.[fp] !== undefined;
+          toast.alert(
+            wasMember
+              ? `${entry.nickname} is in this session`
+              : `${entry.nickname} has entered the session`
+          );
+        }
+      }
+
       setSessions((prev) =>
         prev.map((s) =>
           s.code === data.code
@@ -327,6 +380,7 @@ export function useSessionManager() {
                 ...s,
                 presence: data.fingerprints,
                 members: { ...s.members, ...data.members },
+                roster: { ...s.roster, ...data.roster },
                 expiresAt: transport.getMeta(data.code)?.expiresAt ?? s.expiresAt,
               }
             : s
@@ -542,9 +596,11 @@ export function useSessionManager() {
       setConnecting(true);
       try {
         // registers the participant + starts the sync loop (throws when the
-        // room does not exist and we are not its creator)
+        // room does not exist and we are not its creator); the attestation
+        // authenticates our callsign for the roster
         const { members } = await transport.join(code, identity.fingerprint, identity.publicB64, {
           create: opts.create,
+          attestation: callsignRef.current?.token,
         });
         registered.current.add(code);
         syncExpiry(code);
@@ -569,6 +625,7 @@ export function useSessionManager() {
         createdAt: new Date().toISOString(),
         expiresAt: transport.getMeta(code)?.expiresAt ?? new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(),
         members,
+        roster: {},
         presence: [identityRef.current?.fingerprint ?? ""],
         messages: [],
         hasKey: true,
@@ -609,6 +666,7 @@ export function useSessionManager() {
             createdAt: new Date().toISOString(),
             expiresAt: transport.getMeta(code)?.expiresAt ?? null,
             members,
+            roster: {},
             presence: [identity.fingerprint],
             messages: [],
             hasKey: alreadyHasKey,
@@ -794,11 +852,63 @@ export function useSessionManager() {
 
   const unlock = useCallback(async (passcode: string) => {
     await api.gate(passcode);
+    // the passcode stays in RAM for this tab only — it seeds the WANTED-board
+    // content key (PBKDF2) and is never persisted anywhere
+    stashGatePasscode(passcode);
     const identity = await ensureIdentity();
     identityRef.current = identity;
     setIdentityFp(identity.fingerprint);
-    setPhase("app");
+
+    // returning operative? skip callsign login and go straight in
+    const stored = loadCallsign();
+    if (stored) {
+      applyCallsign(stored, identity.fingerprint);
+      setPhase("app");
+      // fingerprints rotate every reload (RAM-only keys) — re-assert the
+      // callsign for a fresh attestation bound to THIS session's fingerprint
+      void (async () => {
+        try {
+          const res = await registerCallsign(identity.fingerprint, stored.nickname, {
+            nickPass: stored.nickPass,
+          });
+          if (res.ok) {
+            const updated: StoredCallsign = {
+              nickname: res.identity.nickname,
+              role: res.identity.role,
+              token: res.identity.token,
+              nickPass: res.nickPass ?? stored.nickPass,
+            };
+            saveCallsign(updated);
+            applyCallsign(updated, identity.fingerprint);
+          } else if (res.status === 403 || res.status === 409) {
+            // ownership lost (server cold start / claimed) — honest re-login
+            clearCallsign();
+            callsignRef.current = null;
+            setCallsignState(null);
+            setHeartbeatActive(false);
+            toast.error("Callsign re-login required");
+            setPhase("callsign");
+          }
+        } catch {
+          /* offline — the stale token keeps display working while valid */
+        }
+      })();
+      return;
+    }
+    setPhase("callsign");
   }, []);
+
+  /** Callsign login complete (first time or after clearing). */
+  const setCallsign = useCallback(
+    (identity: CallsignIdentity, nickPass: string) => {
+      const stored: StoredCallsign = { ...identity, nickPass };
+      saveCallsign(stored);
+      const fp = identityRef.current?.fingerprint;
+      applyCallsign(stored, fp);
+      setPhase("app");
+    },
+    []
+  );
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.code === activeCode) ?? null,
@@ -861,6 +971,7 @@ export function useSessionManager() {
                     createdAt: row.createdAt,
                     expiresAt: transport.getMeta(row.code)?.expiresAt ?? null,
                     members,
+                    roster: {},
                     presence: [],
                     messages: [],
                     hasKey: false,
@@ -955,6 +1066,8 @@ export function useSessionManager() {
     phase,
     setPhase,
     identityFp,
+    callsign,
+    setCallsign,
     sessions,
     activeSession,
     activeCode,

@@ -74,7 +74,7 @@ export type PhotoBlob = {
 type SessionRec = {
   code: string;
   createdAt: Date;
-  participants: Map<string, { publicKey: string; joinedAt: Date }>;
+  participants: Map<string, { publicKey: string; nickname: string; role: string; joinedAt: Date }>;
   messages: (WireBlob & { seq: number })[];
   envelopes: (EnvelopeBlob & { seq: number })[];
   photos: (PhotoBlob & { seq: number })[];
@@ -255,20 +255,46 @@ export function enforceTtl(code: string): void {
   if (s && !s.terminated && isExpired(s)) expireSession(s);
 }
 
-export function upsertParticipant(code: string, fingerprint: string, publicKey: string): boolean {
+export function upsertParticipant(
+  code: string,
+  fingerprint: string,
+  publicKey: string,
+  nickname?: string,
+  role?: string
+): boolean {
   if (!FP_RE.test(fingerprint) || typeof publicKey !== "string" || publicKey.length === 0 || publicKey.length > 512) {
     return false;
   }
   const s = getSession(code);
   if (!s) return false;
   const existing = s.participants.get(fingerprint);
-  if (existing) existing.publicKey = publicKey;
-  else s.participants.set(fingerprint, { publicKey, joinedAt: new Date() });
+  if (existing) {
+    existing.publicKey = publicKey;
+    if (typeof nickname === "string" && nickname.length > 0 && nickname.length <= 32) {
+      existing.nickname = nickname;
+      existing.role = role === "boss" ? "boss" : "member";
+    }
+  } else {
+    s.participants.set(fingerprint, {
+      publicKey,
+      nickname: typeof nickname === "string" && nickname.length > 0 ? nickname.slice(0, 32) : "",
+      role: role === "boss" ? "boss" : "member",
+      joinedAt: new Date(),
+    });
+  }
   s.lastActivity = Date.now();
   return true;
 }
 
-export function listParticipants(code: string): { fingerprint: string; publicKey: string; joinedAt: string }[] {
+export type RosterEntry = {
+  fingerprint: string;
+  publicKey: string;
+  nickname: string;
+  role: string;
+  joinedAt: string;
+};
+
+export function listParticipants(code: string): RosterEntry[] {
   const s = getSession(code);
   if (!s) return [];
   return [...s.participants.entries()]
@@ -276,6 +302,8 @@ export function listParticipants(code: string): { fingerprint: string; publicKey
     .map(([fingerprint, p]) => ({
       fingerprint,
       publicKey: p.publicKey,
+      nickname: p.nickname,
+      role: p.role,
       joinedAt: p.joinedAt.toISOString(),
     }));
 }

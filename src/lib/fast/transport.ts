@@ -40,6 +40,8 @@ export type WirePhoto = {
 
 type Cursors = { msg: number; env: number; photo: number };
 
+export type RosterEntry = { fingerprint: string; nickname: string; role: string };
+
 type DeltaBody = {
   ok?: boolean;
   alive?: boolean;
@@ -52,6 +54,7 @@ type DeltaBody = {
   cursor?: Cursors;
   presence?: string[];
   members?: { fingerprint: string; publicKey: string }[];
+  roster?: RosterEntry[];
   keyRequests?: string[];
   messages?: WireMessage[];
   envelopes?: WireEnvelope[];
@@ -62,7 +65,12 @@ type DeltaBody = {
 export type SessionMeta = { createdAt: string; expiresAt: string };
 
 export type TransportEvents = {
-  presence: { code: string; fingerprints: string[]; members: Record<string, string> };
+  presence: {
+    code: string;
+    fingerprints: string[];
+    members: Record<string, string>;
+    roster: Record<string, { nickname: string; role: string }>;
+  };
   messages: { code: string; messages: WireMessage[]; initial: boolean };
   key: { code: string; envelopes: WireEnvelope[] };
   keyrequest: { code: string; fingerprints: string[]; members: Record<string, string> };
@@ -93,7 +101,10 @@ class Transport {
   private backoff = new Map<string, number>();
   private dead = new Map<string, number>();
   private seenPresence = new Map<string, string>(); // code -> last presence signature
-  private info = new Map<string, { fp: string; publicKey: string; creator: boolean }>();
+  private info = new Map<
+    string,
+    { fp: string; publicKey: string; creator: boolean; attestation?: string }
+  >();
   private meta = new Map<string, SessionMeta>(); // code -> retention window
   private skew = new Map<string, number>(); // code -> serverNow - Date.now() ms
   private pollingNow = new Set<string>();
@@ -123,19 +134,25 @@ class Transport {
     code: string,
     fingerprint: string,
     publicKey: string,
-    opts: { create?: boolean } = {}
+    opts: { create?: boolean; nickname?: string; role?: string; attestation?: string } = {}
   ): Promise<{ alive: boolean; members: Record<string, string> }> {
     const body = await this.rpc(code, {
       action: "join",
       fingerprint,
       publicKey,
       create: opts.create === true,
+      attestation: typeof opts.attestation === "string" ? opts.attestation.slice(0, 1024) : "",
       cursors: this.cursors.get(code) ?? { msg: 0, env: 0, photo: 0 },
     });
 
     if (!body.alive) throw new Error("Session not found (404)");
 
-    this.info.set(code, { fp: fingerprint, publicKey, creator: opts.create === true });
+    this.info.set(code, {
+      fp: fingerprint,
+      publicKey,
+      creator: opts.create === true,
+      attestation: opts.attestation,
+    });
     this.dead.set(code, 0);
     this.backoff.set(code, 0);
     this.startLoop(code);
@@ -316,10 +333,15 @@ class Transport {
     if (body.presence) {
       const presence = body.presence;
       const members = toMemberMap(body.members);
-      const sig = `${presence.join("|")}#${Object.keys(members).sort().join(",")}`;
+      const roster: Record<string, { nickname: string; role: string }> = {};
+      for (const r of body.roster ?? []) roster[r.fingerprint] = { nickname: r.nickname, role: r.role };
+      const sig = `${presence.join("|")}#${Object.keys(members).sort().join(",")}#${Object.entries(roster)
+        .map(([fp, n]) => `${fp}:${n.nickname}:${n.role}`)
+        .sort()
+        .join(",")}`;
       if (this.seenPresence.get(code) !== sig) {
         this.seenPresence.set(code, sig);
-        this.handlers.presence.forEach((h) => h({ code, fingerprints: presence, members }));
+        this.handlers.presence.forEach((h) => h({ code, fingerprints: presence, members, roster }));
       }
     }
 

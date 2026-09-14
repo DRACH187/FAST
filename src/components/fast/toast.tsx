@@ -9,9 +9,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import gsap from "gsap";
-import { Check, Info, X } from "lucide-react";
+import { Check, Crown, Info, X } from "lucide-react";
 
-export type ToastKind = "success" | "error" | "info";
+export type ToastKind = "success" | "error" | "info" | "alert";
 
 export type ToastItem = {
   id: number;
@@ -44,21 +44,23 @@ function markLeaving(id: number) {
   window.setTimeout(() => remove(id), EXIT_MS);
 }
 
-function push(kind: ToastKind, text: string) {
+function push(kind: ToastKind, text: string, timeout: number = TIMEOUT) {
   const id = nextId++;
   if (items.length >= 4) markLeaving(items[0].id); // cap stack depth
   items = [...items, { id, kind, text, leaving: false }];
   notify();
-  window.setTimeout(() => markLeaving(id), TIMEOUT);
+  window.setTimeout(() => markLeaving(id), timeout);
 }
 
 export const toast = {
   success: (text: string) => push("success", text),
   error: (text: string) => push("error", text),
   info: (text: string) => push("info", text),
+  /** BOSS-tier alert (DRACH entered the session etc.) — lingers longer. */
+  alert: (text: string) => push("alert", text, 5200),
 };
 
-const ICONS: Record<ToastKind, typeof Check> = { success: Check, error: X, info: Info };
+const ICONS: Record<ToastKind, typeof Check> = { success: Check, error: X, info: Info, alert: Crown };
 
 function ToastRow({ item }: { item: ToastItem }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -82,12 +84,22 @@ function ToastRow({ item }: { item: ToastItem }) {
     <div
       ref={ref}
       role="status"
-      className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-neutral-800 bg-neutral-950/95 py-3 pl-3.5 pr-4 shadow-[0_10px_34px_rgba(0,0,0,0.65)] backdrop-blur-md will-change-transform"
+      className={`pointer-events-auto flex items-center gap-3 rounded-2xl border py-3 pl-3.5 pr-4 shadow-[0_10px_34px_rgba(0,0,0,0.65)] backdrop-blur-md will-change-transform ${
+        item.kind === "alert"
+          ? "border-neutral-400 bg-neutral-900/95" // boss-tier: brighter frame
+          : "border-neutral-800 bg-neutral-950/95"
+      }`}
     >
       <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-white text-black">
         <Icon className="size-3.5" strokeWidth={2.5} aria-hidden />
       </span>
-      <p className="text-xs font-medium text-neutral-100">{item.text}</p>
+      <p
+        className={`text-xs font-medium ${
+          item.kind === "alert" ? "drach-font text-base tracking-[0.06em] text-white" : "text-neutral-100"
+        }`}
+      >
+        {item.text}
+      </p>
     </div>
   );
 }

@@ -32,6 +32,12 @@ export type DecryptedMessage = {
 
 const vault = {
   identity: null as Identity | null,
+  /**
+   * The gate passcode, held in RAM for the lifetime of this tab only. It
+   * seeds the WANTED-board content key (PBKDF2 client-side) so the board
+   * stays zero-knowledge without ever persisting the passcode anywhere.
+   */
+  gatePasscode: null as string | null,
   /** code -> raw 256-bit session key (never leaves this map) */
   sessionKeys: new Map<string, Uint8Array>(),
   /** code -> ratchet counter state { next to send, highest seen } */
@@ -93,6 +99,19 @@ export function burnSessionPhotos(code: string) {
 
 export function setIdentity(identity: Identity) {
   vault.identity = identity;
+}
+
+/**
+ * Keep the gate passcode in RAM for this tab's lifetime (the WANTED board's
+ * PBKDF2 seed). Never persisted, never logged — gone the moment the tab dies.
+ */
+export function stashGatePasscode(passcode: string) {
+  vault.gatePasscode = passcode;
+}
+
+/** The stashed passcode (null after a reload until the gate is re-entered). */
+export function getGatePasscode(): string | null {
+  return vault.gatePasscode;
 }
 
 export function getIdentity(): Identity | null {
