@@ -368,7 +368,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
     const title = draft.title.trim();
     const description = draft.description.trim();
     if (!title) {
-      toast.error("A WANTED entry needs a title");
+      toast.error("’n WANTED entry sonder titel? Voetsek.");
       return;
     }
     setPosting(true);
@@ -651,7 +651,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
           <textarea
             value={draft.description}
             onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value.slice(0, 4000) }))}
-            placeholder="DESCRIPTION — who, what, where…"
+            placeholder="BESKRYWING — wie, wat, waar…"
             aria-label="Description"
             rows={5}
             className="w-full resize-none rounded-xl border border-neutral-800 bg-black px-4 py-3 text-sm leading-relaxed text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-neutral-500"

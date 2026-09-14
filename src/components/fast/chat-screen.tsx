@@ -381,8 +381,8 @@ export function ChatScreen({
               <Lock className="size-5 text-neutral-600" aria-hidden />
             </div>
             <p className="max-w-[230px] text-xs leading-relaxed text-neutral-600">
-              No messages yet. Everything here is sealed on this device — and
-              the whole room wipes in five hours.
+              Stilte, ouen. Alles hier is op hierdie toestel geseël — en die hele
+              kamer moer homself oor vyf uur.
             </p>
           </div>
         ) : (
@@ -501,7 +501,7 @@ export function ChatScreen({
                   void send();
                 }
               }}
-              placeholder={session.hasKey ? "Message" : "Locked"}
+              placeholder={session.hasKey ? "Sê jou sê…" : "Gesluit"}
               disabled={!session.hasKey}
               rows={1}
               aria-label="Message"

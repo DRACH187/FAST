@@ -177,7 +177,7 @@ export function FastModal({ open, onClose, label, children }: FastModalProps) {
       />
       <div
         ref={panelRef}
-        className="relative w-full max-w-xs rounded-3xl border border-neutral-800 bg-neutral-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.8)] will-change-transform"
+        className="relative max-h-[min(86dvh,100%)] w-full max-w-xs overflow-y-auto overscroll-contain rounded-3xl border border-neutral-800 bg-neutral-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.8)] will-change-transform"
       >
         {children}
       </div>

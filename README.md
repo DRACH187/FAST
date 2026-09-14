@@ -1,10 +1,10 @@
-# FAST — Secure Sessions
+# FAST GUNS — Secure Sessions (the 187)
 
 A monochrome, mobile-first, zero-knowledge chat app built as a production-grade
-security exercise. Messages are sealed **in your browser** with per-message
-keys; the server only ever stores and relays **opaque ciphertext**. Photos can
-be taken and shared, but are **never stored on any device** — they burn after
-viewing.
+security exercise — loud brand, silent footprint. Messages are sealed **in your
+browser** with per-message keys; the server only ever stores and relays
+**opaque ciphertext**. Photos can be taken and shared, but are **never stored
+on any device** — they burn after viewing.
 
 Strictly **black · white · grey**. Normal system fonts. Every control is
 bespoke — no default browser or library chrome. Motion is GSAP-driven.
@@ -17,12 +17,14 @@ runs identically self-hosted.
 ## The flow
 
 ```
-SPLASH (FAST logo, GSAP)                    ~3s
-  └─> GTA-STYLE BOOT (BANNER1 + BANNER2)    exactly 6s, then fades out
-        └─> ACCESS GATE ("187")             constant-time check, rate limited
-              └─> SESSION HUB               start / join / delete sessions
-                    ├─> CHAT (E2EE, multiple sessions at once)
-                    └─> SURROUNDINGS MAP    Google Maps + SA gang hotspots (Gemini intel)
+SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
+  └─> ACCESS GATE ("187")             constant-time check, rate limited
+        └─> CALLSIGN LOGIN            nickname — saved/deleted permanently per device
+              └─> SESSION HUB         start / join / delete sessions · ALL-TIME ROLL
+                    ├─> CHAT (E2EE, multiple sessions at once, 5h auto-wipe)
+                    ├─> WANTED BOARD  two categories only: WANTED / ELIMINATED
+                    ├─> SURROUNDINGS MAP  Google Maps + SA gang hotspots (Gemini intel)
+                    └─> LIVE BOARD    everyone on the site right now + total ever
 ```
 
 - **Start session** — mints a fresh 6-letter code **client-side** with real
@@ -33,6 +35,18 @@ SPLASH (FAST logo, GSAP)                    ~3s
   history **for every participant**, instantly.
 - **Multiple sessions** — hold as many as you like side-by-side; each has its
   own key slots in RAM.
+- **Nickname (callsign) system** — every operative logs in with a nickname,
+  saved permanently on the device (deletable from Profile). Nicknames are
+  public display data; a server-signed attestation token backs every join
+  and heartbeat, so display identity is unforgeable. The **DRACH** callsign
+  is reserved and requires the boss key (constant-time server check).
+- **All-time member ledger** — the hub, live board and profile show the
+  total number of members that have EVER entered. Fully zero-knowledge: the
+  client sends only `SHA-256(salt | persistent-device-id | callsign)`; the
+  server counts digests in SQLite and can never reverse them.
+- **Offline vault (PWA)** — installable (“Download app” in Profile):
+  service-worker app shell, offline boot, home-screen launch, near-zero data
+  usage after first load. Chats auto-wipe **5 hours** after session creation.
 
 ## Security architecture
 
@@ -40,9 +54,10 @@ SPLASH (FAST logo, GSAP)                    ~3s
 |---|---|
 | 1 · Crypto | Web Crypto only: ephemeral **X25519** identity per tab (ECDH P-256 fallback), **AES-256-GCM** payloads, **HKDF-SHA256** per-message keys `HKDF(sessionKey, salt=code, info=msg|counter|senderFp)`. AEAD additional-data binds `code\|senderFp\|counter` (tamper ⇒ bubble marked *undecryptable*). |
 | 2 · Transport | **Blind HTTP sync endpoint** (`POST /api/sessions/[code]/sync`) — one serverless function carries presence, message/key/photo deltas, key requests and termination. Validates shapes and size caps; stores **only ciphertext and public material**. Works on any host: no WebSocket servers, no sticky sessions, no database. Ephemeral photos ride the same endpoint in RAM with a hard 60s TTL — forwarded and forgotten. |
-| 3 · Gate | Shared passcode (`187`) verified with `timingSafeEqual` + constant delay + sliding-window rate limit. |
-| 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts). Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere.** |
-| 5 · Perimeter | Security headers on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP). TLS terminates at the edge in production. |
+| 3 · Gate | Shared passcode (`187`) verified with `timingSafeEqual` + constant delay + sliding-window rate limit + escalating lockout. |
+| 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts); the member ledger stores **irreversible salted digests only**. Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere.** |
+| 5 · Identity | Nicknames are attested: `HMAC(fp|nickname|role|exp, server secret)` tokens ride every join/heartbeat. The reserved DRACH callsign requires the boss key, verified constant-time and never persisted. |
+| 6 · Perimeter | Security headers + strict CSP on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP, `frame-ancestors 'none'`, noindex at header + meta). TLS terminates at the edge in production. |
 
 ### Photo guarantee — "taken, never stored"
 
@@ -121,8 +136,10 @@ Production standalone (any Node host): `bun run build && bun run start`.
 |---|---|
 | `GEMINI_API_KEY` | Optional — enables live Gemini map intel (free tier); a built-in fallback key and the curated dataset cover deployments without it |
 | `GATE_PASSCODE` | Optional — overrides the default `187` |
+| `DRACH_KEY` | Optional — boss key for the reserved DRACH callsign (default `BIGBOSS27`; set a secret in production) |
+| `FAST_ATTEST_SECRET` | Optional — HMAC secret for nickname attestation tokens (set a secret in production) |
 | `GEMINI_MODEL` | Optional — must stay a FREE flash-class model (default `gemini-flash-latest`) |
-| `DATABASE_URL` | Optional — SQLite file for the Prisma map-intel cache (self-host nicety only) |
+| `DATABASE_URL` | Optional — SQLite file for Prisma (map-intel cache + the all-time member ledger) |
 
 ## Stack
 
@@ -132,10 +149,16 @@ Google Maps tiles · Web Crypto. No crypto libraries — native primitives only.
 ## Layout
 
 ```
-src/lib/crypto/       e2ee.ts (X25519 + HKDF + AES-GCM ratchet), keyvault.ts (RAM-only)
+src/lib/crypto/       e2ee.ts (X25519 + HKDF + AES-GCM ratchet), keyvault.ts (RAM-only),
+                      wanted-crypto.ts (gate-derived AES-GCM for the WANTED board)
 src/lib/fast/         session-manager, transport (HTTP sync client), memory-store,
-                      vault-db (IndexedDB, ct-only), ai.ts (Gemini, server-side)
-src/app/api/          gate · sessions/[code]/sync (the whole chat backend) · map/hotspots
-src/components/fast/  splash, gta-loading, gate, hub, chat, camera, map, primitives
-prisma/               optional MapCache schema (self-host intel cache)
+                      vault-db (IndexedDB, ct-only), ai.ts (Gemini, server-side),
+                      identity + identity-store (callsigns, attestation),
+                      live.ts + member-ledger.ts (presence + all-time roll), sa-geo.ts
+src/app/api/          gate · identity · presence · members · wanted ·
+                      sessions/[code]/sync (the whole chat backend) · map/hotspots
+src/components/fast/  splash, gate, callsign, hub, chat, camera, map, wanted, live,
+                      profile-sheet, offline-vault (PWA register + install), primitives
+public/               sw.js (offline vault service worker), manifest.webmanifest, icons
+prisma/               MapCache (intel cache) + MemberLedger (all-time member roll)
 ```

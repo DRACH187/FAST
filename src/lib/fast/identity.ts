@@ -12,6 +12,7 @@
  */
 
 import type { Role } from "@/lib/fast/identity-store";
+import { registerMember } from "@/lib/fast/member-ledger";
 
 const STORE_KEY = "fast_callsign_v1";
 
@@ -119,6 +120,10 @@ export async function registerCallsign(
       status: res.status,
     };
   }
+  // All-time member ledger — every registered callsign joins the permanent
+  // roll (hashed, zero-knowledge). Fire-and-forget: never blocks the login.
+  void registerMember(data.nickname);
+
   return {
     ok: true,
     identity: {

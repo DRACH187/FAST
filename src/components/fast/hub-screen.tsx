@@ -17,6 +17,7 @@ import {
   Radio,
   ShieldCheck,
   Trash2,
+  Users,
   X,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
@@ -24,6 +25,7 @@ import { REDUCED_MOTION, ScreenShell, pressFeedback, staggerAnimChildren } from 
 import { FastButton, FastInput, FastModal, WipeChip } from "@/components/fast/primitives";
 import { ProfileSheet } from "@/components/fast/profile-sheet";
 import { useLivePresence } from "@/lib/fast/live";
+import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 
@@ -105,7 +107,7 @@ export function HubScreen({
       const code = await onStart();
       setCreated(code);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not start session");
+      toast.error(err instanceof Error ? err.message : "Kon die ses nie skop nie");
     }
   }, [onStart]);
 
@@ -116,7 +118,7 @@ export function HubScreen({
         await onJoin(code);
         setJoinCode("");
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Could not join session");
+        toast.error(err instanceof Error ? err.message : "Kon nie by die ses intrek nie");
       }
     },
     [onJoin]
@@ -139,7 +141,7 @@ export function HubScreen({
       setDeleteCode("");
       toast.success(`Session ${code} terminated for all users`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not delete session");
+      toast.error(err instanceof Error ? err.message : "Kon die ses nie moer nie");
     }
   }, [deleteCode, onDelete]);
 
@@ -225,6 +227,13 @@ export function HubScreen({
                   <OnlineCount />
                 </span>
               </button>
+              <span
+                title="Total members ever — the permanent roll of the 187"
+                className="flex min-h-[34px] items-center gap-1.5 rounded-full border border-neutral-900 bg-neutral-950/60 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-500"
+              >
+                <Users className="size-3 text-neutral-600" aria-hidden />
+                <EverCount />
+              </span>
               <span className="flex-1" />
               <button
                 onClick={(e) => {
@@ -262,7 +271,7 @@ export function HubScreen({
               <FastInput
                 value={joinCode}
                 onChange={(e) => onJoinInput(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6))}
-                placeholder="ENTER CODE"
+                placeholder="SKRYF DIE KODE"
                 aria-label="6-letter session code"
                 inputMode="text"
                 autoCapitalize="characters"
@@ -310,8 +319,8 @@ export function HubScreen({
           <section data-anim aria-label="More" className="flex flex-col gap-2">
             <ActionRow
               icon={Trash2}
-              label="Wipe a session"
-              hint="Erase it for every participant"
+              label="Moer ’n ses uit"
+              hint="Vee dit vir elke deelnemer uit"
               onClick={() => setDeleteOpen(true)}
               disabled={busy}
             />
@@ -322,10 +331,10 @@ export function HubScreen({
         <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-24 pt-2">
           <div className="flex flex-col items-center gap-1.5 border-t border-neutral-900 pt-4 text-center">
             <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-600">
-              Keys live in this tab only
+              Sleutels bly net in dié tab — nooit op ’n server nie
             </p>
             <p className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-700">
-              Every chat wipes itself after 5 hours
+              Elke geselsie moer homself ná 5 uur · 187
             </p>
           </div>
         </footer>
@@ -492,6 +501,26 @@ function OnlineCount() {
   );
 }
 
+/** ALL-TIME member total — the permanent roll. Paints the cached number
+ *  instantly, then reconciles with the ledger every 5 minutes. */
+function EverCount() {
+  const [total, setTotal] = useState(cachedMemberTotal);
+  useEffect(() => {
+    let alive = true;
+    const pull = () =>
+      void fetchMemberTotal().then((t) => {
+        if (alive && typeof t === "number") setTotal(t);
+      });
+    pull();
+    const iv = window.setInterval(pull, 5 * 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+    };
+  }, []);
+  return <span>{total > 0 ? `${total} ever` : "ever"}</span>;
+}
+
 /** Bottom-nav tab — icon over label, 44px+ hit target, hairline active state. */
 function TabButton({
   icon: Icon,
@@ -581,10 +610,10 @@ function EmptyState() {
           </span>
         ))}
       </div>
-      <p className="mt-5 text-center text-xs text-neutral-500">No sessions open.</p>
+      <p className="mt-5 text-center text-xs text-neutral-500">Geen ses oop nie, ouen.</p>
       <p className="mx-auto mt-1.5 max-w-[250px] text-center text-[11px] leading-relaxed text-neutral-600">
-        Start one above and share the six-letter code. Several can run at
-        once — each wipes itself after five hours.
+        Skop een hierbo op en deel die ses-letter kode. ’n Klomp kan gelyktydig
+        loop — elke een moer homself ná vyf uur.
       </p>
     </div>
   );

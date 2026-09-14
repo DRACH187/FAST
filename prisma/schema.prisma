@@ -84,6 +84,21 @@ model WantedPost {
   @@index([createdAt])
 }
 
+// ALL-TIME MEMBER LEDGER — the "total members ever" counter.
+// Zero-knowledge: the client hashes its persistent device id + callsign with
+// SHA-256 (salted) and only the digest is ever transmitted. The server can
+// count unique digests but can never reverse them into a nickname or a
+// device. Rows are NEVER deleted — this is the permanent roll of honour.
+model MemberLedger {
+  id         String   @id // equals memberHash (already a salted digest)
+  memberHash String   @unique // SHA-256(salt|deviceId|nickname) — computed client-side
+  firstSeen  DateTime @default(now()) // first time this member ever entered
+  lastSeen   DateTime @default(now()) // latest re-assertion
+  visits     Int      @default(1) // how many times they came back
+
+  @@index([firstSeen])
+}
+
 // Outbound session-key distribution: the session key wrapped (encrypted)
 // per-recipient with an ephemeral ECDH exchange. Server stores the blob,
 // but without the recipient's private key (which never leaves the browser)

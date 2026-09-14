@@ -133,7 +133,7 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
 
         <div ref={cellsWrap} className="flex flex-col items-center gap-7">
           <h1 className="font-mono text-[11px] uppercase tracking-[0.42em] text-neutral-500">
-            Enter access code
+            Moer die kode in
           </h1>
 
           <div className="flex items-center gap-3 sm:gap-4" role="group" aria-label="Access code input">
@@ -161,9 +161,9 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
 
         <div className="flex h-4 items-center font-mono text-[10px] tracking-[0.3em] text-neutral-700" aria-live="polite">
           {busy ? (
-            <span className="animate-fast-pulse uppercase">Verifying</span>
+            <span className="animate-fast-pulse uppercase">Kontroleer…</span>
           ) : (
-            <span className="uppercase">{LEN} digits</span>
+            <span className="uppercase">3 syfers · 187 of voetsek</span>
           )}
         </div>
       </div>

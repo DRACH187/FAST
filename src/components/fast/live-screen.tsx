@@ -12,9 +12,10 @@ import { createPortal } from "react-dom";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { Radio, ShieldCheck, SignalHigh, UserRound, Wifi, WifiOff } from "lucide-react";
+import { Radio, ShieldCheck, SignalHigh, UserRound, Users, Wifi, WifiOff } from "lucide-react";
 import { REDUCED_MOTION, ScreenShell } from "@/components/fast/motion";
 import { useLivePresence } from "@/lib/fast/live";
+import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import type { Role } from "@/lib/fast/identity-store";
 
 gsap.registerPlugin(useGSAP);
@@ -25,6 +26,21 @@ function sinceLabel(ms: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h`;
+}
+
+/** ALL-TIME member total — the permanent roll of the 187. */
+function EverTotal() {
+  const [total, setTotal] = useState(cachedMemberTotal);
+  useEffect(() => {
+    let alive = true;
+    void fetchMemberTotal().then((t) => {
+      if (alive && typeof t === "number") setTotal(t);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return <span>{total > 0 ? total : "—"}</span>;
 }
 
 export function LiveScreen({
@@ -114,6 +130,13 @@ export function LiveScreen({
             </div>
             <div className="flex-1" />
             <span
+              title="Total members ever — the permanent roll of the 187"
+              className="hidden items-center gap-1.5 rounded-full border border-neutral-900 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-500 sm:flex"
+            >
+              <Users className="size-3 text-neutral-600" aria-hidden />
+              <EverTotal />
+            </span>
+            <span
               title={error ? "Last heartbeat failed — retrying" : "Heartbeat healthy"}
               className="flex items-center gap-1.5 rounded-full border border-neutral-800 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-400"
             >
@@ -127,10 +150,13 @@ export function LiveScreen({
           {sorted.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
               <SignalHigh className="size-7 text-neutral-700" aria-hidden />
-              <p className="text-sm text-neutral-300">Nobody on the board yet.</p>
+              <p className="text-sm text-neutral-300">Board is leeg, ouen.</p>
               <p className="max-w-[260px] text-[11px] leading-relaxed text-neutral-600">
                 Heartbeats land here within seconds of anyone opening FAST GUNS —
                 including you.
+              </p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-700">
+                All-time roll: <EverTotal />
               </p>
             </div>
           ) : (
@@ -185,7 +211,7 @@ export function LiveScreen({
 
         <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md">
           <p className="text-center font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-700">
-            callsigns are public display · no locations, no tracking, ever
+            naam is publiek · geen GPS, geen spoor — nooit nie
           </p>
         </footer>
       </ScreenShell>

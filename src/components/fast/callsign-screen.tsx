@@ -95,7 +95,7 @@ export function CallsignScreen({
           />
           <div className="flex flex-col gap-1.5">
             <h1 className="font-mono text-[11px] uppercase tracking-[0.42em] text-neutral-400">
-              Choose your callsign
+              Kies jou naam, ouen
             </h1>
             <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-600">
               {NICKNAME_RULE}
@@ -145,8 +145,8 @@ export function CallsignScreen({
                 </span>
               </div>
               <p className="text-[11px] leading-relaxed text-neutral-500">
-                “DRACH” is a protected callsign. Without the boss key it will
-                be refused — by everyone, forever.
+                “DRACH” is protected ground. Without the boss key you get
+                nothing — voetsek, moegoe.
               </p>
               <FastInput
                 type="password"
@@ -169,14 +169,14 @@ export function CallsignScreen({
             onClick={() => void submit()}
             className="w-full font-mono text-[11px] uppercase tracking-[0.28em]"
           >
-            {busy ? "Registering" : "Enter FAST GUNS"}
+            {busy ? "Brand jou naam in…" : "Stap in die block in"}
           </FastButton>
         </div>
 
         <div data-step className="flex items-center justify-center gap-2 text-center">
           <ShieldCheck className="size-3.5 text-neutral-700" aria-hidden />
           <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-700">
-            Callsigns are public · keys never leave this device
+            Jou naam is jou merk · sleutels bly op hierdie toestel
           </span>
         </div>
       </div>

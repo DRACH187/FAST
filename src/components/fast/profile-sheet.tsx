@@ -1,17 +1,20 @@
 "use client";
 
 /**
- * Profile — callsign ownership.
+ * Profile — callsign ownership + the OFFLINE VAULT.
  * The callsign is SAVED PERMANENTLY on this device the moment it is claimed.
  * From here an operative can switch to a new name or delete the saved one —
  * both wipe the local record for good and drop back to the callsign login.
+ * The vault section offers the one-tap native install (downloadable PWA,
+ * offline support) and shows the all-time roll of members ever.
  */
 
-import { useState } from "react";
-import { Crown, Fingerprint, Save, Trash2, UserRoundCog, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Crown, Download, Fingerprint, Save, Trash2, UserRoundCog, Users, X } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { FastButton, FastModal } from "@/components/fast/primitives";
-import { pressFeedback } from "@/components/fast/motion";
+import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
+import { canInstall, isStandalone, onInstallAvailability, promptInstall } from "@/components/fast/offline-vault";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 
 type ProfileProps = {
@@ -25,7 +28,44 @@ type ProfileProps = {
 
 export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: ProfileProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [installable, setInstallable] = useState(false);
+  const [installed, setInstalled] = useState(false);
+  const [memberTotal, setMemberTotal] = useState(cachedMemberTotal);
   const boss = callsign?.role === "boss";
+
+  useEffect(() => {
+    const off = onInstallAvailability((available) => {
+      setInstallable(available);
+      if (!available) setInstalled(isStandalone());
+    });
+    // defer the initial probe so we never setState synchronously in the effect
+    const probe = window.setTimeout(() => {
+      setInstallable(canInstall());
+      setInstalled(isStandalone());
+    }, 0);
+    let alive = true;
+    void fetchMemberTotal().then((t) => {
+      if (alive && typeof t === "number") setMemberTotal(t);
+    });
+    return () => {
+      alive = false;
+      off();
+      window.clearTimeout(probe);
+    };
+  }, [open]);
+
+  const download = async () => {
+    const outcome = await promptInstall();
+    if (outcome === "accepted") {
+      toast.success("FAST GUNS armed on this device — offline vault active.");
+      setInstalled(true);
+      setInstallable(false);
+    } else if (outcome === "dismissed") {
+      toast.error("Install dismissed — the block stays browser-bound.");
+    } else {
+      toast.error("Use your browser menu → “Add to Home Screen / Install app”.");
+    }
+  };
 
   const wipe = () => {
     setConfirmOpen(false);
@@ -94,6 +134,43 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
               <Trash2 className="size-4" aria-hidden />
               Delete nickname permanently
             </FastButton>
+          </div>
+
+          {/* offline vault — downloadable PWA + data saving */}
+          <div className="flex flex-col gap-2.5 rounded-2xl border border-neutral-900 px-4 py-4">
+            <p className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-600">
+              <Download className="size-3" aria-hidden />
+              offline vault
+            </p>
+            {installed ? (
+              <p className="text-[11px] leading-relaxed text-neutral-400">
+                <span className="font-semibold text-neutral-200">Installed.</span> FAST
+                GUNS runs from your home screen and keeps working when the network
+                dies — your vault stays on this device only.
+              </p>
+            ) : (
+              <>
+                <p className="text-[11px] leading-relaxed text-neutral-500">
+                  Download the block onto this device: full offline support, home-screen
+                  launch, near-zero data usage after first load.
+                </p>
+                <FastButton onClick={download} className="min-h-[48px] w-full">
+                  <Download className="size-4" aria-hidden />
+                  Download app
+                </FastButton>
+              </>
+            )}
+          </div>
+
+          {/* all-time roll */}
+          <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-900 px-4 py-3">
+            <span className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-600">
+              <Users className="size-3" aria-hidden />
+              all-time roll
+            </span>
+            <span className="font-mono text-xs font-bold tracking-[0.2em] text-neutral-300">
+              {memberTotal > 0 ? `${memberTotal} EVER` : "—"}
+            </span>
           </div>
 
           {/* device identity */}
