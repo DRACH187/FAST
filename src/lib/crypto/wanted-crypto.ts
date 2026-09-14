@@ -7,13 +7,19 @@
  * with PBKDF2-SHA512 (310k iterations) from the gate passcode — which every
  * legitimate user proved at the front door — plus a fixed board salt.
  *
+ * A post is a CASE FILE:
+ *  - one sealed text envelope (title, description, alias, threat, status…)
+ *  - N sealed media exhibits (JPEG stills / short MP4 clips), each with its
+ *    own IV — uploaded one exhibit per request (serverless body limits)
+ *  - N sealed comments in the sakboek, each with its own IV
+ *
  * Invariants:
- *  - the server stores ONLY { id, iv, ciphertext[, imgIv, imgCiphertext] };
- *    it cannot read a title, a description, an image, or an author
+ *  - the server stores ONLY ciphertext + IVs; it cannot read a title, a
+ *    description, an image, a clip, a comment, or an author
  *  - the passcode and every derived key live in RAM only (keyvault), never
  *    in LocalStorage / IndexedDB / cookies
- *  - images decrypt straight into RAM blob URLs and are revoked + dropped
- *    the moment their card unmounts
+ *  - media decrypt straight into RAM blob URLs and are revoked the moment
+ *    their viewer unmounts — nothing media-related ever touches disk
  */
 
 import { b64ToBuf, bufToB64 } from "@/lib/crypto/e2ee";
@@ -30,7 +36,7 @@ function toBuf(b64: string): Uint8Array<ArrayBuffer> {
 const PBKDF2_ITERATIONS = 310_000;
 const BOARD_SALT = "FAST.WANTED.BOARD.v1.aes256gcm";
 
-/** Content payload carried INSIDE the encrypted envelope. */
+/** Content payload carried INSIDE the encrypted text envelope. */
 export type WantedStatus = "WANTED" | "ELIMINATED";
 
 export type WantedContent = {
@@ -45,12 +51,41 @@ export type WantedContent = {
   byRole: string; // "member" | "boss"
 };
 
+/** One sealed exhibit on the wire. */
+export type WantedMediaWire = {
+  iv: string;
+  ciphertext: string;
+  mime: string; // "image/jpeg" | "video/mp4" | "video/webm"
+};
+
+/** One sealed sakboek note on the wire. */
+export type WantedCommentWire = {
+  id: string;
+  iv: string;
+  ciphertext: string;
+  creatorFp: string;
+  createdAt: string;
+};
+
+/** Comment payload carried INSIDE the encrypted comment envelope. */
+export type WantedComment = {
+  text: string;
+  by: string;
+  byRole: string;
+};
+
 export type WantedWire = {
   id: string;
   iv: string;
   ciphertext: string;
+  /** v2 exhibits (ciphertext rides only in single-exhibit fetches). */
+  media?: WantedMediaWire[];
+  /** Legacy v1 single-image fields — still accepted, folded into media. */
   imgIv?: string;
   imgCiphertext?: string;
+  /** Light descriptors served with the list (no ciphertext). */
+  mediaList?: Array<{ mime: string; size: number }>;
+  comments?: WantedCommentWire[];
   creatorFp: string;
   createdAt: string;
   expiresAt: string;
@@ -92,10 +127,31 @@ export function resetWantedKey(): void {
 
 // ------------------------------------------------------------------ seal
 
-export async function encryptWantedPost(
+/** A media exhibit prepared for sealing: raw bytes + locked mime. */
+export type MediaDraft = {
+  bytes: Uint8Array;
+  mime: "image/jpeg" | "video/mp4" | "video/webm";
+};
+
+/** Per-exhibit ciphertext ceiling on the wire (b64 chars, ~3.4MB binary). */
+export const MAX_MEDIA_CIPHER_CHARS = 3_600_000;
+
+async function encryptBytes(bytes: Uint8Array): Promise<{ iv: string; ciphertext: string }> {
+  const key = await deriveBoardKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await subtle.encrypt(
+    { name: "AES-GCM", iv, tagLength: 128 },
+    key,
+    new Uint8Array(bytes)
+  );
+  return { iv: bufToB64(iv), ciphertext: bufToB64(ciphertext) };
+}
+
+/** Seal the text envelope + every exhibit. Throws when an exhibit is too fat. */
+export async function encryptWantedCase(
   content: WantedContent,
-  imageBytes: Uint8Array | null
-): Promise<Pick<WantedWire, "iv" | "ciphertext" | "imgIv" | "imgCiphertext">> {
+  media: MediaDraft[]
+): Promise<{ iv: string; ciphertext: string; media: WantedMediaWire[] }> {
   const key = await deriveBoardKey();
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await subtle.encrypt(
@@ -104,25 +160,33 @@ export async function encryptWantedPost(
     te.encode(JSON.stringify(content))
   );
 
-  let imgIv: string | undefined;
-  let imgCiphertext: string | undefined;
-  if (imageBytes && imageBytes.length > 0) {
-    const iv2 = crypto.getRandomValues(new Uint8Array(12));
-    const enc = await subtle.encrypt(
-      { name: "AES-GCM", iv: iv2, tagLength: 128 },
-      key,
-      new Uint8Array(imageBytes)
-    );
-    imgIv = bufToB64(iv2);
-    imgCiphertext = bufToB64(enc);
+  const sealed: WantedMediaWire[] = [];
+  for (const item of media) {
+    const sealedItem = await encryptBytes(item.bytes);
+    if (sealedItem.ciphertext.length > MAX_MEDIA_CIPHER_CHARS) {
+      throw new Error("media-too-big");
+    }
+    sealed.push({ ...sealedItem, mime: item.mime });
   }
 
   return {
     iv: bufToB64(iv),
     ciphertext: bufToB64(ciphertext),
-    imgIv,
-    imgCiphertext,
+    media: sealed,
   };
+}
+
+/** Legacy v1 composer shim — single image in, one-exhibit case out. */
+export async function encryptWantedPost(
+  content: WantedContent,
+  imageBytes: Uint8Array | null
+): Promise<{ iv: string; ciphertext: string; media: WantedMediaWire[] }> {
+  return encryptWantedCase(
+    content,
+    imageBytes && imageBytes.length > 0
+      ? [{ bytes: imageBytes, mime: "image/jpeg" }]
+      : []
+  );
 }
 
 export async function decryptWantedContent(post: {
@@ -156,19 +220,73 @@ export async function decryptWantedContent(post: {
   }
 }
 
+/** Decrypt one exhibit into a RAM blob (correct mime, zero disk). */
+export async function decryptWantedMedia(item: {
+  iv: string;
+  ciphertext: string;
+  mime: string;
+}): Promise<Blob | null> {
+  try {
+    const key = await deriveBoardKey();
+    const plain = await subtle.decrypt(
+      { name: "AES-GCM", iv: toBuf(item.iv), tagLength: 128 },
+      key,
+      toBuf(item.ciphertext)
+    );
+    const mime = item.mime.startsWith("video/") ? item.mime : "image/jpeg";
+    return new Blob([plain], { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+/** Legacy v1 single-image decrypt — folded into the media pipeline. */
 export async function decryptWantedImage(post: {
   imgIv?: string;
   imgCiphertext?: string;
 }): Promise<Blob | null> {
   if (!post.imgIv || !post.imgCiphertext) return null;
+  return decryptWantedMedia({
+    iv: post.imgIv,
+    ciphertext: post.imgCiphertext,
+    mime: "image/jpeg",
+  });
+}
+
+// --------------------------------------------------------------- sakboek
+
+/** Seal one sakboek note. */
+export async function encryptWantedComment(note: WantedComment): Promise<{
+  iv: string;
+  ciphertext: string;
+}> {
+  const key = await deriveBoardKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await subtle.encrypt(
+    { name: "AES-GCM", iv, tagLength: 128 },
+    key,
+    te.encode(JSON.stringify(note))
+  );
+  return { iv: bufToB64(iv), ciphertext: bufToB64(ciphertext) };
+}
+
+export async function decryptWantedComment(comment: {
+  iv: string;
+  ciphertext: string;
+}): Promise<WantedComment | null> {
   try {
     const key = await deriveBoardKey();
     const plain = await subtle.decrypt(
-      { name: "AES-GCM", iv: toBuf(post.imgIv), tagLength: 128 },
+      { name: "AES-GCM", iv: toBuf(comment.iv), tagLength: 128 },
       key,
-      toBuf(post.imgCiphertext)
+      toBuf(comment.ciphertext)
     );
-    return new Blob([plain], { type: "image/jpeg" });
+    const parsed = JSON.parse(td.decode(plain)) as Partial<WantedComment>;
+    return {
+      text: String(parsed.text ?? "").slice(0, 400),
+      by: String(parsed.by ?? "GHOST").slice(0, 24),
+      byRole: parsed.byRole === "boss" ? "boss" : "member",
+    };
   } catch {
     return null;
   }

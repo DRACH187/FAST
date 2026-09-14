@@ -10,27 +10,29 @@
  */
 
 import { useEffect, useState } from "react";
-import { Crown, Download, Fingerprint, Save, Trash2, UserRoundCog, Users, X } from "lucide-react";
+import { Crown, Download, Save, Trash2, Users, X } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { FastButton, FastModal } from "@/components/fast/primitives";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import { canInstall, isStandalone, onInstallAvailability, promptInstall } from "@/components/fast/offline-vault";
+import { PROFILE_DELETE, PROFILE_DELETED, PROFILE_FOOTER, PROFILE_INSTALL, PROFILE_ROLL_LABEL, PROFILE_TITLE, pick } from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 
 type ProfileProps = {
   open: boolean;
   onClose: () => void;
   callsign: CallsignIdentity | null;
-  identityFp: string;
   /** Clears the saved callsign permanently and returns to the login. */
   onSwitch: () => void;
 };
 
-export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: ProfileProps) {
+export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installable, setInstallable] = useState(false);
   const [installed, setInstalled] = useState(false);
   const [memberTotal, setMemberTotal] = useState(cachedMemberTotal);
+  const [deleteLabel] = useState(() => pick(PROFILE_DELETE));
+  const [footerLine] = useState(() => pick(PROFILE_FOOTER));
   const boss = callsign?.role === "boss";
 
   useEffect(() => {
@@ -71,7 +73,7 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
     setConfirmOpen(false);
     onClose();
     onSwitch();
-    toast.success("Nickname deleted permanently — claim a new one.");
+    toast.success(PROFILE_DELETED);
   };
 
   return (
@@ -79,14 +81,11 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
       <FastModal open={open} onClose={onClose} label="Profile">
         <div className="flex flex-col gap-4 p-5">
           <div className="flex items-center justify-between">
-            <h2 className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.3em] text-neutral-400">
-              <UserRoundCog className="size-4" aria-hidden />
-              Profile
-            </h2>
+            <h2 className="gang-font text-3xl text-white">{PROFILE_TITLE}</h2>
             <button
               onClick={onClose}
               aria-label="Close profile"
-              className="flex size-8 items-center justify-center rounded-full border border-neutral-800 text-neutral-500 outline-none transition-colors hover:border-neutral-500 hover:text-white"
+              className="flex size-9 items-center justify-center rounded-full border border-neutral-800 text-neutral-400 outline-none transition-colors hover:border-neutral-400 hover:text-white"
             >
               <X className="size-4" aria-hidden />
             </button>
@@ -95,20 +94,20 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
           {/* current callsign */}
           <div className="flex items-center justify-between gap-3 rounded-2xl border border-neutral-800 bg-black px-4 py-4">
             <div className="flex min-w-0 flex-col gap-1">
-              <span className="font-mono text-[8px] uppercase tracking-[0.28em] text-neutral-600">
-                current callsign
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-500">
+                jou naam
               </span>
               <span
-                className={`truncate text-xl font-bold text-white ${
-                  boss ? "drach-font text-2xl" : "tracking-wide"
+                className={`truncate text-2xl text-white ${
+                  boss ? "drach-font text-3xl" : "gang-font text-3xl"
                 }`}
               >
-                {callsign?.nickname ?? "UNCLAIMED"}
+                {callsign?.nickname ?? "GEEN NAAM"}
               </span>
             </div>
             {boss && (
-              <span className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-600 px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-200">
-                <Crown className="size-3" aria-hidden />
+              <span className="flex shrink-0 items-center gap-1 rounded-full border border-neutral-500 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-100">
+                <Crown className="size-3.5" aria-hidden />
                 boss
               </span>
             )}
@@ -116,11 +115,9 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
 
           {/* permanence status */}
           <div className="flex items-start gap-3 rounded-2xl border border-neutral-900 px-4 py-3.5">
-            <Save className="mt-0.5 size-4 shrink-0 text-neutral-500" aria-hidden />
-            <p className="text-[11px] leading-relaxed text-neutral-400">
-              <span className="font-semibold text-neutral-200">Saved permanently.</span>{" "}
-              This device keeps your nickname through reloads and restarts until
-              you delete or replace it here.
+            <Save className="mt-0.5 size-4 shrink-0 text-neutral-400" aria-hidden />
+            <p className="text-[13px] font-semibold leading-relaxed text-neutral-300">
+              <span className="font-bold text-neutral-100">Permanent gebrand.</span> Hierdie toestel hou jou naam deur alles — tot jy hom hier vee of vervang.
             </p>
           </div>
 
@@ -129,61 +126,51 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
             <FastButton
               variant="ghost"
               onClick={() => setConfirmOpen(true)}
-              className="min-h-[48px] w-full"
+              className="min-h-[50px] w-full font-mono text-xs uppercase tracking-[0.2em]"
             >
               <Trash2 className="size-4" aria-hidden />
-              Delete nickname permanently
+              {deleteLabel}
             </FastButton>
           </div>
 
           {/* offline vault — downloadable PWA + data saving */}
           <div className="flex flex-col gap-2.5 rounded-2xl border border-neutral-900 px-4 py-4">
-            <p className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-600">
-              <Download className="size-3" aria-hidden />
-              offline vault
+            <p className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-400">
+              <Download className="size-3.5" aria-hidden />
+              kluis
             </p>
             {installed ? (
-              <p className="text-[11px] leading-relaxed text-neutral-400">
-                <span className="font-semibold text-neutral-200">Installed.</span> FAST
-                GUNS runs from your home screen and keeps working when the network
-                dies — your vault stays on this device only.
+              <p className="text-[13px] font-semibold leading-relaxed text-neutral-300">
+                <span className="font-bold text-neutral-100">Geïnstalleer.</span> FAST GUNS loop van jou tuisskerm af en bly loop wanneer die netwerk vrek — die kluis bly op hierdie toestel alleen.
               </p>
             ) : (
               <>
-                <p className="text-[11px] leading-relaxed text-neutral-500">
-                  Download the block onto this device: full offline support, home-screen
-                  launch, near-zero data usage after first load.
+                <p className="text-[13px] font-semibold leading-relaxed text-neutral-400">
+                  Sit die blok op hierdie toestel: volle af-lyn krag, tuisskerm-lanseering, amper geen data ná eerste laai.
                 </p>
-                <FastButton onClick={download} className="min-h-[48px] w-full">
+                <FastButton onClick={download} className="min-h-[50px] w-full font-mono text-xs uppercase tracking-[0.2em]">
                   <Download className="size-4" aria-hidden />
-                  Download app
+                  {PROFILE_INSTALL}
                 </FastButton>
               </>
             )}
           </div>
 
           {/* all-time roll */}
-          <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-900 px-4 py-3">
-            <span className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-600">
-              <Users className="size-3" aria-hidden />
-              all-time roll
+          <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-800 px-4 py-3.5">
+            <span className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-400">
+              <Users className="size-3.5" aria-hidden />
+              {PROFILE_ROLL_LABEL}
             </span>
-            <span className="font-mono text-xs font-bold tracking-[0.2em] text-neutral-300">
-              {memberTotal > 0 ? `${memberTotal} EVER` : "—"}
+            <span className="font-mono text-sm font-black tracking-[0.2em] text-neutral-100">
+              {memberTotal > 0 ? `${memberTotal} OIT` : "—"}
             </span>
           </div>
 
-          {/* device identity */}
-          <div className="flex flex-col gap-1.5 rounded-2xl border border-dashed border-neutral-900 px-4 py-3">
-            <p className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-600">
-              <Fingerprint className="size-3" aria-hidden />
-              device identity
-            </p>
-            <p className="font-mono text-[9px] leading-relaxed text-neutral-500">
-              {identityFp.slice(0, 8)}·{identityFp.slice(8, 16)} — session keys live in RAM
-              only and die with this tab.
-            </p>
-          </div>
+          {/* house footer */}
+          <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+            {footerLine}
+          </p>
         </div>
       </FastModal>
 
@@ -191,22 +178,20 @@ export function ProfileSheet({ open, onClose, callsign, identityFp, onSwitch }: 
       <FastModal open={confirmOpen} onClose={() => setConfirmOpen(false)} label="Confirm deletion">
         <div className="flex flex-col gap-4 p-5">
           <div className="flex flex-col items-center gap-2 text-center">
-            <span className="flex size-11 items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-950">
+            <span className="flex size-12 items-center justify-center rounded-2xl border border-neutral-800 bg-neutral-950">
               <Trash2 className="size-5 text-neutral-300" aria-hidden />
             </span>
-            <h2 className="text-sm font-bold text-white">Delete nickname permanently?</h2>
-            <p className="max-w-[260px] text-[11px] leading-relaxed text-neutral-500">
-              <span className="font-semibold text-neutral-300">{callsign?.nickname}</span> is
-              wiped from this device for good. You will need to claim a fresh callsign before
-              entering the block.
+            <h2 className="text-base font-bold text-white">Vee die naam permanent uit?</h2>
+            <p className="max-w-[280px] text-[13px] font-semibold leading-relaxed text-neutral-400">
+              <span className="font-bold text-neutral-200">{callsign?.nickname}</span> word van hierdie toestel geskop vir goed. Jy moet ‘n nuwe naam claim voor jy die blok weer instap.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <FastButton variant="ghost" onClick={() => setConfirmOpen(false)} className="min-h-[46px]">
-              Keep it
+            <FastButton variant="ghost" onClick={() => setConfirmOpen(false)} className="min-h-[48px]">
+              Hou hom
             </FastButton>
-            <FastButton onClick={wipe} className="min-h-[46px]">
-              Delete
+            <FastButton onClick={wipe} className="min-h-[48px]">
+              Vee uit
             </FastButton>
           </div>
         </div>

@@ -5,7 +5,9 @@ import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { toast } from "@/components/fast/toast";
+import { useHouseLine } from "@/components/fast/motion";
 import { ScreenShell, shakeElement } from "@/components/fast/motion";
+import { GATE_BUSY, GATE_HINT, GATE_TITLE, pick } from "@/lib/fast/copy";
 
 gsap.registerPlugin(useGSAP);
 
@@ -25,6 +27,9 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
   const cellsWrap = useRef<HTMLDivElement>(null);
   const inflight = useRef(false);
+  const title = useHouseLine(GATE_TITLE);
+  const hint = useHouseLine(GATE_HINT);
+  const busyLine = useHouseLine(GATE_BUSY);
 
   // GSAP: staggered cell entrance
   useGSAP(
@@ -128,13 +133,11 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
           height={256}
           priority
           draggable={false}
-          className="h-auto w-12 mix-blend-screen opacity-70"
+          className="h-auto w-16 mix-blend-screen opacity-80"
         />
 
-        <div ref={cellsWrap} className="flex flex-col items-center gap-7">
-          <h1 className="font-mono text-[11px] uppercase tracking-[0.42em] text-neutral-500">
-            Moer die kode in
-          </h1>
+        <div ref={cellsWrap} className="flex flex-col items-center gap-8">
+          <h1 className="gang-font text-3xl text-neutral-100">{title}</h1>
 
           <div className="flex items-center gap-3 sm:gap-4" role="group" aria-label="Access code input">
             {digits.map((d, i) => (
@@ -153,17 +156,17 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
                 maxLength={1}
                 disabled={busy}
                 aria-label={`Digit ${i + 1} of ${LEN}`}
-                className="size-14 rounded-xl border border-neutral-800 bg-neutral-950 text-center font-mono text-2xl text-neutral-100 caret-transparent outline-none transition-colors focus:border-neutral-300 disabled:opacity-50 sm:size-16"
+                className="size-16 rounded-xl border border-neutral-800 bg-neutral-950 text-center font-mono text-3xl font-black text-neutral-100 caret-transparent outline-none transition-colors focus:border-neutral-300 disabled:opacity-50 sm:size-18"
               />
             ))}
           </div>
         </div>
 
-        <div className="flex h-4 items-center font-mono text-[10px] tracking-[0.3em] text-neutral-700" aria-live="polite">
+        <div className="flex h-5 items-center font-mono text-[11px] font-bold uppercase tracking-[0.24em] text-neutral-500" aria-live="polite">
           {busy ? (
-            <span className="animate-fast-pulse uppercase">Kontroleer…</span>
+            <span className="animate-fast-pulse uppercase">{busyLine}</span>
           ) : (
-            <span className="uppercase">3 syfers · 187 of voetsek</span>
+            <span className="uppercase">{hint}</span>
           )}
         </div>
       </div>

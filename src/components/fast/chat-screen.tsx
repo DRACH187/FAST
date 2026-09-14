@@ -20,7 +20,7 @@ import {
   Radio,
   SendHorizontal,
   ShieldAlert,
-  ShieldCheck,
+  Swords,
   Trash2,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
@@ -29,6 +29,7 @@ import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/co
 import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
+import { CHAT_EMPTY, CHAT_PLACEHOLDER, CHAT_TTL_TICKER, pick } from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
@@ -49,8 +50,8 @@ function dayLabel(d: Date): string {
   const n = new Date();
   const startToday = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
   const t = d.getTime();
-  if (t >= startToday) return "TODAY";
-  if (t >= startToday - 86_400_000) return "YESTERDAY";
+  if (t >= startToday) return "VANDAG";
+  if (t >= startToday - 86_400_000) return "GISTER";
   return dayFmt.format(d).toUpperCase();
 }
 
@@ -64,6 +65,7 @@ type ChatProps = {
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
+  onOpenIntel: () => void;
   onDelete: (code: string) => Promise<void>;
 };
 
@@ -77,6 +79,7 @@ export function ChatScreen({
   onOpenMap,
   onOpenWanted,
   onOpenLive,
+  onOpenIntel,
   onDelete,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
@@ -86,6 +89,9 @@ export function ChatScreen({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [newBelow, setNewBelow] = useState(false);
+  const [emptyLine] = useState(() => pick(CHAT_EMPTY));
+  const [placeholder] = useState(() => pick(CHAT_PLACEHOLDER));
+  const [ttlTicker] = useState(() => pick(CHAT_TTL_TICKER));
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -262,21 +268,21 @@ export function ChatScreen({
               className="h-8 w-8 shrink-0 mix-blend-screen"
             />
             <div className="flex min-w-0 flex-col leading-tight">
-              <span className="truncate font-mono text-sm font-bold tracking-[0.22em] text-white">
+              <span className="truncate font-mono text-base font-black tracking-[0.22em] text-white">
                 {session.code}
               </span>
-              <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-500">
+              <span className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">
                 <span className="flex items-center gap-0.5" aria-hidden>
                   {Array.from({ length: Math.min(live, 3) }).map((_, i) => (
                     <span key={i} className="size-1 rounded-full bg-neutral-300" />
                   ))}
                 </span>
-                {live > 1 ? `${live} live` : "solo"}
+                {live > 1 ? `${live} LIVE` : "SOLO"}
                 {session.hasKey ? (
-                  <Lock className="size-3 text-neutral-400" aria-label="Session key active" />
+                  <Lock className="size-3.5 text-neutral-300" aria-label="Session key active" />
                 ) : (
                   <KeyRound
-                    className="size-3 animate-fast-pulse text-neutral-300"
+                    className="size-3.5 animate-fast-pulse text-neutral-200"
                     aria-label="Awaiting session key"
                   />
                 )}
@@ -284,16 +290,6 @@ export function ChatScreen({
             </div>
             <WipeChip expiresAt={session.expiresAt} now={now} compact className="ml-auto" />
           </div>
-
-          {session.hasKey && (
-            <span
-              className="hidden items-center gap-1 rounded-full border border-neutral-800 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-400 sm:flex"
-              title="Messages are sealed with per-message keys in your browser"
-            >
-              <ShieldCheck className="size-3.5" aria-hidden />
-              e2e
-            </span>
-          )}
 
           <FastPopover
             label="Session menu"
@@ -319,7 +315,7 @@ export function ChatScreen({
                 />
                 <FastMenuItem
                   icon={MapIcon}
-                  label="Surroundings map"
+                  label="Kaart — wie loop wat"
                   onSelect={() => {
                     close();
                     onOpenMap();
@@ -327,15 +323,23 @@ export function ChatScreen({
                 />
                 <FastMenuItem
                   icon={Crosshair}
-                  label="Wanted board"
+                  label="Wanted blad"
                   onSelect={() => {
                     close();
                     onOpenWanted();
                   }}
                 />
                 <FastMenuItem
+                  icon={Swords}
+                  label="War Room — vra die Boetie"
+                  onSelect={() => {
+                    close();
+                    onOpenIntel();
+                  }}
+                />
+                <FastMenuItem
                   icon={Radio}
-                  label="Live operatives"
+                  label="Live ouens"
                   onSelect={() => {
                     close();
                     onOpenLive();
@@ -344,7 +348,7 @@ export function ChatScreen({
                 <div className="mx-1.5 my-1 h-px bg-neutral-800" />
                 <FastMenuItem
                   icon={Trash2}
-                  label="Delete for everyone"
+                  label="Verbrand vir almal"
                   onSelect={() => {
                     close();
                     setDeleteOpen(true);
@@ -358,11 +362,11 @@ export function ChatScreen({
 
       {/* BOSS PRESENT strip — attested, blackletter, unforgeable */}
       {bossHere && (
-        <div className="relative z-10 flex items-center justify-center gap-2 border-b border-neutral-800 bg-neutral-950 py-1.5">
-          <Crown className="size-3.5 text-neutral-300" aria-hidden />
-          <span className="drach-font text-lg leading-none text-white">{bossHere}</span>
-          <span className="font-mono text-[8px] uppercase tracking-[0.24em] text-neutral-500">
-            is in this session
+        <div className="relative z-10 flex items-center justify-center gap-2 border-b border-neutral-800 bg-neutral-950 py-2">
+          <Crown className="size-4 text-neutral-200" aria-hidden />
+          <span className="drach-font text-xl leading-none text-white">{bossHere}</span>
+          <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
+            is in die werf
           </span>
         </div>
       )}
@@ -377,16 +381,16 @@ export function ChatScreen({
       >
         {session.messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <div className="flex size-12 items-center justify-center rounded-2xl border border-neutral-900 bg-neutral-950">
-              <Lock className="size-5 text-neutral-600" aria-hidden />
+            <div className="flex size-14 items-center justify-center rounded-2xl border border-neutral-900 bg-neutral-950">
+              <Flame className="size-6 text-neutral-500" aria-hidden />
             </div>
-            <p className="max-w-[230px] text-xs leading-relaxed text-neutral-600">
-              Stilte, ouen. Alles hier is op hierdie toestel geseël — en die hele
-              kamer moer homself oor vyf uur.
+            <p className="max-w-[260px] text-sm font-bold leading-relaxed text-neutral-300">{emptyLine}</p>
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+              {ttlTicker}
             </p>
           </div>
         ) : (
-          <div className="mx-auto flex max-w-md flex-col">
+          <div className="mx-auto flex max-w-md flex-col sm:max-w-lg lg:max-w-2xl">
             {sections.map((sec) => (
               <Fragment key={sec.key}>
                 <div className="my-4 flex items-center gap-3" role="separator" aria-label={sec.label}>
@@ -406,11 +410,11 @@ export function ChatScreen({
                         const { name, boss } = senderName(group.senderFp);
                         return boss ? (
                           <span className="flex items-center gap-1.5 px-1">
-                            <Crown className="size-3 text-neutral-400" aria-hidden />
-                            <span className="drach-font text-base leading-none text-white">{name}</span>
+                            <Crown className="size-3.5 text-neutral-300" aria-hidden />
+                            <span className="drach-font text-lg leading-none text-white">{name}</span>
                           </span>
                         ) : (
-                          <span className="px-1 font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-500">
+                          <span className="px-1 font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">
                             {name}
                           </span>
                         );
@@ -439,10 +443,10 @@ export function ChatScreen({
               ref={newChipRef}
               onClick={jumpToLatest}
               aria-label="New messages — jump to latest"
-              className="flex h-8 items-center gap-1.5 rounded-full bg-white px-3 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-black shadow-[0_8px_24px_rgba(0,0,0,0.7)] outline-none"
+              className="flex h-9 items-center gap-1.5 rounded-full bg-white px-3.5 font-mono text-[11px] font-black uppercase tracking-[0.18em] text-black shadow-[0_8px_24px_rgba(0,0,0,0.7)] outline-none"
             >
-              <ArrowDown className="size-3" aria-hidden />
-              New
+              <ArrowDown className="size-3.5" aria-hidden />
+              NUUT
             </button>
           )}
           {!atBottom && (
@@ -462,14 +466,14 @@ export function ChatScreen({
         {!session.hasKey && (
           <div className="mb-2.5 flex justify-center">
             <span
-              className="animate-fast-pulse rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-400"
+              className="animate-fast-pulse rounded-full border border-neutral-800 bg-neutral-950 px-3.5 py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300"
               aria-live="polite"
             >
-              Awaiting key…
+              Wag vir die sleutel…
             </span>
           </div>
         )}
-        <div className="mx-auto flex max-w-md items-end gap-2">
+        <div className="mx-auto flex max-w-md items-end gap-2 sm:max-w-lg lg:max-w-2xl">
           <button
             onClick={(e) => {
               pressFeedback(e.currentTarget);
@@ -477,7 +481,7 @@ export function ChatScreen({
             }}
             disabled={!session.hasKey}
             aria-label="Take photo"
-            className="flex size-11 shrink-0 items-center justify-center rounded-full border border-neutral-800 text-neutral-300 outline-none transition-colors hover:border-neutral-600 hover:text-white disabled:pointer-events-none disabled:opacity-30"
+            className="flex size-12 shrink-0 items-center justify-center rounded-full border border-neutral-800 bg-neutral-950 text-neutral-200 outline-none transition-colors hover:border-neutral-500 hover:text-white disabled:pointer-events-none disabled:opacity-30"
           >
             <Camera className="size-5" aria-hidden />
           </button>
@@ -501,11 +505,11 @@ export function ChatScreen({
                   void send();
                 }
               }}
-              placeholder={session.hasKey ? "Sê jou sê…" : "Gesluit"}
+              placeholder={session.hasKey ? placeholder : "Gesluit"}
               disabled={!session.hasKey}
               rows={1}
               aria-label="Message"
-              className="max-h-[120px] min-h-[40px] flex-1 resize-none bg-transparent py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 disabled:cursor-not-allowed"
+              className="max-h-[120px] min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-[16px] font-semibold leading-snug text-neutral-100 outline-none placeholder:font-semibold placeholder:text-neutral-600 disabled:cursor-not-allowed"
             />
             <button
               onClick={(e) => {
@@ -514,7 +518,7 @@ export function ChatScreen({
               }}
               disabled={!session.hasKey || !draft.trim() || sending}
               aria-label="Send message"
-              className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white text-black outline-none transition-all hover:bg-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+              className="flex size-12 shrink-0 items-center justify-center rounded-full bg-white text-black outline-none transition-all hover:bg-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
             >
               <SendHorizontal className="size-5" aria-hidden />
             </button>
@@ -538,27 +542,25 @@ export function ChatScreen({
       {/* code dialog */}
       <FastModal open={codeOpen} onClose={() => setCodeOpen(false)} label="Session code">
         <div className="flex flex-col items-center gap-5 text-center">
-          <h2 className="font-mono text-[10px] uppercase tracking-[0.35em] text-neutral-500">
-            Session code
-          </h2>
+          <h2 className="gang-font text-3xl text-white">DIE KODE</h2>
           <button
             onClick={(e) => {
               pressFeedback(e.currentTarget);
               void navigator.clipboard.writeText(session.code);
-              toast.success("Code copied");
+              toast.success("Kode gekopieer. Stuur hom.");
             }}
             aria-label="Copy session code"
-            className="flex min-h-[56px] w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 bg-black py-4 outline-none transition-all hover:border-neutral-500 active:scale-[0.98]"
+            className="flex min-h-[64px] w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 bg-black py-4 outline-none transition-all hover:border-neutral-400 active:scale-[0.98]"
           >
-            <span className="font-mono text-2xl font-bold tracking-[0.3em] text-white [padding-left:0.3em]">
+            <span className="font-mono text-3xl font-black tracking-[0.3em] text-white [padding-left:0.3em]">
               {session.code}
             </span>
-            <Copy className="size-4 text-neutral-400" aria-hidden />
+            <Copy className="size-5 text-neutral-400" aria-hidden />
           </button>
           <div className="flex flex-col gap-2">
-            <p className="text-xs text-neutral-400">Anyone with this code can join while it lives.</p>
-            <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-600">
-              This session wipes itself after 5 hours
+            <p className="text-sm font-bold text-neutral-300">Wie die kode het, kom in. Wie nie, bly buite.</p>
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+              Hierdie werf vee homself uit ná 5 uur
             </p>
           </div>
         </div>
@@ -572,13 +574,12 @@ export function ChatScreen({
       >
         <div className="flex flex-col gap-4 text-center">
           <div>
-            <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
-              <ShieldAlert className="size-4 text-neutral-300" aria-hidden />
-              Wipe {session.code} for everyone?
+            <h2 className="flex items-center justify-center gap-2 text-base font-bold text-neutral-100">
+              <ShieldAlert className="size-5 text-neutral-200" aria-hidden />
+              Verbrand {session.code} vir almal?
             </h2>
-            <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-              Every member is ejected immediately and the ciphertext history is
-              erased from all of them. There is no undo.
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">
+              Elke ouen word op die slag uitgeskop en die geskiedenis word van elkeen se toestel geskop. Daar is geen undo nie.
             </p>
           </div>
           <div className="flex flex-col gap-2">
@@ -586,15 +587,15 @@ export function ChatScreen({
               onClick={() => {
                 setDeleteOpen(false);
                 void onDelete(session.code).catch((err) =>
-                  toast.error(err instanceof Error ? err.message : "Delete failed")
+                  toast.error(err instanceof Error ? err.message : "Kon nie brand nie")
                 );
               }}
-              className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
+              className="w-full font-mono text-sm uppercase tracking-[0.24em]"
             >
-              Wipe for everyone
+              VERBRAND VIR ALMAL
             </FastButton>
             <FastButton variant="ghost" className="w-full" onClick={() => setDeleteOpen(false)}>
-              Cancel
+              Bly maar
             </FastButton>
           </div>
         </div>
@@ -623,11 +624,11 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-3.5 py-2.5 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-4 py-3 will-change-transform"
       >
-        <ShieldAlert className="size-3.5 shrink-0 text-neutral-400" aria-hidden />
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-400">
-          Unreadable — integrity check failed
+        <ShieldAlert className="size-4 shrink-0 text-neutral-300" aria-hidden />
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-300">
+          Onleesbaar — die pakkie is geknock
         </span>
       </div>
     );
@@ -636,11 +637,11 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-3.5 py-2.5 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-4 py-3 will-change-transform"
       >
-        <Lock className="size-3 shrink-0 text-neutral-600" aria-hidden />
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-neutral-600">
-          Sealed — key not held
+        <Lock className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-500">
+          Gesluit — jy het nie die sleutel nie
         </span>
       </div>
     );
@@ -649,15 +650,15 @@ function Bubble({ message }: { message: DecryptedMessage }) {
   return (
     <div
       ref={ref}
-      className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed will-change-transform ${
+      className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-[15px] font-semibold leading-relaxed will-change-transform ${
         message.mine
           ? "rounded-br-md bg-white text-black"
-          : "rounded-bl-md border border-neutral-800 bg-neutral-900 text-neutral-100"
+          : "rounded-bl-md border border-neutral-800 bg-neutral-900 text-neutral-50"
       }`}
     >
       {message.text}
       {clock && (
-        <span className="mt-1 block text-right font-mono text-[9px] tabular-nums text-neutral-500">
+        <span className="mt-1 block text-right font-mono text-[10px] tabular-nums text-neutral-400">
           {clock}
         </span>
       )}
@@ -758,8 +759,8 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
         ref={ref}
         className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 px-3.5 py-2.5 will-change-transform"
       >
-        <Flame className="size-3.5 shrink-0 text-neutral-600" aria-hidden />
-        <span className="font-mono text-[11px] uppercase tracking-wider text-neutral-600">burned · zeroed</span>
+        <Flame className="size-4 shrink-0 text-neutral-500" aria-hidden />
+        <span className="font-mono text-[12px] font-bold uppercase tracking-wider text-neutral-500">gebrand · genulifieer</span>
       </div>
     );
   }
@@ -783,14 +784,14 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
         <button
           onClick={reveal}
           aria-label="Tap to view photo — it burns afterwards"
-          className="flex min-h-[96px] w-44 flex-col items-center justify-center gap-2 px-4 py-6 outline-none sm:w-52"
+          className="flex min-h-[104px] w-48 flex-col items-center justify-center gap-2 px-4 py-6 outline-none sm:w-56"
         >
-          <EyeOff className="size-5 text-neutral-500" aria-hidden />
-          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-neutral-400">
-            tap to view
+          <EyeOff className="size-5 text-neutral-400" aria-hidden />
+          <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
+            tap om te sien
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">
-            burns after viewing
+          <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+            brand daarna weg
           </span>
         </button>
       )}

@@ -6,8 +6,18 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { toast } from "@/components/fast/toast";
+import { useHouseLine } from "@/components/fast/motion";
 import { ScreenShell, shakeElement } from "@/components/fast/motion";
 import { FastButton, FastInput } from "@/components/fast/primitives";
+import {
+  BOSS_KEY_PROMPT,
+  CALLSIGN_BUSY,
+  CALLSIGN_CTA,
+  CALLSIGN_FOOTER,
+  CALLSIGN_INVALID,
+  CALLSIGN_TITLE,
+  pick,
+} from "@/lib/fast/copy";
 import {
   NICKNAME_RULE,
   isReserved,
@@ -35,6 +45,10 @@ export function CallsignScreen({
   const [bossKey, setBossKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [drachAttempt, setDrachAttempt] = useState(false);
+  const title = useHouseLine(CALLSIGN_TITLE);
+  const cta = useHouseLine(CALLSIGN_CTA);
+  const busyLine = useHouseLine(CALLSIGN_BUSY);
+  const footer = useHouseLine(CALLSIGN_FOOTER);
 
   // live-preview the callsign with its final typography (DRACH gets the
   // blackletter boss treatment the moment the name matches)
@@ -58,7 +72,7 @@ export function CallsignScreen({
     if (busy) return;
     const nick = validateNickname(nickname);
     if (!nick) {
-      toast.error(`Invalid callsign — ${NICKNAME_RULE}`);
+      toast.error(pick(CALLSIGN_INVALID));
       if (shell.current) shakeElement(shell.current.querySelector("[data-nickwrap]") as HTMLElement);
       return;
     }
@@ -93,23 +107,21 @@ export function CallsignScreen({
             draggable={false}
             className="h-auto w-16 mix-blend-screen"
           />
-          <div className="flex flex-col gap-1.5">
-            <h1 className="font-mono text-[11px] uppercase tracking-[0.42em] text-neutral-400">
-              Kies jou naam, ouen
-            </h1>
-            <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-600">
+          <div className="flex flex-col gap-2">
+            <h1 className="gang-font text-3xl text-neutral-100">{title}</h1>
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-500">
               {NICKNAME_RULE}
             </p>
           </div>
         </div>
 
         {/* live preview of the callsign */}
-        <div data-step aria-hidden className="flex h-14 items-center justify-center">
+        <div data-step aria-hidden className="flex h-16 items-center justify-center">
           <span
             className={
               isDrach
-                ? "drach-font text-3xl text-white"
-                : "font-mono text-xl font-bold tracking-[0.3em] text-neutral-300 uppercase"
+                ? "drach-font text-4xl text-white"
+                : "gang-font text-4xl text-neutral-200"
             }
           >
             {nickname.trim() ? nickname.trim().toUpperCase() : "…"}
@@ -137,16 +149,15 @@ export function CallsignScreen({
           </div>
 
           {drachAttempt && (
-            <div className="flex flex-col gap-2 rounded-xl border border-neutral-700 bg-neutral-950 p-3.5">
+            <div className="flex flex-col gap-2.5 rounded-xl border border-neutral-700 bg-neutral-950 p-4">
               <div className="flex items-center gap-2">
-                <KeyRound className="size-3.5 text-neutral-300" aria-hidden />
-                <span className="font-mono text-[9px] uppercase tracking-[0.28em] text-neutral-300">
-                  Boss key required
+                <KeyRound className="size-4 text-neutral-300" aria-hidden />
+                <span className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-neutral-200">
+                  Boss sleutel nodig
                 </span>
               </div>
-              <p className="text-[11px] leading-relaxed text-neutral-500">
-                “DRACH” is protected ground. Without the boss key you get
-                nothing — voetsek, moegoe.
+              <p className="text-[13px] font-semibold leading-relaxed text-neutral-400">
+                {BOSS_KEY_PROMPT}
               </p>
               <FastInput
                 type="password"
@@ -155,7 +166,7 @@ export function CallsignScreen({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void submit();
                 }}
-                placeholder="BOSS KEY"
+                placeholder="BOSS SLEUTEL"
                 aria-label="Boss key"
                 autoComplete="off"
                 className="font-mono tracking-[0.2em]"
@@ -167,16 +178,16 @@ export function CallsignScreen({
             size="lg"
             disabled={busy || nickname.trim().length < 2}
             onClick={() => void submit()}
-            className="w-full font-mono text-[11px] uppercase tracking-[0.28em]"
+            className="w-full font-mono text-sm uppercase tracking-[0.28em]"
           >
-            {busy ? "Brand jou naam in…" : "Stap in die block in"}
+            {busy ? busyLine : cta}
           </FastButton>
         </div>
 
         <div data-step className="flex items-center justify-center gap-2 text-center">
-          <ShieldCheck className="size-3.5 text-neutral-700" aria-hidden />
-          <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-700">
-            Jou naam is jou merk · sleutels bly op hierdie toestel
+          <ShieldCheck className="size-4 text-neutral-600" aria-hidden />
+          <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+            {footer}
           </span>
         </div>
       </div>

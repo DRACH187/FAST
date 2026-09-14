@@ -28,6 +28,9 @@ const securityHeaders = [
       "connect-src 'self'",
       "media-src 'self' blob:",
       "worker-src 'self' blob:",
+      // the SURROUNDINGS basemap is a real Google Maps embed — the only
+      // third-party frame allowed, pinned to Google's maps hosts
+      "frame-src https://maps.google.com https://www.google.com https://maps.googleapis.com",
       "object-src 'none'",
       "base-uri 'none'",
       "form-action 'self'",

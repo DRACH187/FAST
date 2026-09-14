@@ -16,6 +16,7 @@ import { Radio, ShieldCheck, SignalHigh, UserRound, Users, Wifi, WifiOff } from 
 import { REDUCED_MOTION, ScreenShell } from "@/components/fast/motion";
 import { useLivePresence } from "@/lib/fast/live";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
+import { LIVE_EMPTY, LIVE_NO_GPS, LIVE_ROLE_BOSS, LIVE_ROLE_MEMBER, LIVE_SUB, LIVE_TITLE, pick } from "@/lib/fast/copy";
 import type { Role } from "@/lib/fast/identity-store";
 
 gsap.registerPlugin(useGSAP);
@@ -58,6 +59,8 @@ export function LiveScreen({
   // 5s re-render so the "online Xs" labels stay honest
   const [, setTick] = useState(0);
   const [shownOpen, setShownOpen] = useState(open);
+  const [sub] = useState(() => pick(LIVE_SUB));
+  const [emptyLine] = useState(() => pick(LIVE_EMPTY));
 
   // derive-during-render pattern (React-sanctioned, no cascading effect)
   if (open !== shownOpen) {
@@ -103,7 +106,7 @@ export function LiveScreen({
   return createPortal(
     <div className="fixed inset-0 z-[92] bg-black" role="dialog" aria-label="Live operatives">
       <ScreenShell as="div" className="flex h-dvh flex-col">
-        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 backdrop-blur-md">
+        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
           <div className="flex h-14 items-center gap-2 px-3">
             <button
               onClick={onClose}
@@ -121,11 +124,9 @@ export function LiveScreen({
               className="h-8 w-8 mix-blend-screen"
             />
             <div className="flex flex-col">
-              <span className="font-mono text-xs font-bold uppercase tracking-[0.34em] text-white">
-                Live
-              </span>
-              <span className="font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-600">
-                heartbeat refreshed every 8s
+              <span className="gang-font text-2xl leading-none text-white">{LIVE_TITLE}</span>
+              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+                {sub}
               </span>
             </div>
             <div className="flex-1" />
@@ -146,17 +147,17 @@ export function LiveScreen({
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-3 pb-24 pt-3">
+        <div className="mx-auto w-full max-w-md flex-1 overflow-y-auto px-3 pb-24 pt-3 sm:max-w-xl lg:max-w-2xl">
           {sorted.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
-              <SignalHigh className="size-7 text-neutral-700" aria-hidden />
-              <p className="text-sm text-neutral-300">Board is leeg, ouen.</p>
-              <p className="max-w-[260px] text-[11px] leading-relaxed text-neutral-600">
-                Heartbeats land here within seconds of anyone opening FAST GUNS —
-                including you.
+              <SignalHigh className="size-8 text-neutral-600" aria-hidden />
+              <p className="text-base font-bold text-neutral-200">{emptyLine}</p>
+              <p className="max-w-[280px] text-[13px] font-semibold leading-relaxed text-neutral-500">
+                Heartbeats land hier binne sekondes van enige ouen wat FAST GUNS oopmaak —
+                ook jy.
               </p>
-              <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-700">
-                All-time roll: <EverTotal />
+              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+                All-time rol: <EverTotal />
               </p>
             </div>
           ) : (
@@ -190,15 +191,15 @@ export function LiveScreen({
                       <span
                         className={`truncate ${
                           boss
-                            ? "drach-font text-xl leading-tight text-white"
-                            : "font-mono text-sm font-bold uppercase tracking-[0.14em] text-neutral-200"
+                            ? "drach-font text-2xl leading-tight text-white"
+                            : "font-mono text-base font-black uppercase tracking-[0.12em] text-neutral-100"
                         }`}
                       >
                         {u.nickname}
                       </span>
-                      <span className="font-mono text-[8px] uppercase tracking-[0.2em] text-neutral-600">
-                        {boss ? "BOSS" : "operative"}
-                        {me ? " · this device" : ""} · online {sinceLabel(u.since)}
+                      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+                        {boss ? LIVE_ROLE_BOSS : LIVE_ROLE_MEMBER}
+                        {me ? " · hierdie toestel" : ""} · aanlyn {sinceLabel(u.since)}
                       </span>
                     </span>
                     {boss && <ShieldCheck className="size-4 shrink-0 text-neutral-400" aria-hidden />}
@@ -210,8 +211,8 @@ export function LiveScreen({
         </div>
 
         <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md">
-          <p className="text-center font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-700">
-            naam is publiek · geen GPS, geen spoor — nooit nie
+          <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+            naam is publiek · {LIVE_NO_GPS}
           </p>
         </footer>
       </ScreenShell>

@@ -90,9 +90,28 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Gritty law: everything reads HEAVY. Bigger base, bolder weights. */
+    font-weight: 600;
     font-feature-settings: "ss01", "cv05";
     overscroll-behavior-y: none;
     -webkit-tap-highlight-color: transparent;
+  }
+  b,
+  strong {
+    font-weight: 800;
+  }
+  /* Text scale law: on phones everything steps UP a size. Mobile first. */
+  html {
+    font-size: 16px;
+    /* Edge guard: full-bleed headers and bottom bars can poke 2-3px past the
+       viewport on rotated notches. `clip` kills any accidental horizontal
+       overflow without creating a scroll container — sticky/fixed keep working. */
+    overflow-x: clip;
+  }
+  @media (max-width: 640px) {
+    html {
+      font-size: 17.5px;
+    }
   }
   ::selection {
     background: #fafafa;
@@ -195,11 +214,9 @@
   }
 }
 
-/* -------- DRACH — boss callsign typography (blackletter + glow) ----------
-   Self-hosted Pirata One (12 KB woff2, /fonts). The boss callsign renders
-   in this face everywhere it appears: hub chip, live board, chat sender
-   labels, the in-session strip and boss-tier alerts. Monochrome glow keeps
-   the zero-colour contract while making the name unmistakable. */
+/* ------------ NUMBERS GANG TYPE — blackletter house font -----------------
+   Pirata One carries every major title, wordmark and war-cry on the site:
+   the tattoo-parlour lettering of the Numbers. Bold everywhere else. */
 @font-face {
   font-family: "Pirata One";
   font-style: normal;
@@ -208,6 +225,13 @@
   src: url("/fonts/pirata-one.woff2") format("woff2");
 }
 
+.gang-font {
+  font-family: "Pirata One", "Blackletter", serif;
+  font-weight: 400;
+  letter-spacing: 0.045em;
+}
+
+/* The boss name keeps its own glow on top of the house face. */
 .drach-font {
   font-family: "Pirata One", "Blackletter", serif;
   letter-spacing: 0.08em;
@@ -222,4 +246,5 @@
     text-shadow: none;
   }
 }
+
 /* drach v2 */

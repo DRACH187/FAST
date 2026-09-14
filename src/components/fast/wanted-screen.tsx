@@ -1,19 +1,22 @@
 "use client";
 
 /**
- * FAST — WANTED BOARD
- * ===================
- * Encrypted bulletins: any operative can post a WANTED entry — an image, a
- * title and a full description (plus alias, last-seen, threat level, status
- * and bounty). EVERYTHING is sealed client-side with AES-256-GCM before it
- * leaves the tab; the server stores ciphertext only. Images decrypt into
- * RAM blob URLs that are revoked the moment their card unmounts — nothing
- * image-related ever touches disk.
+ * FAST — WANTED BOARD (case files)
+ * ================================
+ * Every entry is a CASE: a sealed text envelope plus up to 8 sealed media
+ * exhibits (JPEG stills / short MP4/WebM clips) and a sealed comment thread
+ * ("DIE SAKBOEK"). Everything is AES-256-GCM sealed client-side before it
+ * leaves the tab; the server stores ciphertext only.
  *
- * Board features: live filter tabs (status), search across decrypted
- * content, threat meters, poster attribution (callsign + boss styling),
- * creator-only burn, 60s auto-refresh, cold-start self-heal via client
- * reseed, 24h retention (server + client).
+ * The case view reads like an evidence file: gallery LEFT (main viewer +
+ * exhibit strip), info + sakboek comments RIGHT. On phones it stacks —
+ * gallery first, then the paper work. Exhibits decrypt straight into RAM
+ * blob URLs and are revoked when the board unmounts — nothing media-related
+ * ever touches disk.
+ *
+ * Board features: live status filters, search across decrypted content,
+ * threat meters, poster attribution, creator-only burn, 60s auto-refresh,
+ * cold-start self-heal via the IndexedDB ciphertext vault, 24h retention.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -27,10 +30,14 @@ import {
   Check,
   Crosshair,
   FileWarning,
+  Film,
   Flame,
   ImagePlus,
+  Images,
   Lock,
+  MessageSquare,
   Search,
+  Send,
   Skull,
   Trash2,
   X,
@@ -39,14 +46,43 @@ import { toast } from "@/components/fast/toast";
 import { REDUCED_MOTION, ScreenShell, pressFeedback } from "@/components/fast/motion";
 import { FastButton, FastInput, FastModal } from "@/components/fast/primitives";
 import {
+  decryptWantedComment,
   decryptWantedContent,
-  decryptWantedImage,
-  encryptWantedPost,
+  decryptWantedMedia,
+  encryptWantedCase,
+  encryptWantedComment,
+  MAX_MEDIA_CIPHER_CHARS,
   resetWantedKey,
+  type MediaDraft,
+  type WantedComment,
   type WantedContent,
+  type WantedStatus,
   type WantedWire,
 } from "@/lib/crypto/wanted-crypto";
+import { loadVault, saveVault, upsertWire } from "@/lib/crypto/wanted-vault";
 import { getGatePasscode } from "@/lib/crypto/keyvault";
+import {
+  WANTED_ADD_MEDIA,
+  WANTED_CASE_EMPTY,
+  WANTED_CASE_COUNT,
+  WANTED_COMMENTS_SUB,
+  WANTED_COMMENTS_TITLE,
+  WANTED_COMMENT_EMPTY,
+  WANTED_COMMENT_PLACEHOLDER,
+  WANTED_COMMENT_POST,
+  WANTED_COMMENT_POSTED,
+  WANTED_COMPOSE_SUB,
+  WANTED_COMPOSE_TITLE,
+  WANTED_EMPTY,
+  WANTED_MEDIA_LABEL,
+  WANTED_MEDIA_LIMIT,
+  WANTED_MEDIA_TOO_BIG,
+  WANTED_MEDIA_TOO_MANY,
+  WANTED_MEDIA_UNREADABLE,
+  WANTED_SUB,
+  WANTED_VARADOS_JAB,
+  pick,
+} from "@/lib/fast/copy";
 import type { Role } from "@/lib/fast/identity-store";
 
 gsap.registerPlugin(useGSAP);
@@ -54,16 +90,16 @@ gsap.registerPlugin(useGSAP);
 // ------------------------------------------------------------------ consts
 
 const LIST_URL = "/api/wanted";
-const CACHE_KEY = "fast_wanted_cache_v1";
 const REFRESH_MS = 60_000;
-const MAX_IMG_BYTES = 900_000; // post-encryption b64 cap (~1.2MB)
+const MAX_MEDIA = 8;
+const MAX_VIDEO_BYTES = 2_600_000;
 const STATUS_ALL = "ALL";
-type StatusFilter = typeof STATUS_ALL | WantedContent["status"];
+type StatusFilter = typeof STATUS_ALL | WantedStatus;
 
 /** ONLY two categories exist on this board: WANTED and ELIMINATED. */
-const STATUSES: WantedContent["status"][] = ["WANTED", "ELIMINATED"];
+const STATUSES: WantedStatus[] = ["WANTED", "ELIMINATED"];
 
-const STATUS_ICON: Record<WantedContent["status"], typeof Skull> = {
+const STATUS_ICON: Record<WantedStatus, typeof Skull> = {
   WANTED: Crosshair,
   ELIMINATED: Skull,
 };
@@ -90,7 +126,7 @@ type Draft = {
   lastSeen: string;
   bounty: string;
   threat: 1 | 2 | 3 | 4 | 5;
-  status: WantedContent["status"];
+  status: WantedStatus;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -103,13 +139,16 @@ const EMPTY_DRAFT: Draft = {
   status: "WANTED",
 };
 
-// ------------------------------------------------------- image pre-processing
+/** A staged exhibit: raw sealed-later bytes + a RAM preview URL. */
+type StagedMedia = MediaDraft & { previewUrl: string };
+
+// ------------------------------------------------------- media pre-processing
 
 /** Downscale + re-encode to JPEG in-memory. Returns null if unreadable/too big. */
 async function prepareImage(file: File): Promise<Uint8Array | null> {
   try {
     const bitmap = await createImageBitmap(file);
-    const max = 900;
+    const max = 1280;
     const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
@@ -124,34 +163,33 @@ async function prepareImage(file: File): Promise<Uint8Array | null> {
     ctx.drawImage(bitmap, 0, 0, w, h);
     bitmap.close?.();
     const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.72));
-    if (!blob || blob.size > MAX_IMG_BYTES) return null;
+    if (!blob || blob.size > MAX_VIDEO_BYTES) return null;
     return new Uint8Array(await blob.arrayBuffer());
   } catch {
     return null;
   }
 }
 
-// ------------------------------------------------------------- cached wire
-
-/** Ciphertext-only cache used to reseed the board after a server cold start. */
-function loadCache(): WantedWire[] {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as WantedWire[];
-    return Array.isArray(parsed) ? parsed.slice(0, 120) : [];
-  } catch {
-    return [];
+/** Stage one picked file into the case (image → JPEG downscale, video → raw). */
+async function stageFile(file: File): Promise<StagedMedia | null> {
+  const isVideo = file.type.startsWith("video/");
+  if (isVideo) {
+    if (file.size > MAX_VIDEO_BYTES) return null;
+    if (!/^(video\/mp4|video\/webm|video\/quicktime)$/.test(file.type)) return null;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      bytes,
+      mime: file.type === "video/webm" ? "video/webm" : "video/mp4",
+      previewUrl: URL.createObjectURL(file),
+    };
   }
-}
-
-function saveCache(posts: WantedWire[]): void {
-  try {
-    // ciphertext-only persistence: no keys at rest, zero knowledge
-    localStorage.setItem(CACHE_KEY, JSON.stringify(posts.slice(0, 120)));
-  } catch {
-    /* storage full/unavailable — cache is best-effort */
-  }
+  const bytes = await prepareImage(file);
+  if (!bytes) return null;
+  return {
+    bytes,
+    mime: "image/jpeg",
+    previewUrl: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" })),
+  };
 }
 
 // -------------------------------------------------------------------- types
@@ -174,53 +212,80 @@ type WantedScreenProps = {
 
 export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: WantedScreenProps) {
   const [mounted, setMounted] = useState(false);
+  const [shownOpen, setShownOpen] = useState(open);
   const [entries, setEntries] = useState<BoardEntry[]>([]);
   const [filter, setFilter] = useState<StatusFilter>(STATUS_ALL);
   const [query, setQuery] = useState("");
   const [fetching, setFetching] = useState(false);
   const [netError, setNetError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [sub] = useState(() => pick(WANTED_SUB));
+  const [emptyLine] = useState(() => pick(WANTED_EMPTY));
+  const [varadosJab] = useState(() => pick(WANTED_VARADOS_JAB));
 
   const [composeOpen, setComposeOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
-  const [imageBytes, setImageBytes] = useState<Uint8Array | null>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [staged, setStaged] = useState<StagedMedia[]>([]);
   const [posting, setPosting] = useState(false);
 
-  const [detail, setDetail] = useState<BoardEntry | null>(null);
-  const [shownOpen, setShownOpen] = useState(open);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const inflight = useRef(false);
-  const objectUrls = useRef<Set<string>>(new Set());
+  /** RAM blob-URL cache for decrypted exhibits — revoked on unmount. */
+  const exhibitUrls = useRef<Map<string, string>>(new Map());
 
   // derive-during-render (React-sanctioned) — no cascading effect
   if (open !== shownOpen) {
     setShownOpen(open);
     if (open) setMounted(true);
   }
+
+  const detail = useMemo(
+    () => entries.find((e) => e.wire.id === detailId) ?? null,
+    [entries, detailId]
+  );
+
   useEffect(() => {
     if (!mounted) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (composeOpen) setComposeOpen(false);
-        else if (detail) setDetail(null);
+        else if (detailId) setDetailId(null);
         else onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mounted, onClose, composeOpen, detail]);
-
-  const revokeAll = useCallback(() => {
-    for (const url of objectUrls.current) URL.revokeObjectURL(url);
-    objectUrls.current.clear();
-  }, []);
+  }, [mounted, onClose, composeOpen, detailId]);
 
   // ------------------------------------------------------------- data flow
+
+  /** Fetch one sealed exhibit from the server. */
+  const fetchExhibit = useCallback(
+    async (postId: string, index: number): Promise<{ iv: string; ciphertext: string; mime: string } | null> => {
+      try {
+        const res = await fetch(`${LIST_URL}?id=${encodeURIComponent(postId)}&media=${index}`, {
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          iv?: string;
+          ciphertext?: string;
+          mime?: string;
+        };
+        if (!res.ok || data.ok !== true || !data.iv || !data.ciphertext || !data.mime) return null;
+        return { iv: data.iv, ciphertext: data.ciphertext, mime: data.mime };
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
 
   const fetchBoard = useCallback(async () => {
     if (inflight.current) return;
@@ -234,7 +299,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         error?: string;
       };
       if (!res.ok || data.ok !== true || !Array.isArray(data.posts)) {
-        setNetError(typeof data.error === "string" ? data.error : "Board unreachable");
+        setNetError(typeof data.error === "string" ? data.error : "Die blad is weg — probeer weer");
         return;
       }
       setNetError(null);
@@ -243,9 +308,9 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
       let posts = data.posts;
 
       // cold-start self-heal: a wiped board gets its ciphertext re-uploaded
-      // from the local cache (still zero-knowledge — blobs only)
+      // from the local vault (still zero-knowledge — blobs only)
       if (posts.length === 0) {
-        const cached = loadCache();
+        const cached = await loadVault();
         if (cached.length > 0) {
           try {
             await fetch(LIST_URL, {
@@ -258,8 +323,18 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
                   id: p.id,
                   iv: p.iv,
                   ciphertext: p.ciphertext,
-                  imgIv: p.imgIv,
-                  imgCiphertext: p.imgCiphertext,
+                  media: (p.media ?? []).slice(0, 4).map((m) => ({
+                    iv: m.iv,
+                    ciphertext: m.ciphertext,
+                    mime: m.mime,
+                  })),
+                  comments: (p.comments ?? []).slice(0, 60).map((c) => ({
+                    id: c.id,
+                    iv: c.iv,
+                    ciphertext: c.ciphertext,
+                    creatorFp: c.creatorFp,
+                    createdAt: c.createdAt,
+                  })),
                   creatorFp: p.creatorFp,
                   createdAt: p.createdAt,
                 })),
@@ -270,7 +345,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             const againData = (await again.json().catch(() => ({}))) as { posts?: WantedWire[] };
             if (again.ok && Array.isArray(againData.posts) && againData.posts.length > 0) {
               posts = againData.posts;
-              toast.info(`Board restored — ${posts.length} encrypted entries`);
+              toast.info(`Board restored — ${posts.length} encrypted cases`);
             }
           } catch {
             /* reseed is best-effort */
@@ -278,7 +353,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         }
       }
 
-      saveCache(posts);
+      void saveVault(posts);
 
       // decrypt everything we can hold a key for (null content = sealed)
       const decrypted = await Promise.all(
@@ -290,7 +365,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
       );
       setEntries(decrypted);
     } catch {
-      setNetError("Network unreachable");
+      setNetError("Netwerk onbereikbaar");
     } finally {
       setFetching(false);
       inflight.current = false;
@@ -314,10 +389,14 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
     };
   }, [open, mounted, fetchBoard, onClose]);
 
-  // unmount -> revoke every RAM blob URL
+  // unmount -> revoke every RAM blob URL (exhibits + staged previews)
   useEffect(() => {
-    if (mounted) return () => revokeAll();
-  }, [mounted, revokeAll]);
+    if (!mounted) return;
+    return () => {
+      for (const url of exhibitUrls.current.values()) URL.revokeObjectURL(url);
+      exhibitUrls.current.clear();
+    };
+  }, [mounted]);
 
   // GSAP: card stagger on entries change
   useGSAP(
@@ -335,45 +414,56 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
 
   // ------------------------------------------------------------- mutations
 
-  const pickImage = useCallback(async (file: File | undefined) => {
-    if (!file) return;
-    const bytes = await prepareImage(file);
-    if (!bytes) {
-      toast.error("Image unreadable or too large");
-      return;
-    }
-    setImageBytes(bytes);
-    const prev = imageUrl;
-    const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
-    objectUrls.current.add(url);
-    setImageUrl(url);
-    if (prev) {
-      URL.revokeObjectURL(prev);
-      objectUrls.current.delete(prev);
-    }
-  }, [imageUrl]);
+  const unstageAll = useCallback(() => {
+    for (const s of staged) URL.revokeObjectURL(s.previewUrl);
+    setStaged([]);
+  }, [staged]);
 
-  const clearImage = useCallback(() => {
-    if (imageUrl) {
-      URL.revokeObjectURL(imageUrl);
-      objectUrls.current.delete(imageUrl);
-    }
-    setImageBytes(null);
-    setImageUrl(null);
-    if (fileRef.current) fileRef.current.value = "";
-  }, [imageUrl]);
+  const stageFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      const room = MAX_MEDIA - staged.length;
+      if (room <= 0) {
+        toast.error(WANTED_MEDIA_TOO_MANY);
+        return;
+      }
+      const picked = [...files].slice(0, room);
+      if (picked.length < files.length) toast.error(WANTED_MEDIA_TOO_MANY);
+      const next: StagedMedia[] = [];
+      for (const file of picked) {
+        const item = await stageFile(file);
+        if (!item) {
+          toast.error(WANTED_MEDIA_UNREADABLE);
+          continue;
+        }
+        next.push(item);
+      }
+      if (next.length > 0) setStaged((s) => [...s, ...next]);
+      if (galleryInputRef.current) galleryInputRef.current.value = "";
+      if (cameraInputRef.current) cameraInputRef.current.value = "";
+    },
+    [staged.length]
+  );
+
+  const unstageAt = useCallback((index: number) => {
+    setStaged((s) => {
+      const item = s[index];
+      if (item) URL.revokeObjectURL(item.previewUrl);
+      return s.filter((_, i) => i !== index);
+    });
+  }, []);
 
   const publish = useCallback(async () => {
     if (posting) return;
     const title = draft.title.trim();
     const description = draft.description.trim();
     if (!title) {
-      toast.error("’n WANTED entry sonder titel? Voetsek.");
+      toast.error("’n WANTED case sonder titel? Voetsek.");
       return;
     }
     setPosting(true);
     try {
-      const blob = await encryptWantedPost(
+      const sealed = await encryptWantedCase(
         {
           title: title.slice(0, 80),
           description: description.slice(0, 4000),
@@ -385,34 +475,69 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
           by: myNickname,
           byRole: myRole,
         },
-        imageBytes
+        staged.map((s) => ({ bytes: s.bytes, mime: s.mime }))
       );
+      const id = crypto.randomUUID();
       const res = await fetch(LIST_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "create",
           fingerprint: myFp,
-          post: { id: crypto.randomUUID(), ...blob },
+          post: { id, iv: sealed.iv, ciphertext: sealed.ciphertext },
         }),
         cache: "no-store",
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || data.ok !== true) {
-        toast.error(typeof data.error === "string" ? data.error : "Publish failed");
+        toast.error(typeof data.error === "string" ? data.error : "Kon nie plaas nie");
         return;
       }
-      toast.success("WANTED entry posted — sealed and live");
+      // exhibits ride one per request (serverless body limits)
+      let exhibitsDropped = 0;
+      for (let i = 0; i < sealed.media.length; i++) {
+        const item = sealed.media[i];
+        if (item.ciphertext.length > MAX_MEDIA_CIPHER_CHARS) {
+          exhibitsDropped += 1;
+          continue;
+        }
+        try {
+          const attachRes = await fetch(LIST_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "attach",
+              fingerprint: myFp,
+              id,
+              index: i,
+              item: { iv: item.iv, ciphertext: item.ciphertext, mime: item.mime },
+            }),
+            cache: "no-store",
+          });
+          if (!attachRes.ok) exhibitsDropped += 1;
+        } catch {
+          exhibitsDropped += 1;
+        }
+      }
+      toast.success(
+        exhibitsDropped > 0
+          ? "Die saak hang — sommige bewysstukke was te vet vir die pyplyn"
+          : "Die saak hang. Laat hulle kom kyk."
+      );
       setComposeOpen(false);
       setDraft(EMPTY_DRAFT);
-      clearImage();
+      unstageAll();
       await fetchBoard();
-    } catch {
-      toast.error("Network unreachable — entry not posted");
+    } catch (err) {
+      if (err instanceof Error && err.message === "media-too-big") {
+        toast.error(WANTED_MEDIA_TOO_BIG);
+      } else {
+        toast.error("Network unreachable — case not posted");
+      }
     } finally {
       setPosting(false);
     }
-  }, [clearImage, draft, fetchBoard, imageBytes, myFp, myNickname, myRole, posting]);
+  }, [draft, fetchBoard, myFp, myNickname, myRole, posting, staged, unstageAll]);
 
   const burn = useCallback(
     async (entry: BoardEntry) => {
@@ -425,14 +550,71 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
         if (!res.ok || data.ok !== true) {
-          toast.error(typeof data.error === "string" ? data.error : "Burn failed");
+          toast.error(typeof data.error === "string" ? data.error : "Kon nie brand nie");
           return;
         }
-        toast.success("Entry burned for everyone");
-        setDetail(null);
+        toast.success("Afgehaal — vir almal, vir goed");
+        setDetailId(null);
         await fetchBoard();
       } catch {
-        toast.error("Network unreachable");
+        toast.error("Netwerk onbereikbaar");
+      }
+    },
+    [fetchBoard, myFp]
+  );
+
+  const addComment = useCallback(
+    async (entry: BoardEntry, text: string) => {
+      const clean = text.trim().slice(0, 400);
+      if (!clean) return;
+      try {
+        const sealed = await encryptWantedComment({
+          text: clean,
+          by: myNickname,
+          byRole: myRole,
+        } satisfies WantedComment);
+        const res = await fetch(LIST_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "comment",
+            fingerprint: myFp,
+            id: entry.wire.id,
+            comment: { id: crypto.randomUUID(), ...sealed },
+          }),
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || data.ok !== true) {
+          toast.error(typeof data.error === "string" ? data.error : "Kon nie skryf nie");
+          return;
+        }
+        toast.success(WANTED_COMMENT_POSTED);
+        await fetchBoard();
+      } catch {
+        toast.error("Netwerk onbereikbaar");
+      }
+    },
+    [fetchBoard, myFp, myNickname, myRole]
+  );
+
+  const removeComment = useCallback(
+    async (entry: BoardEntry, commentId: string) => {
+      try {
+        await fetch(LIST_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "uncomment",
+            fingerprint: myFp,
+            id: entry.wire.id,
+            commentId,
+          }),
+          cache: "no-store",
+        });
+        await fetchBoard();
+      } catch {
+        toast.error("Netwerk onbereikbaar");
       }
     },
     [fetchBoard, myFp]
@@ -468,12 +650,13 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
     <div className="fixed inset-0 z-[92] bg-black" role="dialog" aria-label="WANTED board">
       <ScreenShell as="div" className="flex h-dvh flex-col">
         {/* ---------------------------------------------------------- header */}
-        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 backdrop-blur-md">
-          <div className="flex h-14 items-center gap-2 px-3">
+        {/* safe-area top: PWA standalone must clear the notch/status bar */}
+        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+          <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-2 px-3 sm:px-4">
             <button
               onClick={onClose}
               aria-label="Close WANTED board"
-              className="flex size-11 items-center justify-center rounded-xl text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+              className="flex size-11 shrink-0 items-center justify-center rounded-xl text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
             >
               <ArrowLeft className="size-5" aria-hidden />
             </button>
@@ -483,14 +666,12 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
               width={256}
               height={256}
               draggable={false}
-              className="h-8 w-8 mix-blend-screen"
+              className="h-8 w-8 shrink-0 mix-blend-screen"
             />
-            <div className="flex flex-col">
-              <span className="font-mono text-xs font-bold uppercase tracking-[0.34em] text-white">
-                Wanted
-              </span>
-              <span className="font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-600">
-                {counts.ALL} entries · e2e sealed · 24h retention
+            <div className="flex min-w-0 flex-col">
+              <span className="gang-font text-2xl leading-none text-white">WANTED</span>
+              <span className="truncate font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+                {sub} · {counts.ALL} OP DIE BLAD
               </span>
             </div>
             <div className="flex-1" />
@@ -498,38 +679,39 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
               size="sm"
               onClick={() => {
                 setDraft(EMPTY_DRAFT);
+                setStaged([]);
                 setComposeOpen(true);
               }}
-              className="min-h-[36px] font-mono text-[10px] uppercase tracking-[0.18em]"
+              className="min-h-[40px] shrink-0 font-mono text-xs uppercase tracking-[0.18em]"
             >
-              <ImagePlus className="size-3.5" aria-hidden />
-              Post
+              <ImagePlus className="size-4" aria-hidden />
+              BOU ‘N SAAK
             </FastButton>
           </div>
 
           {/* search + filters */}
-          <div className="flex flex-col gap-2 px-3 pb-3">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-3 pb-3 sm:px-4">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-neutral-600" aria-hidden />
               <FastInput
                 value={query}
                 onChange={(e) => setQuery(e.target.value.slice(0, 60))}
-                placeholder="SEARCH DECRYPTED ENTRIES"
-                aria-label="Search wanted entries"
-                className="h-11 pl-10 font-mono text-[11px] tracking-[0.14em]"
+                placeholder="SOEK DIE DOODSLYS"
+                aria-label="Search wanted cases"
+                className="h-12 pl-10 font-mono text-sm font-bold tracking-[0.1em]"
               />
             </div>
-            <div className="flex gap-1.5 overflow-x-auto pb-0.5" role="tablist" aria-label="Status filter">
+            <div className="no-scrollbar flex gap-1.5 overflow-x-auto pb-0.5" role="tablist" aria-label="Status filter">
               {([STATUS_ALL, ...STATUSES] as StatusFilter[]).map((s) => (
                 <button
                   key={s}
                   role="tab"
                   aria-selected={filter === s}
                   onClick={() => setFilter(s)}
-                  className={`min-h-[34px] shrink-0 rounded-full border px-3.5 font-mono text-[9px] uppercase tracking-[0.2em] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                  className={`flex min-h-[44px] shrink-0 items-center rounded-full border px-4 font-mono text-[11px] font-bold uppercase tracking-[0.18em] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
                     filter === s
                       ? "border-white bg-white text-black"
-                      : "border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300"
+                      : "border-neutral-800 text-neutral-400 hover:border-neutral-500 hover:text-neutral-200"
                   }`}
                 >
                   {s} {counts[s] > 0 && `· ${counts[s]}`}
@@ -551,25 +733,26 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             </div>
           ) : filtered.length === 0 && !fetching ? (
             <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
-              <Lock className="size-7 text-neutral-700" aria-hidden />
-              <p className="text-sm text-neutral-300">No entries here.</p>
-              <p className="max-w-[260px] text-[11px] leading-relaxed text-neutral-600">
-                Post the first WANTED bulletin — it is encrypted in this tab
-                before it ever leaves the device.
+              <Lock className="size-8 text-neutral-600" aria-hidden />
+              <p className="max-w-sm text-base font-bold text-neutral-200">{emptyLine}</p>
+              <p className="max-w-[300px] text-[13px] font-semibold leading-relaxed text-neutral-500">
+                {varadosJab}
               </p>
             </div>
           ) : (
-            <div ref={gridRef} className="grid gap-3 px-3 pb-24 pt-1 sm:grid-cols-2 lg:grid-cols-3">
+            <div ref={gridRef} className="mx-auto grid w-full max-w-6xl gap-3 px-3 pb-24 pt-1 sm:grid-cols-2 sm:gap-4 sm:px-4 lg:grid-cols-3">
               {filtered.map((entry) => (
                 <WantedCard
                   key={entry.wire.id}
                   entry={entry}
-                  onOpen={() => setDetail(entry)}
+                  exhibitUrls={exhibitUrls.current}
+                  fetchExhibit={fetchExhibit}
+                  onOpen={() => setDetailId(entry.wire.id)}
                 />
               ))}
               {fetching && entries.length === 0 && (
                 <div className="col-span-full py-10 text-center font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-600">
-                  Decrypting board…
+                  Ontsleutel die blad…
                 </div>
               )}
             </div>
@@ -578,71 +761,121 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
 
         {/* --------------------------------------------------------- footer */}
         <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-700">
-              {updatedAt ? `Synced ${timeAgo(updatedAt)}` : "Awaiting first sync"} · auto 60s
+          <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 px-1 sm:px-4">
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+              {updatedAt ? `Gesink ${timeAgo(updatedAt)}` : "Wag vir eerste sink"} · outo 60s
             </span>
-            <span className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.22em] text-neutral-600">
-              <Flame className="size-3" aria-hidden />
-              images live in RAM only
+            <span className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+              <Flame className="size-3.5" aria-hidden />
+              alles bly net in RAM
             </span>
           </div>
         </footer>
       </ScreenShell>
 
       {/* ------------------------------------------------------- compose modal */}
-      <FastModal open={composeOpen} onClose={() => setComposeOpen(false)} label="Post a WANTED entry">
+      <FastModal open={composeOpen} onClose={() => setComposeOpen(false)} label="Build a WANTED case" wide>
         <div className="flex max-h-[80dvh] flex-col gap-4 overflow-y-auto">
           <div className="text-center">
-            <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
-              <ImagePlus className="size-4 text-neutral-300" aria-hidden />
-              New WANTED entry
-            </h2>
-            <p className="mt-1.5 text-[11px] text-neutral-500">
-              Sealed with AES-256-GCM in this tab — the server only ever
-              holds ciphertext.
+            <h2 className="gang-font text-3xl text-white">{WANTED_COMPOSE_TITLE}</h2>
+            <p className="mt-1.5 text-[13px] font-semibold leading-relaxed text-neutral-400">
+              {WANTED_COMPOSE_SUB}
             </p>
           </div>
 
-          {/* image picker */}
+          {/* case builder — exhibits */}
           <div>
             <input
-              ref={fileRef}
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*,video/mp4,video/webm"
+              multiple
+              onChange={(e) => void stageFiles(e.target.files)}
+              className="sr-only"
+              aria-label="Attach images or videos"
+            />
+            <input
+              ref={cameraInputRef}
               type="file"
               accept="image/*"
-              onChange={(e) => void pickImage(e.target.files?.[0])}
+              capture="environment"
+              onChange={(e) => void stageFiles(e.target.files)}
               className="sr-only"
-              aria-label="Attach an image"
+              aria-label="Take a photo"
             />
-            {imageUrl ? (
-              <div className="relative overflow-hidden rounded-xl border border-neutral-800">
-                <img src={imageUrl} alt="Attachment preview" className="max-h-52 w-full object-cover" />
-                <button
-                  onClick={clearImage}
-                  aria-label="Remove image"
-                  className="absolute right-2 top-2 flex size-8 items-center justify-center rounded-full border border-neutral-700 bg-black/85 text-neutral-300 outline-none hover:border-neutral-400 hover:text-white"
-                >
-                  <X className="size-4" aria-hidden />
-                </button>
-              </div>
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
+                {WANTED_MEDIA_LABEL}
+              </span>
+              <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-600">
+                {WANTED_CASE_COUNT(staged.length)} / {MAX_MEDIA}
+              </span>
+            </div>
+            {staged.length === 0 ? (
+              <p className="mt-2 text-[11px] font-semibold text-neutral-600">{WANTED_CASE_EMPTY}</p>
             ) : (
-              <button
+              <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1">
+                {staged.map((item, i) => (
+                  <div
+                    key={item.previewUrl}
+                    className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-neutral-800"
+                  >
+                    {item.mime.startsWith("video/") ? (
+                      <span className="flex h-full w-full items-center justify-center bg-neutral-950">
+                        <Film className="size-6 text-neutral-500" aria-hidden />
+                      </span>
+                    ) : (
+                       
+                      <img src={item.previewUrl} alt={`Exhibit ${i + 1}`} className="h-full w-full object-cover" />
+                    )}
+                    <button
+                      onClick={() => unstageAt(i)}
+                      aria-label={`Remove exhibit ${i + 1}`}
+                      className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-black/85 text-neutral-300 outline-none hover:border-neutral-400 hover:text-white"
+                    >
+                      <X className="size-3.5" aria-hidden />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <FastButton
+                variant="outline"
+                size="sm"
+                disabled={staged.length >= MAX_MEDIA}
                 onClick={(e) => {
                   pressFeedback(e.currentTarget);
-                  fileRef.current?.click();
+                  galleryInputRef.current?.click();
                 }}
-                className="flex min-h-[92px] w-full flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-neutral-800 text-neutral-500 outline-none transition-colors hover:border-neutral-600 hover:text-neutral-300"
+                className="font-mono text-[10px] uppercase tracking-[0.16em]"
               >
-                <Camera className="size-5" aria-hidden />
-                <span className="font-mono text-[9px] uppercase tracking-[0.24em]">Attach image</span>
-              </button>
-            )}
+                <Images className="size-4" aria-hidden />
+                {WANTED_ADD_MEDIA}
+              </FastButton>
+              <FastButton
+                variant="outline"
+                size="sm"
+                disabled={staged.length >= MAX_MEDIA}
+                onClick={(e) => {
+                  pressFeedback(e.currentTarget);
+                  cameraInputRef.current?.click();
+                }}
+                className="font-mono text-[10px] uppercase tracking-[0.16em]"
+              >
+                <Camera className="size-4" aria-hidden />
+                KAMERA
+              </FastButton>
+            </div>
+            <p className="mt-1.5 text-center font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-700">
+              {WANTED_MEDIA_LIMIT}
+            </p>
           </div>
 
           <FastInput
             value={draft.title}
             onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value.slice(0, 80) }))}
-            placeholder="TITLE *"
+            placeholder="NAAM / TITEL *"
             aria-label="Title"
             maxLength={80}
             className="font-mono tracking-[0.08em] uppercase"
@@ -651,10 +884,10 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
           <textarea
             value={draft.description}
             onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value.slice(0, 4000) }))}
-            placeholder="BESKRYWING — wie, wat, waar…"
+            placeholder="DIE SAAK — wie, wat, waar…"
             aria-label="Description"
             rows={5}
-            className="w-full resize-none rounded-xl border border-neutral-800 bg-black px-4 py-3 text-sm leading-relaxed text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-neutral-500"
+            className="w-full resize-none rounded-xl border border-neutral-800 bg-black px-4 py-3 text-[15px] font-semibold leading-relaxed text-neutral-100 outline-none transition-colors placeholder:font-semibold placeholder:text-neutral-600 focus:border-neutral-400"
           />
 
           <div className="grid grid-cols-2 gap-2">
@@ -668,20 +901,20 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             <FastInput
               value={draft.lastSeen}
               onChange={(e) => setDraft((d) => ({ ...d, lastSeen: e.target.value.slice(0, 60) }))}
-              placeholder="LAST SEEN"
+              placeholder="LAAS GESEN"
               aria-label="Last seen"
               maxLength={60}
             />
             <FastInput
               value={draft.bounty}
               onChange={(e) => setDraft((d) => ({ ...d, bounty: e.target.value.slice(0, 60) }))}
-              placeholder="BOUNTY (OPTIONAL)"
+              placeholder="WYLDEPRYS (KEUSE)"
               aria-label="Bounty"
               maxLength={60}
             />
             <div className="flex items-center justify-between rounded-xl border border-neutral-800 bg-black px-3" aria-label="Threat level">
-              <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500">
-                Threat
+              <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-neutral-400">
+                GEVAAR
               </span>
               <div className="flex items-center gap-1">
                 {[1, 2, 3, 4, 5].map((n) => (
@@ -690,9 +923,8 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
                     onClick={() => setDraft((d) => ({ ...d, threat: n as Draft["threat"] }))}
                     aria-label={`Threat level ${n}`}
                     aria-pressed={draft.threat === n}
-                    className={`h-6 w-3.5 rounded-[3px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
-                      n <= draft.threat ? "bg-white" : "bg-neutral-800 hover:bg-neutral-700"
-                    }`}
+                    className="h-7 w-4 rounded-[3px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500"
+                    style={{ background: n <= draft.threat ? "#ffffff" : undefined }}
                   />
                 ))}
               </div>
@@ -710,10 +942,10 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
                   role="radio"
                   aria-checked={active}
                   onClick={() => setDraft((d) => ({ ...d, status: s }))}
-                  className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl border font-mono text-[8px] uppercase tracking-[0.14em] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                  className={`flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border font-mono text-[11px] font-bold uppercase tracking-[0.14em] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
                     active
                       ? "border-white bg-white text-black"
-                      : "border-neutral-800 text-neutral-500 hover:border-neutral-600"
+                      : "border-neutral-800 text-neutral-400 hover:border-neutral-500"
                   }`}
                 >
                   <Icon className="size-3.5" aria-hidden />
@@ -727,30 +959,37 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             <FastButton
               disabled={posting || draft.title.trim().length === 0}
               onClick={() => void publish()}
-              className="w-full font-mono text-[11px] uppercase tracking-[0.24em]"
+              className="w-full font-mono text-sm uppercase tracking-[0.24em]"
             >
-              {posting ? "Sealing…" : "Seal & post"}
+              {posting ? "Word toegepin…" : "SEËL & PLAAS DIE SAAK"}
             </FastButton>
             <FastButton
               variant="ghost"
               className="w-full"
               onClick={() => {
                 setComposeOpen(false);
-                clearImage();
+                unstageAll();
               }}
             >
-              Cancel
+              Bly maar
             </FastButton>
           </div>
         </div>
       </FastModal>
 
-      {/* -------------------------------------------------------- detail modal */}
-      <FastModal open={detail !== null} onClose={() => setDetail(null)} label="WANTED entry detail">
-        {detail && (
-          <DetailBody entry={detail} onBurn={() => void burn(detail)} />
-        )}
-      </FastModal>
+      {/* ---------------------------------------------------- case file view */}
+      {detail && (
+        <CaseFile
+          entry={detail}
+          myFp={myFp}
+          exhibitUrls={exhibitUrls.current}
+          fetchExhibit={fetchExhibit}
+          onBurn={() => void burn(detail)}
+          onComment={(text) => void addComment(detail, text)}
+          onUncomment={(commentId) => void removeComment(detail, commentId)}
+          onClose={() => setDetailId(null)}
+        />
+      )}
     </div>,
     document.body
   );
@@ -758,25 +997,90 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
 
 // ------------------------------------------------------------------ pieces
 
-/** Card image: decrypts into a RAM blob URL, revokes it on unmount. */
-function CardImage({ wire, className }: { wire: WantedWire; className?: string }) {
-  const [url, setUrl] = useState<string | null>(null);
+/** Exhibit count + comment count off the light wire. */
+function mediaTally(wire: WantedWire): { images: number; videos: number } {
+  let images = 0;
+  let videos = 0;
+  for (const m of wire.mediaList ?? []) {
+    if (m.mime.startsWith("video/")) videos += 1;
+    else images += 1;
+  }
+  return { images, videos };
+}
+
+/**
+ * Decrypt + decrypt one exhibit into a cached RAM URL. Shared by the board
+ * thumbnails and the case gallery so nothing ever decrypts twice.
+ */
+async function exhibitUrl(
+  wire: WantedWire,
+  index: number,
+  cache: Map<string, string>,
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>
+): Promise<string | null> {
+  const key = `${wire.id}:${index}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  let sealed: { iv: string; ciphertext: string; mime: string } | null = null;
+  // legacy v1 wire: single inline image fields
+  if (index === 0 && wire.imgIv && wire.imgCiphertext) {
+    sealed = { iv: wire.imgIv, ciphertext: wire.imgCiphertext, mime: "image/jpeg" };
+  } else if (wire.media && wire.media[index]) {
+    sealed = wire.media[index];
+  } else {
+    sealed = await fetchExhibit(wire.id, index);
+  }
+  if (!sealed) return null;
+
+  const blob = await decryptWantedMedia(sealed);
+  if (!blob) return null;
+  const url = URL.createObjectURL(blob);
+  cache.set(key, url);
+  // mirror the exhibit into the local ciphertext vault so the case can
+  // reseed with its evidence after a cold restart (still zero-knowledge)
+  void upsertWire(wire, sealed, index);
+  return url;
+}
+
+/** Board card thumbnail — decrypts exhibit 0 (images only) into RAM. */
+function CaseThumb({
+  wire,
+  cache,
+  fetchExhibit,
+  className,
+}: {
+  wire: WantedWire;
+  cache: Map<string, string>;
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
+  className?: string;
+}) {
+  const [url, setUrl] = useState<string | null>(() => cache.get(`${wire.id}:0`) ?? null);
+  const tally = mediaTally(wire);
+  const hasMedia = (wire.mediaList?.length ?? 0) > 0 || Boolean(wire.imgIv);
 
   useEffect(() => {
+    if (url || !hasMedia) return;
+    const list = wire.mediaList ?? [];
+    if (list.length > 0 && list[0].mime.startsWith("video/")) return; // no video thumnnails
     let dead = false;
-    let current: string | null = null;
     void (async () => {
-      const blob = await decryptWantedImage(wire);
-      if (dead || !blob) return;
-      current = URL.createObjectURL(blob);
-      setUrl(current);
+      const u = await exhibitUrl(wire, 0, cache, fetchExhibit);
+      if (!dead && u) setUrl(u);
     })();
     return () => {
       dead = true;
-      if (current) URL.revokeObjectURL(current);
     };
-  }, [wire]);
+     
+  }, [wire.id]);
 
+  if (!hasMedia || (tally.images === 0 && tally.videos > 0)) {
+    return (
+      <div className={`flex items-center justify-center bg-neutral-950 ${className ?? ""}`}>
+        <Film className="size-6 text-neutral-800" aria-hidden />
+      </div>
+    );
+  }
   if (!url) {
     return (
       <div className={`flex items-center justify-center bg-neutral-950 ${className ?? ""}`}>
@@ -784,6 +1088,7 @@ function CardImage({ wire, className }: { wire: WantedWire; className?: string }
       </div>
     );
   }
+   
   return <img src={url} alt="" className={className} draggable={false} />;
 }
 
@@ -804,8 +1109,20 @@ function ThreatMeter({ threat }: { threat: number }) {
   );
 }
 
-function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }) {
+function WantedCard({
+  entry,
+  exhibitUrls,
+  fetchExhibit,
+  onOpen,
+}: {
+  entry: BoardEntry;
+  exhibitUrls: Map<string, string>;
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
+  onOpen: () => void;
+}) {
   const { content, wire, mine } = entry;
+  const tally = mediaTally(wire);
+  const noteCount = wire.comments?.length ?? 0;
 
   if (!content) {
     // sealed: this device cannot decrypt this blob (foreign key generation)
@@ -817,12 +1134,11 @@ function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }
         <div className="flex items-center gap-2">
           <Lock className="size-3.5 text-neutral-600" aria-hidden />
           <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-500">
-            Sealed entry
+            Sealed case
           </span>
         </div>
         <p className="text-[11px] leading-relaxed text-neutral-600">
-          This bulletin was sealed under a key generation this device cannot
-          derive. The ciphertext stays on the board, unreadable.
+          Hierdie saak is toegemaak met ‘n sleutel wat hierdie toestel nie kan aflei nie. Die ciphertext bly op die blad, onleesbaar.
         </p>
         <span className="font-mono text-[8px] uppercase tracking-[0.2em] text-neutral-700">
           {timeAgo(wire.createdAt)}
@@ -841,7 +1157,12 @@ function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }
       className="group flex flex-col overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 text-left outline-none transition-all duration-200 focus-visible:border-neutral-400 hover:border-neutral-600 hover:bg-neutral-900 active:scale-[0.99]"
     >
       <div className="relative aspect-[4/3] w-full overflow-hidden">
-        <CardImage wire={wire} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
+        <CaseThumb
+          wire={wire}
+          cache={exhibitUrls}
+          fetchExhibit={fetchExhibit}
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+        />
         <span
           className={`absolute left-2.5 top-2.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.18em] backdrop-blur-sm ${
             content.status === "WANTED"
@@ -854,26 +1175,36 @@ function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }
         </span>
         {mine && (
           <span className="absolute right-2.5 top-2.5 rounded-full border border-neutral-700 bg-black/70 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.18em] text-neutral-400 backdrop-blur-sm">
-            yours
+            jou saak
           </span>
         )}
+        <span className="absolute bottom-2.5 left-2.5 flex items-center gap-2 rounded-full border border-neutral-800 bg-black/75 px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.16em] text-neutral-300 backdrop-blur-sm">
+          <span className="flex items-center gap-1">
+            <Images className="size-3" aria-hidden />
+            {tally.images + tally.videos}
+          </span>
+          <span className="flex items-center gap-1">
+            <MessageSquare className="size-3" aria-hidden />
+            {noteCount}
+          </span>
+        </span>
       </div>
-      <div className="flex flex-col gap-2 p-3.5">
-        <span className="font-mono text-sm font-bold tracking-[0.06em] text-white uppercase">
+      <div className="flex flex-col gap-2 p-4">
+        <span className="font-mono text-sm font-bold uppercase tracking-[0.06em] text-white">
           {content.title}
         </span>
         {content.description && (
-          <span className="line-clamp-2 text-[11px] leading-relaxed text-neutral-500">
+          <span className="line-clamp-2 text-xs font-semibold leading-relaxed text-neutral-500">
             {content.description}
           </span>
         )}
         <ThreatMeter threat={content.threat} />
-        <div className="flex items-center gap-2 border-t border-neutral-900 pt-2.5">
-          <span className={`truncate font-mono text-[9px] tracking-[0.14em] text-neutral-400 ${boss ? "drach-font text-[11px] tracking-[0.08em] text-white" : "uppercase"}`}>
+        <div className="flex items-center gap-2 border-t border-neutral-900 pt-3">
+          <span className={`truncate font-mono text-[10px] tracking-[0.14em] text-neutral-400 ${boss ? "drach-font text-xs tracking-[0.08em] text-white" : "uppercase"}`}>
             {boss ? content.by : `BY ${content.by}`}
           </span>
           <span className="flex-1" />
-          <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-neutral-600">
+          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-600">
             {timeAgo(wire.createdAt)}
           </span>
         </div>
@@ -882,77 +1213,469 @@ function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }
   );
 }
 
-function DetailBody({ entry, onBurn }: { entry: BoardEntry; onBurn: () => void }) {
+// ---------------------------------------------------------------- case file
+
+type CaseFileProps = {
+  entry: BoardEntry;
+  myFp: string;
+  exhibitUrls: Map<string, string>;
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
+  onBurn: () => void;
+  onComment: (text: string) => void;
+  onUncomment: (commentId: string) => void;
+  onClose: () => void;
+};
+
+/**
+ * THE CASE FILE — evidence gallery LEFT, paperwork + sakboek RIGHT.
+ * Full-screen on phones (stacked), a wide two-column file on desktop.
+ */
+function CaseFile({
+  entry,
+  myFp,
+  exhibitUrls,
+  fetchExhibit,
+  onBurn,
+  onComment,
+  onUncomment,
+  onClose,
+}: CaseFileProps) {
   const { content, wire, mine } = entry;
+  const [commentDraft, setCommentDraft] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const galleryRef = useRef<HTMLDivElement>(null);
+
+  useGSAP(
+    () => {
+      if (REDUCED_MOTION) return;
+      gsap.fromTo(
+        galleryRef.current,
+        { opacity: 0, x: -14 },
+        { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }
+      );
+      gsap.fromTo(
+        scrollRef.current,
+        { opacity: 0, y: 14 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power3.out", delay: 0.05 }
+      );
+    },
+    { scope: galleryRef, dependencies: [wire.id] }
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   if (!content) {
     return (
-      <div className="flex flex-col items-center gap-3 py-6 text-center">
-        <Lock className="size-6 text-neutral-600" aria-hidden />
-        <p className="text-xs text-neutral-400">Sealed — this device cannot decrypt it.</p>
+      <div className="fixed inset-0 z-[94] flex items-center justify-center bg-black/95 p-6" role="dialog" aria-label="Sealed case">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Lock className="size-6 text-neutral-600" aria-hidden />
+          <p className="text-sm font-semibold text-neutral-400">Gesluit — hierdie toestel kom nie in die saak nie.</p>
+          <FastButton variant="outline" onClick={onClose} className="font-mono text-[10px] uppercase tracking-[0.2em]">
+            Terug
+          </FastButton>
+        </div>
       </div>
     );
   }
+
   const StatusIcon = STATUS_ICON[content.status];
   const boss = content.byRole === "boss";
+  const exhibitCount = (wire.mediaList?.length ?? 0) + (wire.imgIv ? 1 : 0);
+  const notes = wire.comments ?? [];
+
   return (
-    <div className="flex max-h-[80dvh] flex-col gap-4 overflow-y-auto">
-      <div className="overflow-hidden rounded-xl border border-neutral-800">
-        <CardImage wire={wire} className="max-h-72 w-full object-cover" />
-      </div>
-      <div className="flex flex-col gap-2">
+    <div className="fixed inset-0 z-[94] overflow-y-auto bg-black/97" role="dialog" aria-label="WANTED case file">
+      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-4 p-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(0.75rem,env(safe-area-inset-top))] sm:p-6 lg:max-w-6xl">
+        {/* top bar */}
         <div className="flex items-center gap-2">
-          <StatusIcon className="size-4 text-neutral-300" aria-hidden />
-          <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-400">
-            {content.status} · posted {timeAgo(wire.createdAt)}
-          </span>
-        </div>
-        <h2 className="font-mono text-lg font-bold uppercase leading-tight tracking-[0.05em] text-white">
-          {content.title}
-        </h2>
-        {content.alias && (
-          <p className="text-xs text-neutral-400">
-            <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-600">ALIAS · </span>
-            {content.alias}
-          </p>
-        )}
-        {content.lastSeen && (
-          <p className="text-xs text-neutral-400">
-            <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-600">LAST SEEN · </span>
-            {content.lastSeen}
-          </p>
-        )}
-        {content.bounty && (
-          <p className="text-xs text-neutral-300">
-            <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-600">BOUNTY · </span>
-            {content.bounty}
-          </p>
-        )}
-      </div>
-      <div className="rounded-xl border border-neutral-800 bg-neutral-950 p-3.5">
-        <ThreatMeter threat={content.threat} />
-        {content.description && (
-          <p className="mt-3 whitespace-pre-wrap text-xs leading-relaxed text-neutral-300">
-            {content.description}
-          </p>
-        )}
-      </div>
-      <div className="flex items-center gap-2 border-t border-neutral-900 pt-3">
-        <span className={`truncate text-xs text-neutral-400 ${boss ? "drach-font text-base text-white" : "font-mono uppercase tracking-[0.14em]"}`}>
-          {content.by}
-        </span>
-        <span className="flex-1" />
-        {mine && (
-          <FastButton
-            variant="danger"
-            size="sm"
-            onClick={onBurn}
-            className="font-mono text-[10px] uppercase tracking-[0.18em]"
+          <button
+            onClick={onClose}
+            aria-label="Back to the board"
+            className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-neutral-900 text-neutral-300 outline-none transition-colors hover:border-neutral-600 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
           >
-            <Trash2 className="size-3.5" aria-hidden />
-            Burn
-          </FastButton>
-        )}
+            <ArrowLeft className="size-5" aria-hidden />
+          </button>
+          <div className="flex min-w-0 flex-col">
+            <span className="gang-font truncate text-2xl leading-tight text-white sm:text-3xl">{content.title}</span>
+            <span className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+              <StatusIcon className="size-3.5" aria-hidden />
+              {content.status} · {timeAgo(wire.createdAt)} · {exhibitCount} STUKKE · {notes.length} NOTES
+            </span>
+          </div>
+          <span className="flex-1" />
+          {mine && (
+            <FastButton
+              variant="danger"
+              size="sm"
+              onClick={onBurn}
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em]"
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+              BRAND
+            </FastButton>
+          )}
+        </div>
+
+        {/* two-column case file — gallery left, paperwork right */}
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          {/* --------------------------------------------- LEFT: evidence gallery */}
+          <section
+            ref={galleryRef}
+            aria-label="Case exhibits"
+            className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
+          >
+            <ExhibitGallery
+              wire={wire}
+              cache={exhibitUrls}
+              fetchExhibit={fetchExhibit}
+            />
+          </section>
+
+          {/* ---------------------------------- RIGHT: info + sakboek comments */}
+          <section ref={scrollRef} className="flex flex-col gap-4" aria-label="Case info and comments">
+            {/* paperwork */}
+            <div className="flex flex-col gap-3 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 sm:p-5">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                {content.alias && (
+                  <p className="text-xs font-semibold text-neutral-300">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">ALIAS · </span>
+                    {content.alias}
+                  </p>
+                )}
+                {content.lastSeen && (
+                  <p className="text-xs font-semibold text-neutral-300">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">LAAS GESEN · </span>
+                    {content.lastSeen}
+                  </p>
+                )}
+                {content.bounty && (
+                  <p className="text-xs font-semibold text-neutral-200">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">WYLDEPRYS · </span>
+                    {content.bounty}
+                  </p>
+                )}
+              </div>
+              <ThreatMeter threat={content.threat} />
+              {content.description && (
+                <p className="whitespace-pre-wrap border-t border-neutral-900 pt-3 text-sm font-semibold leading-relaxed text-neutral-200">
+                  {content.description}
+                </p>
+              )}
+              <div className="flex items-center gap-2 border-t border-neutral-900 pt-3">
+                <span className={`truncate text-sm text-neutral-300 ${boss ? "drach-font text-base text-white" : "font-mono text-xs uppercase tracking-[0.14em]"}`}>
+                  {content.by}
+                </span>
+                <span className="flex-1" />
+                <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-600">
+                  AES-256-GCM · RAM ONLY
+                </span>
+              </div>
+            </div>
+
+            {/* sakboek */}
+            <div className="flex flex-col rounded-2xl border border-neutral-800 bg-neutral-950">
+              <div className="flex items-center gap-2 border-b border-neutral-900 px-4 py-3 sm:px-5">
+                <MessageSquare className="size-4 text-neutral-500" aria-hidden />
+                <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
+                  {WANTED_COMMENTS_TITLE}
+                </span>
+                <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-600">
+                  · {notes.length}
+                </span>
+              </div>
+              <div className="max-h-[340px] min-h-[120px] overflow-y-auto overscroll-contain px-4 py-3 sm:px-5">
+                {notes.length === 0 ? (
+                  <p className="py-6 text-center text-xs font-semibold text-neutral-600">
+                    {WANTED_COMMENT_EMPTY}
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-3">
+                    {notes.map((note) => (
+                      <SakboekNote
+                        key={note.id}
+                        note={note}
+                        myFp={myFp}
+                        onBurn={() => onUncomment(note.id)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <form
+                className="flex items-center gap-2 border-t border-neutral-900 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!commentDraft.trim()) return;
+                  onComment(commentDraft);
+                  setCommentDraft("");
+                }}
+              >
+                <FastInput
+                  value={commentDraft}
+                  onChange={(e) => setCommentDraft(e.target.value.slice(0, 400))}
+                  placeholder={WANTED_COMMENT_PLACEHOLDER}
+                  aria-label="Write in the sakboek"
+                  maxLength={400}
+                  enterKeyHint="send"
+                  className="flex-1"
+                />
+                <FastButton
+                  size="icon"
+                  type="submit"
+                  aria-label={WANTED_COMMENT_POST}
+                  disabled={commentDraft.trim().length === 0}
+                  className="shrink-0"
+                >
+                  <Send className="size-5" aria-hidden />
+                </FastButton>
+              </form>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
+}
+
+/** One decrypted sakboek note (author + time + burn when mine). */
+function SakboekNote({
+  note,
+  myFp,
+  onBurn,
+}: {
+  note: { id: string; iv: string; ciphertext: string; creatorFp: string; createdAt: string };
+  myFp: string;
+  onBurn: () => void;
+}) {
+  const [note_, setNote_] = useState<WantedComment | null>(null);
+  useEffect(() => {
+    let dead = false;
+    void (async () => {
+      const c = await decryptWantedComment(note);
+      if (!dead) setNote_(c);
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [note]);
+
+  const mine = note.creatorFp === myFp;
+  const boss = note_?.byRole === "boss";
+
+  return (
+    <li className="flex flex-col gap-1 rounded-xl border border-neutral-900 bg-black px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className={`truncate font-mono text-[10px] tracking-[0.14em] text-neutral-400 ${boss ? "drach-font text-xs tracking-[0.08em] text-white" : "uppercase"}`}>
+          {note_?.by ?? "…"}
+        </span>
+        <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-neutral-600">
+          {timeAgo(note.createdAt)}
+        </span>
+        <span className="flex-1" />
+        {mine && (
+          <button
+            onClick={onBurn}
+            aria-label="Remove your note"
+            className="flex size-7 items-center justify-center rounded-lg text-neutral-600 outline-none transition-colors hover:bg-neutral-900 hover:text-neutral-200"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </div>
+      <p className="text-[13px] font-semibold leading-relaxed text-neutral-200">
+        {note_?.text ?? "…"}
+      </p>
+    </li>
+  );
+}
+
+/** Main exhibit viewer + thumbnail strip. Decrypts lazily, caches in RAM. */
+function ExhibitGallery({
+  wire,
+  cache,
+  fetchExhibit,
+}: {
+  wire: WantedWire;
+  cache: Map<string, string>;
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
+}) {
+  const list = useMemo(() => {
+    // legacy fold: v1 inline image becomes exhibit 0
+    const items: Array<{ mime: string }> = [];
+    if (wire.imgIv) items.push({ mime: "image/jpeg" });
+    for (const m of wire.mediaList ?? []) items.push({ mime: m.mime });
+    return items;
+  }, [wire]);
+
+  const [active, setActive] = useState(0);
+  const [view, setView] = useState<{ wireId: string; index: number; url: string | null; failed: boolean }>(() => ({
+    wireId: wire.id,
+    index: 0,
+    url: cache.get(`${wire.id}:0`) ?? null,
+    failed: false,
+  }));
+
+  // derive-during-render: a new case (or exhibit) resets the viewer — the
+  // React-sanctioned pattern, no cascading effect
+  if (view.wireId !== wire.id || view.index !== active) {
+    setView({
+      wireId: wire.id,
+      index: active,
+      url: cache.get(`${wire.id}:${active}`) ?? null,
+      failed: false,
+    });
+  }
+
+  // decrypt-on-demand: only when the viewer holds nothing for this exhibit
+  useEffect(() => {
+    if (view.wireId !== wire.id || view.index !== active || view.url || view.failed) return;
+    let dead = false;
+    void (async () => {
+      const u = await exhibitUrl(wire, active, cache, fetchExhibit);
+      if (dead) return;
+      setView((v) =>
+        v.wireId === wire.id && v.index === active ? { ...v, url: u, failed: !u } : v
+      );
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [wire, active, view.wireId, view.index, view.url, view.failed, cache, fetchExhibit]);
+
+  const url = view.url;
+  const failed = view.failed;
+
+  const isVideo = (list[active]?.mime ?? "").startsWith("video/");
+
+  if (list.length === 0) {
+    return (
+      <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 p-8 text-center">
+        <Images className="size-6 text-neutral-700" aria-hidden />
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+          {WANTED_CASE_EMPTY}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {/* main viewer */}
+      <div className="relative flex min-h-[240px] items-center justify-center bg-black sm:min-h-[320px]">
+        {!url && !failed && (
+          <div className="flex items-center gap-2 py-16 font-mono text-[10px] uppercase tracking-[0.24em] text-neutral-600">
+            <Lock className="size-4" aria-hidden />
+            Ontsleutel bewysstuk {active + 1}…
+          </div>
+        )}
+        {failed && !url && (
+          <div className="flex flex-col items-center gap-2 py-16 text-center">
+            <Lock className="size-5 text-neutral-700" aria-hidden />
+            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+              Bewysstuk onleesbaar op hierdie toestel
+            </span>
+          </div>
+        )}
+        {url && !isVideo && (
+           
+          <img
+            src={url}
+            alt={`Case exhibit ${active + 1}`}
+            draggable={false}
+            className="max-h-[58dvh] w-full object-contain"
+          />
+        )}
+        {url && isVideo && (
+          <video
+            src={url}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-[58dvh] w-full bg-black object-contain"
+          />
+        )}
+        {list.length > 1 && (
+          <span className="absolute right-3 top-3 rounded-full border border-neutral-800 bg-black/80 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-300 backdrop-blur-sm">
+            {active + 1} / {list.length}
+          </span>
+        )}
+      </div>
+
+      {/* exhibit strip */}
+      {list.length > 1 && (
+        <div className="no-scrollbar flex gap-2 overflow-x-auto border-t border-neutral-900 p-2.5">
+          {list.map((m, i) => {
+            const isActive = i === active;
+            return (
+              <button
+                key={`${wire.id}-exhibit-${i}`}
+                onClick={() => setActive(i)}
+                aria-label={`Exhibit ${i + 1}`}
+                aria-current={isActive}
+                className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                  isActive ? "border-white" : "border-neutral-800 hover:border-neutral-600"
+                }`}
+              >
+                <ThumbTile wire={wire} index={i} mime={m.mime} cache={cache} fetchExhibit={fetchExhibit} />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tiny tile inside the strip: image thumb or video chip. */
+function ThumbTile({
+  wire,
+  index,
+  mime,
+  cache,
+  fetchExhibit,
+}: {
+  wire: WantedWire;
+  index: number;
+  mime: string;
+  cache: Map<string, string>;
+  fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
+}) {
+  const isVideo = mime.startsWith("video/");
+  const [url, setUrl] = useState<string | null>(() => cache.get(`${wire.id}:${index}`) ?? null);
+
+  useEffect(() => {
+    if (isVideo || url) return;
+    let dead = false;
+    void (async () => {
+      const u = await exhibitUrl(wire, index, cache, fetchExhibit);
+      if (!dead && u) setUrl(u);
+    })();
+    return () => {
+      dead = true;
+    };
+     
+  }, [wire.id, index]);
+
+  if (isVideo) {
+    return (
+      <span className="flex h-full w-full items-center justify-center bg-neutral-950">
+        <Film className="size-4 text-neutral-500" aria-hidden />
+      </span>
+    );
+  }
+  if (!url) {
+    return (
+      <span className="flex h-full w-full items-center justify-center bg-neutral-950">
+        <Lock className="size-3.5 text-neutral-700" aria-hidden />
+      </span>
+    );
+  }
+   
+  return <img src={url} alt="" className="h-full w-full object-cover" draggable={false} />;
 }

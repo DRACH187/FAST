@@ -1,40 +1,46 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
+import { REDUCED_MOTION, useHouseLine } from "@/components/fast/motion";
+import { SPLASH_CREDIT, SPLASH_SKIP, SPLASH_TAGLINE, SPLASH_TICKER } from "@/lib/fast/copy";
 
 gsap.registerPlugin(useGSAP);
 
 /**
- * Splash — the FAST GUNS front door.
- * Black letterbox frame, a muzzle-flash glow, the logo SLAMMING dead-center
- * (clamp 190px→330px) with a micro camera-shake, the wordmark + 187 mark
- * stamping in underneath, the house tagline, and the maker credit. Film
- * grain + vignette keep it cinema. No progress bars — the block doesn't ask,
- * it announces. Click / tap / Enter to skip.
+ * Splash — the FAST GUNS front door, cinema cut.
+ * Black letterbox frame, scanline grit, a ghost 187 stamp slamming behind
+ * the logo, double muzzle-flash, the FAST.png logo SLAMMING dead-center
+ * with a micro camera-shake, the blackletter wordmark + 187 mark stamping
+ * in, the house war cry, and the maker credit. Film grain + vignette keep
+ * it theatre. No progress bars — the block doesn't ask, it announces.
+ * Click / tap / Enter to skip.
  */
 
 const LOGO_CLAMP = "clamp(190px, 58vw, 330px)";
 
 const CREDIT_LINE_1 = "MADE BY";
-const CREDIT_LINE_2 = "DRACH — GUNS BO SKIET N SMOGGLE";
 const WORDMARK = "FAST GUNS";
 const SYMBOL = "187";
-const TAGLINE = "GEEN SAGTES HIER";
 
 export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const logo = useRef<HTMLDivElement>(null);
   const glow = useRef<HTMLDivElement>(null);
+  const stamp = useRef<HTMLDivElement>(null);
   const credit = useRef<HTMLDivElement>(null);
   const wordmark = useRef<HTMLDivElement>(null);
   const tagline = useRef<HTMLDivElement>(null);
+  const hint = useRef<HTMLDivElement>(null);
   const barTop = useRef<HTMLDivElement>(null);
   const barBottom = useRef<HTMLDivElement>(null);
   const vignette = useRef<HTMLDivElement>(null);
   const done = useRef(false);
+  // one war cry per splash — deterministic on the server, fresh after mount
+  const tickerLine = useHouseLine(SPLASH_TICKER);
+  const taglineText = `${SPLASH_TAGLINE} · ${tickerLine}`;
 
   const finish = useCallback(() => {
     if (done.current) return;
@@ -48,12 +54,12 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
     gsap
       .timeline({ onComplete })
       .to(
-        [logo.current, wordmark.current, tagline.current, credit.current],
+        [logo.current, wordmark.current, tagline.current, credit.current, stamp.current],
         { scale: 1.06, opacity: 0, filter: "blur(12px)", duration: 0.5, ease: "power2.in", stagger: 0.04 },
         0
       )
       .to([barTop.current, barBottom.current], { scaleX: 0, duration: 0.35, ease: "power3.in" }, 0)
-      .to([glow.current, vignette.current], { opacity: 0, duration: 0.3, ease: "power1.in" }, 0)
+      .to([glow.current, vignette.current, hint.current], { opacity: 0, duration: 0.3, ease: "power1.in" }, 0)
       .to(rootEl, { opacity: 0, duration: 0.42, ease: "power2.in" }, 0.12);
   }, [onComplete]);
 
@@ -72,6 +78,13 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
       // vignette breathes open
       gsap.fromTo(vignette.current, { opacity: 0 }, { opacity: 1, duration: 1.2, ease: "power2.out" });
 
+      // ghost 187 stamp — slams in behind everything one beat before the logo
+      gsap.fromTo(
+        stamp.current,
+        { opacity: 0, scale: 2.6, rotate: -6 },
+        { opacity: 0.08, scale: 1, rotate: -3, duration: 0.5, ease: "power4.in" }
+      );
+
       // the slam — logo drops in hard with overshoot, then a 2-frame shake
       const tl = gsap.timeline();
       tl.fromTo(
@@ -89,34 +102,39 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         ],
       });
 
-      // muzzle-flash glow — pops with the slam, then flickers low
+      // double muzzle-flash — pop, pop, then flicker low
       gsap.fromTo(
         glow.current,
         { opacity: 0, scale: 0.4 },
-        { opacity: 0.85, scale: 1, duration: 0.18, ease: "power2.out", delay: 0.5 }
+        { opacity: 0.85, scale: 1, duration: 0.14, ease: "power2.out", delay: 0.5 }
+      );
+      gsap.fromTo(
+        glow.current,
+        { opacity: 0.15, scale: 0.8 },
+        { opacity: 0.65, scale: 1.12, duration: 0.12, ease: "power2.out", delay: 0.68 }
       );
       gsap.to(glow.current, {
-        opacity: 0.28,
-        duration: 1.6,
-        delay: 0.75,
+        opacity: 0.26,
+        duration: 1.5,
+        delay: 0.85,
         ease: "sine.inOut",
         yoyo: true,
         repeat: -1,
       });
 
-      // wordmark stamps in with a punch
+      // wordmark stamps in with a punch — blackletter house face
       tl.fromTo(
         wordmark.current,
-        { opacity: 0, scale: 1.6, letterSpacing: "1.1em", filter: "blur(6px)" },
-        { opacity: 1, scale: 1, letterSpacing: "0.42em", filter: "blur(0px)", duration: 0.42, ease: "power4.out" },
+        { opacity: 0, scale: 1.6, letterSpacing: "0.5em", filter: "blur(6px)" },
+        { opacity: 1, scale: 1, letterSpacing: "0.08em", filter: "blur(0px)", duration: 0.42, ease: "power4.out" },
         0.62
       );
 
-      // 187 symbol + tagline
+      // 187 symbol + war cry
       gsap.fromTo(
         tagline.current,
         { opacity: 0, y: 10, letterSpacing: "0.7em" },
-        { opacity: 1, y: 0, letterSpacing: "0.44em", duration: 0.7, ease: "power3.out", delay: 1.05 }
+        { opacity: 1, y: 0, letterSpacing: "0.3em", duration: 0.7, ease: "power3.out", delay: 1.05 }
       );
 
       // maker credit — rises in last, the signature
@@ -124,6 +142,13 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         credit.current,
         { opacity: 0, y: 16 },
         { opacity: 1, y: 0, duration: 0.9, ease: "power3.out", delay: 1.45 }
+      );
+
+      // skip hint — the door is open, take it
+      gsap.fromTo(
+        hint.current,
+        { opacity: 0 },
+        { opacity: 0.6, duration: 0.6, ease: "power2.out", delay: 2.5 }
       );
 
       // hairline pulse rings — twice, then rest
@@ -152,7 +177,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   );
 
   useEffect(() => {
-    const hold = window.setTimeout(finish, 3600);
+    const hold = window.setTimeout(finish, 4200);
     return () => window.clearTimeout(hold);
   }, [finish]);
 
@@ -168,6 +193,16 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
       }}
       className="fast-grain fixed inset-0 z-[100] cursor-pointer select-none overflow-hidden bg-black outline-none"
     >
+      {/* scanline grit — pure CSS, barely there */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-[0.05]"
+        style={{
+          background:
+            "repeating-linear-gradient(0deg, rgba(255,255,255,0.5) 0px, rgba(255,255,255,0.5) 1px, transparent 1px, transparent 4px)",
+        }}
+      />
+
       {/* vignette — cinema edges */}
       <div
         ref={vignette}
@@ -183,6 +218,17 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
           className="size-[72vmin] rounded-full opacity-0 will-change-transform"
           style={{ background: "radial-gradient(circle, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.05) 38%, transparent 68%)" }}
         />
+      </div>
+
+      {/* ghost 187 stamp — the mark behind the mark */}
+      <div className="pointer-events-none absolute inset-0 grid place-items-center" aria-hidden>
+        <div
+          ref={stamp}
+          className="gang-font select-none text-[62vmin] leading-none text-white opacity-0 will-change-transform"
+          style={{ textShadow: "0 0 80px rgba(255,255,255,0.08)" }}
+        >
+          {SYMBOL}
+        </div>
       </div>
 
       {/* pulse rings — decorative only */}
@@ -212,29 +258,40 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
             />
           </div>
           <div ref={wordmark} className="mt-5 flex flex-col items-center gap-2.5 px-6 text-center opacity-0">
-            <h1 className="text-2xl font-black uppercase text-white sm:text-3xl" style={{ letterSpacing: "0.42em", paddingLeft: "0.42em", textShadow: "0 0 26px rgba(255,255,255,0.22)" }}>
+            <h1 className="gang-font text-5xl leading-none text-white sm:text-6xl [text-shadow:0_0_30px_rgba(255,255,255,0.28)]">
               {WORDMARK}
             </h1>
             <span className="flex items-center gap-2.5 text-neutral-400" aria-label="187">
               <span className="h-px w-9 bg-neutral-700" aria-hidden />
-              <span className="font-mono text-xs font-bold tracking-[0.5em] text-neutral-200" style={{ paddingLeft: "0.5em" }}>
+              <span className="font-mono text-sm font-black tracking-[0.5em] text-neutral-200" style={{ paddingLeft: "0.5em" }}>
                 {SYMBOL}
               </span>
               <span className="h-px w-9 bg-neutral-700" aria-hidden />
             </span>
           </div>
           <div ref={tagline} className="mt-3 px-6 text-center opacity-0">
-            <span className="font-mono text-[9px] uppercase tracking-[0.44em] text-neutral-500 sm:text-[10px]" style={{ paddingLeft: "0.44em" }}>
-              {TAGLINE}
+            <span className="font-mono text-[10px] font-black uppercase text-neutral-400 sm:text-[11px]">
+              {taglineText}
             </span>
           </div>
           <div ref={credit} className="mt-4 flex flex-col items-center gap-1.5 px-6 text-center opacity-0">
-            <span className="font-mono text-[9px] uppercase text-neutral-500 sm:text-[10px]">{CREDIT_LINE_1}</span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.34em] text-neutral-300 sm:text-xs">
-              {CREDIT_LINE_2}
+            <span className="font-mono text-[9px] font-bold uppercase text-neutral-500 sm:text-[10px]">{CREDIT_LINE_1}</span>
+            <span className="gang-font text-xl text-neutral-100 sm:text-2xl">
+              {SPLASH_CREDIT}
             </span>
           </div>
         </div>
+      </div>
+
+      {/* skip hint — bottom of the frame, above the letterbox bar */}
+      <div
+        ref={hint}
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-[max(4.8vh,36px)] z-10 text-center opacity-0"
+      >
+        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-neutral-400">
+          {SPLASH_SKIP}
+        </span>
       </div>
     </div>
   );

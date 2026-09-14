@@ -39,12 +39,12 @@ export function FastButton({
   ...rest
 }: FastButtonProps) {
   const base =
-    "inline-flex select-none items-center justify-center gap-2 rounded-xl font-medium transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40";
+    "inline-flex select-none items-center justify-center gap-2 rounded-xl font-bold tracking-wide transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40";
   const sizes = {
-    sm: "h-9 px-3 text-xs",
-    md: "min-h-[44px] px-4 text-sm",
-    lg: "min-h-[48px] px-5 text-sm",
-    icon: "size-10",
+    sm: "min-h-[40px] px-3.5 text-xs",
+    md: "min-h-[48px] px-5 text-sm",
+    lg: "min-h-[52px] px-6 text-base",
+    icon: "size-11",
   };
   const variants = {
     solid: "bg-white text-black hover:bg-neutral-200 active:scale-[0.98]",
@@ -76,10 +76,13 @@ export function FastInput({
   ...rest
 }: InputHTMLAttributes<HTMLInputElement>) {
   return (
-    <input
-      {...rest}
-      className={`h-12 w-full rounded-xl border border-neutral-800 bg-black px-4 text-sm text-neutral-100 outline-none transition-colors placeholder:text-neutral-700 focus:border-neutral-500 disabled:opacity-50 ${className}`}
-    />
+    /* The wrapper keeps rounded corners + focus ring shape in one place. */
+    <div className="rounded-xl">
+      <input
+        {...rest}
+        className={`h-13 w-full rounded-xl border border-neutral-800 bg-black px-4 text-[15px] font-semibold text-neutral-100 outline-none transition-colors placeholder:font-medium placeholder:text-neutral-600 focus:border-neutral-400 disabled:opacity-50 ${className}`}
+      />
+    </div>
   );
 }
 
@@ -89,6 +92,8 @@ type FastModalProps = {
   open: boolean;
   onClose: () => void;
   label: string;
+  /** Wide two-column-ready panel (case builders, big forms). */
+  wide?: boolean;
   children: ReactNode;
 };
 
@@ -96,7 +101,7 @@ type FastModalProps = {
  * Bespoke modal: GSAP enter/exit, bottom-sheet on phones, centered dialog
  * on larger screens, scroll lock, Escape + backdrop dismissal.
  */
-export function FastModal({ open, onClose, label, children }: FastModalProps) {
+export function FastModal({ open, onClose, label, wide = false, children }: FastModalProps) {
   const [mounted, setMounted] = useState(false);
   const [shownOpen, setShownOpen] = useState(open);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -167,7 +172,7 @@ export function FastModal({ open, onClose, label, children }: FastModalProps) {
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className="fixed inset-0 z-[150] flex items-end justify-center p-4 sm:items-center"
+      className="fixed inset-0 z-[150] flex items-end justify-center p-3 sm:items-center sm:p-4"
     >
       <div
         ref={overlayRef}
@@ -177,7 +182,11 @@ export function FastModal({ open, onClose, label, children }: FastModalProps) {
       />
       <div
         ref={panelRef}
-        className="relative max-h-[min(86dvh,100%)] w-full max-w-xs overflow-y-auto overscroll-contain rounded-3xl border border-neutral-800 bg-neutral-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.8)] will-change-transform"
+        className={`relative max-h-[min(88dvh,100%)] w-full overflow-y-auto overscroll-contain rounded-3xl border border-neutral-800 bg-neutral-950 shadow-[0_24px_80px_rgba(0,0,0,0.8)] will-change-transform ${
+          wide
+            ? "max-w-xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:max-w-2xl sm:p-7"
+            : "max-w-xs p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:max-w-sm"
+        }`}
       >
         {children}
       </div>

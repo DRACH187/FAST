@@ -1,61 +1,72 @@
 "use client";
 
 /**
- * FAST — SURROUNDINGS: South Africa community-safety map.
+ * FAST — SURROUNDINGS: plain Google Maps, house-themed.
+ * =====================================================
+ * The basemap is a REAL interactive Google Map (the normal embed — pan,
+ * pinch, zoom all work like google.com/maps) pushed through a custom
+ * monochrome theme filter so it stays black/white/grey like the house.
+ * One tap flips it to RAW SAT (satellite, moody). The viewport follows the
+ * intel feed: tap an area and the map drives there. "WYS HEEL SA" pulls
+ * back to the whole country. No geolocation anywhere, ever.
  *
- * Basemap: REAL Google Maps tiles (mt*.google.com raster endpoint — no API
- * key required) rendered through Leaflet and pushed through a grayscale
- * filter so the whole map stays strictly black/white/grey. A satellite
- * layer is one tap away, filtered the same way. The viewport is hard-locked
- * to South Africa (maxBoundsViscosity 1.0) and geolocation is intentionally
- * NOT used anywhere.
+ * Intel: Gemini free flash via /api/map/hotspots (curated offline fallback
+ * built in). Auto-sync every 10 minutes while open; a NEXT SYNC chip ticks
+ * down in the header. Areas carry real sub-neighbourhood BLOCK rows with
+ * allegiance chips (FAST GUNS = home solid white, AMERICANS = ally, VARADOS
+ * + BRITISH = rival struck through, documented gangs = grey) and the WAR
+ * BOARD counts turf per crew with a rotating disrespect ticker.
  *
- * Hotspot intel: Gemini free flash model via /api/map/hotspots (curated
- * offline fallback built in). While the map is open the feed auto-syncs
- * every 10 minutes (matching the server TTL); a NEXT SYNC countdown chip
- * ticks in the footer and resets after every fetch. Markers are bespoke
- * divIcons; the detail panel, analytics dashboard, filters and footer are
- * hand-rolled — zero default Leaflet chrome.
- *
- * Analytics: toggleable monochrome dashboard (KPI row, threat distribution,
- * province breakdown, top documented groups, trend vs last sync). Bottom
- * sheet on mobile, right card on sm+. Motion is GSAP-driven and respects
- * prefers-reduced-motion.
+ * Layout: phone = map up top, intel feed scrolling under it. Desktop =
+ * map parked left (full height), intel rail on the right. GSAP entrances,
+ * reduced-motion respected, zero default map chrome.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type * as LeafletNS from "leaflet";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import {
   ArrowLeft,
   BarChart3,
-  Crosshair,
-  Layers,
-  MapPinOff,
-  Minus,
-  Plus,
+  ChevronDown,
+  Globe2,
+  MapPin,
+  RadioTower,
   RefreshCw,
-  Search,
-  TriangleAlert,
-  X,
+  Satellite,
+  WifiOff,
 } from "lucide-react";
-import gsap from "gsap";
-import { useGSAP } from "@gsap/react";
-import { REDUCED_MOTION } from "@/components/fast/motion";
-import "leaflet/dist/leaflet.css";
+import { REDUCED_MOTION, ScreenShell } from "@/components/fast/motion";
+import {
+  MAP_ANALYTICS_TITLE,
+  MAP_INTENSITY,
+  MAP_OFFLINE_NOTE,
+  MAP_PICK_COUNTRY,
+  MAP_REFRESH_NOTE,
+  MAP_SOURCE_FALLBACK,
+  MAP_SOURCE_GEMINI,
+  MAP_SUB,
+  MAP_TAP_AREA,
+  MAP_THEME_DARK,
+  MAP_THEME_SAT,
+  MAP_TITLE,
+  MAP_TURF_NOTE,
+  pick,
+} from "@/lib/fast/copy";
+import {
+  BLOCK_CHIP_CLASS,
+  countTurf,
+  WAR_BOARD_TAGLINES,
+  type BlockAllegiance,
+  type TurfBlock,
+} from "@/lib/fast/gang-turf";
 
 gsap.registerPlugin(useGSAP);
 
-// ------------------------------------------------------------------- types
+// -------------------------------------------------------------------- types
 
 type Threat = "MODERATE" | "HIGH" | "SEVERE";
-
 type Gang = { name: string; threat: Threat; notes: string };
 
 type Hotspot = {
@@ -66,14 +77,19 @@ type Hotspot = {
   intensity: number;
   summary: string;
   gangs: Gang[];
+  blocks: TurfBlock[];
 };
 
 type FeedSource = "gemini" | "fallback" | "cache";
 
 type Feed = { hotspots: Hotspot[]; source: FeedSource; updatedAt: string; reason?: string };
 
-/** Previous feed snapshot kept in memory for the TREND VS LAST SYNC panel. */
-type Snapshot = { hotspots: Hotspot[]; updatedAt: string };
+const FEED_URL = "/api/map/hotspots";
+const SYNC_MS = 10 * 60 * 1000; // server TTL mirror
+
+const SA_CENTER = { lat: -29.1, lng: 24.5 };
+const AREA_ZOOM = 13;
+const SA_ZOOM = 5;
 
 const PROVINCE_ORDER = [
   "Eastern Cape",
@@ -88,1224 +104,532 @@ const PROVINCE_ORDER = [
 ];
 
 const SOURCE_BADGE: Record<FeedSource, string> = {
-  gemini: "GEMINI INTEL",
-  cache: "CACHED",
-  fallback: "OFFLINE DATASET",
+  gemini: MAP_SOURCE_GEMINI,
+  cache: "GEKAS · VORIGE SINK",
+  fallback: MAP_SOURCE_FALLBACK,
 };
 
-const THREAT_RANK: Record<Threat, number> = { MODERATE: 0, HIGH: 1, SEVERE: 2 };
+const ALLEGIANCES: readonly BlockAllegiance[] = ["home", "ally", "rival", "documented"];
 
-function threatChipClass(threat: Threat): string {
-  if (threat === "SEVERE") return "border-white bg-white text-black";
-  if (threat === "HIGH") return "border-neutral-400 text-neutral-200";
-  return "border-neutral-700 text-neutral-400";
+/** Custom Google Maps themes — the house palette, two moods. */
+const MAP_FILTERS: Record<"dark" | "sat", string> = {
+  // roads theme pressed into black/white/grey (classic embed dark-inversion)
+  dark: "grayscale(1) invert(0.91) contrast(1.08) brightness(0.9)",
+  // satellite left raw but moody
+  sat: "grayscale(0.4) contrast(1.12) brightness(0.82)",
+};
+
+function intensityChipClass(intensity: number): string {
+  if (intensity >= 5) return "border-white bg-white text-black";
+  if (intensity >= 4) return "border-neutral-400 text-neutral-100";
+  if (intensity >= 3) return "border-neutral-600 text-neutral-300";
+  return "border-neutral-700 text-neutral-500";
 }
 
-// ---------------------------------------------------------------- constants
-
-/** Client auto-sync cadence — mirrors CACHE_TTL_MS on /api/map/hotspots. */
-const SYNC_INTERVAL_MS = 10 * 60 * 1000;
-/** After a failed sync, back off before the next attempt. */
-const ERROR_RETRY_MS = 30 * 1000;
-
-/** South Africa, with a little breathing room — the fit/recentre target. */
-const SA_BOUNDS: [[number, number], [number, number]] = [
-  [-34.95, 16.3],
-  [-21.9, 33.3],
-];
-/** Hard panning limit: South Africa plus a small margin. */
-const SA_LIMITS: [[number, number], [number, number]] = [
-  [-35.4, 15.7],
-  [-21.5, 33.9],
-];
-const FIT_PAD: LeafletNS.FitBoundsOptions = { padding: [24, 24], animate: !REDUCED_MOTION };
-
-const GOOGLE_ROADMAP = "https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en";
-const GOOGLE_SATELLITE = "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}&hl=en";
-const GOOGLE_SUBDOMAINS = ["mt0", "mt1", "mt2", "mt3"];
-
-function hotspotKey(h: Hotspot): string {
-  return `${h.province}|${h.area.toLowerCase()}`;
+/** Chip text for a block row: crew names for the house, gang name otherwise. */
+function blockChipLabel(b: TurfBlock): string {
+  if (b.allegiance === "home") return "FAST GUNS";
+  if (b.allegiance === "ally") return "AMERICANS";
+  return b.gang.toUpperCase() || "GEDOKUMENTEERD";
 }
 
-function formatUtc(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+function fmtCountdown(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function formatCountdown(ms: number): string {
-  const m = Math.floor(ms / 60_000);
-  const s = Math.floor((ms % 60_000) / 1000);
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-/** WeakMap so the zoom layer can rebind area labels without rebuilds. */
-const markerHotspots = new WeakMap<LeafletNS.Marker, Hotspot>();
-
-// --------------------------------------------------------- injected styles
-
-function injectMapStyles() {
-  if (document.getElementById("fast-map-styles")) return;
-  const style = document.createElement("style");
-  style.id = "fast-map-styles";
-  style.textContent = `
-/* monochrome enforcement on Google tiles — roadmap is inverted into a dark
-   grey map so it matches the all-black app and white markers pop */
-.fast-google-tiles { filter: grayscale(1) invert(1) brightness(0.82) contrast(1.12); }
-.fast-google-tiles-sat { filter: grayscale(1) brightness(0.68) contrast(1.15); }
-
-/* bespoke hotspot markers (constant screen size, Leaflet-anchored) */
-.fast-hspot-icon { background: transparent !important; border: none !important; }
-.fast-hspot {
-  position: relative; display: flex; align-items: center; justify-content: center;
-  border-radius: 9999px; cursor: pointer; background: transparent; border: none;
-  padding: 0; outline: none;
-}
-.fast-hspot:focus-visible { outline: 2px solid #ffffff; outline-offset: 2px; }
-.fast-hspot-ring {
-  position: absolute; inset: 0; border-radius: 9999px;
-  border: 1px solid #ffffff; pointer-events: none;
-}
-.fast-hspot-dot {
-  width: 5px; height: 5px; border-radius: 9999px; background: #ffffff;
-  box-shadow: 0 0 6px rgba(255, 255, 255, 0.55);
-}
-.fast-hspot-active .fast-hspot-dot { box-shadow: 0 0 14px rgba(255,255,255,0.95); transform: scale(1.4); }
-.fast-hspot-active .fast-hspot-ring { border-width: 2px; opacity: 1 !important; }
-@keyframes fast-hspot-ping {
-  0% { transform: scale(1); opacity: 0.7; }
-  100% { transform: scale(1.9); opacity: 0; }
-}
-.fast-hspot-ping {
-  position: absolute; inset: 0; border-radius: 9999px;
-  border: 1px solid #ffffff; animation: fast-hspot-ping 1.9s ease-out infinite;
-}
-.fast-hspot-label {
-  background: rgba(0,0,0,0.72); border: 1px solid #262626; color: #d4d4d4;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
-  padding: 1px 6px; border-radius: 9999px; box-shadow: none;
-}
-.fast-hspot-label::before { display: none; }
-
-/* keep Leaflet chrome invisible — all controls are bespoke */
-.leaflet-container { background: #000000; outline: none; font: inherit; }
-.leaflet-control-container { display: none; }
-
-@media (prefers-reduced-motion: reduce) {
-  .fast-hspot-ping { animation: none; opacity: 0; }
-}
-`;
-  document.head.appendChild(style);
-}
-
-// ------------------------------------------------------------ KPI card
-
-function Kpi({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <div className="rounded-xl border border-neutral-900 bg-black/60 p-3">
-      <span className="block font-mono text-lg leading-none tabular-nums text-white">{value}</span>
-      <span className="mt-1.5 block font-mono text-[8px] uppercase tracking-widest text-neutral-500">
-        {label}
-      </span>
-      {note && <span className="mt-0.5 block text-[9px] leading-snug text-neutral-600">{note}</span>}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------ screen
+// --------------------------------------------------------------- component
 
 export function MapScreen({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [mounted, setMounted] = useState(false);
   const [shownOpen, setShownOpen] = useState(open);
-
   const [feed, setFeed] = useState<Feed | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [theme, setTheme] = useState<"dark" | "sat">("dark");
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [online, setOnline] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
+  const [tagline, setTagline] = useState(() => pick(WAR_BOARD_TAGLINES));
+  const [sub] = useState(() => pick(MAP_SUB));
+  const [turfNote] = useState(() => pick(MAP_TURF_NOTE));
 
-  const [query, setQuery] = useState("");
-  const [province, setProvince] = useState<string>("ALL");
-  const [selected, setSelected] = useState<Hotspot | null>(null);
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const inflight = useRef(false);
 
-  const [tilesDown, setTilesDown] = useState(false);
-  const [zoom, setZoom] = useState(6);
-  const [satellite, setSatellite] = useState(false);
-  /** bumped once the Leaflet map + marker layer exist — retriggers markers */
-  const [mapReady, setMapReady] = useState(0);
-
-  /** 1-second heartbeat while the map is open — drives the countdown. */
-  const [nowSec, setNowSec] = useState(() => Date.now());
-  /** epoch ms of the next scheduled intel sync (null until a fetch lands). */
-  const [nextSyncAt, setNextSyncAt] = useState<number | null>(null);
-  /** previous feed snapshot (state mirrors an in-memory ref for render). */
-  const [prevSnapshot, setPrevSnapshot] = useState<Snapshot | null>(null);
-
-  const overlayRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const analyticsRef = useRef<HTMLDivElement>(null);
-  const hostRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<LeafletNS.Map | null>(null);
-  const layerRef = useRef<LeafletNS.LayerGroup | null>(null);
-  const tileRef = useRef<LeafletNS.TileLayer | null>(null);
-  const satelliteRef = useRef(false);
-  const markerEls = useRef(new Map<string, HTMLElement>());
-  const tileStats = useRef({ errored: 0, loaded: 0 });
-
-  const haveFeedRef = useRef(false);
-  const inflightRef = useRef(false);
-  const lastFetchAtRef = useRef(0);
-  const feedRef = useRef<Feed | null>(null);
-  const prevSnapshotRef = useRef<Snapshot | null>(null);
-
-  // open/close mount dance (derive during render — the React-sanctioned
-  // pattern, same as FastModal): reopening starts with clean panels.
   if (open !== shownOpen) {
     setShownOpen(open);
-    if (open) {
-      setMounted(true);
-      setSelected(null);
-      setAnalyticsOpen(false);
-    }
+    if (open) setMounted(true);
   }
 
-  // map styles are injected once per mount
-  useEffect(() => {
-    if (mounted) injectMapStyles();
-  }, [mounted]);
+  // ------------------------------------------------------------- data flow
 
-  // ------------------------------------------------------------ GSAP open
-  useGSAP(
-    () => {
-      if (!mounted || !overlayRef.current) return;
-      if (REDUCED_MOTION) {
-        gsap.set(overlayRef.current, { opacity: 1, scale: 1 });
-        return;
-      }
-      gsap.fromTo(
-        overlayRef.current,
-        { opacity: 0, scale: 0.98 },
-        { opacity: 1, scale: 1, duration: 0.34, ease: "power3.out" }
-      );
-    },
-    { dependencies: [mounted] }
-  );
-
-  // ----------------------------------------------------------- GSAP close
-  useEffect(() => {
-    if (open || !mounted) return;
-    const el = overlayRef.current;
-    if (!el) return;
-    gsap.to(el, {
-      opacity: 0,
-      duration: REDUCED_MOTION ? 0 : 0.2,
-      ease: "power2.in",
-      onComplete: () => setMounted(false),
-    });
-  }, [open, mounted]);
-
-  // ------------------------------------------------- esc / scroll lock
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      // panels dismiss first, the map itself only on a second Esc
-      if (selected) setSelected(null);
-      else if (analyticsOpen) setAnalyticsOpen(false);
-      else onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [open, onClose, selected, analyticsOpen]);
-
-  // ------------------------------------------------------- data fetch
-  const load = useCallback(async (signal: AbortSignal, opts: { refresh?: boolean } = {}) => {
-    if (inflightRef.current) return;
-    inflightRef.current = true;
-    if (opts.refresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
+  const sync = useCallback(async () => {
+    if (inflight.current) return;
+    inflight.current = true;
+    setSyncing(true);
     try {
-      const res = await fetch(`/api/map/hotspots${opts.refresh ? "?refresh=1" : ""}`, { signal });
-      const data: unknown = await res.json().catch(() => null);
-      const body = data as
-        | {
-            ok?: boolean;
-            source?: FeedSource;
-            reason?: string;
-            updatedAt?: string;
-            hotspots?: Hotspot[];
-            error?: string;
-          }
-        | null;
-      if (!res.ok || !body?.ok || !Array.isArray(body.hotspots)) {
-        setError(body?.error ?? `Intel feed error (HTTP ${res.status})`);
-        // back off, then the scheduler retries automatically
-        setNextSyncAt(Date.now() + ERROR_RETRY_MS);
+      const res = await fetch(FEED_URL, { cache: "no-store" });
+      const data = (await res.json().catch(() => ({}))) as Partial<Feed> & { ok?: boolean; error?: string };
+      if (!res.ok || data.ok !== true || !Array.isArray(data.hotspots)) {
+        setFeedError(typeof data.error === "string" ? data.error : "Intel-bron weg — probeer weer");
         return;
       }
-      haveFeedRef.current = true;
-      const nextFeed: Feed = {
-        hotspots: body.hotspots,
-        source: body.source ?? "fallback",
-        updatedAt: body.updatedAt ?? new Date().toISOString(),
-        reason: typeof body.reason === "string" ? body.reason : undefined,
-      };
-      // keep the outgoing feed as the previous snapshot for TREND VS LAST SYNC
-      const outgoing = feedRef.current;
-      if (outgoing) {
-        const snap: Snapshot = { hotspots: outgoing.hotspots, updatedAt: outgoing.updatedAt };
-        prevSnapshotRef.current = snap;
-        setPrevSnapshot(snap);
-      }
-      feedRef.current = nextFeed;
-      lastFetchAtRef.current = Date.now();
-      setFeed(nextFeed);
-      setNextSyncAt(Date.now() + SYNC_INTERVAL_MS);
-    } catch (err) {
-      if ((err as Error | null)?.name === "AbortError") return;
-      setError("Network error — could not reach the intel feed.");
-      setNextSyncAt(Date.now() + ERROR_RETRY_MS);
+      setFeedError(null);
+      setFeed({
+        hotspots: data.hotspots as Hotspot[],
+        source: (data.source as FeedSource) ?? "fallback",
+        updatedAt: data.updatedAt ?? new Date().toISOString(),
+        reason: data.reason,
+      });
+    } catch {
+      setFeedError("Netwerk onbereikbaar — HUIS INTEL dra die kaart");
     } finally {
-      inflightRef.current = false;
-      if (!signal.aborted) {
-        setLoading(false);
-        setRefreshing(false);
-      }
+      setSyncing(false);
+      inflight.current = false;
     }
   }, []);
 
-  // first open per mount: exactly one initial fetch
-  useEffect(() => {
-    if (!mounted || haveFeedRef.current) return;
-    const ctrl = new AbortController();
-    void load(ctrl.signal);
-    return () => ctrl.abort();
-  }, [mounted, attempt, load]);
-
-  // reopening after the sync window elapsed: refresh immediately
+  // sync on open + every TTL while open + 1s housekeeping tick
   useEffect(() => {
     if (!open || !mounted) return;
-    if (!haveFeedRef.current) return; // first open — the initial loader owns it
-    if (lastFetchAtRef.current && Date.now() - lastFetchAtRef.current >= SYNC_INTERVAL_MS) {
-      const ctrl = new AbortController();
-      void load(ctrl.signal);
-    }
-  }, [open, mounted, load]);
-
-  // 1s heartbeat while the map is open
-  useEffect(() => {
-    if (!open) return;
-    setNowSec(Date.now());
-    const id = window.setInterval(() => setNowSec(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [open]);
-
-  // scheduled 10-minute auto-sync (also fires the moment the countdown lapses)
-  useEffect(() => {
-    if (!open || !feed) return;
-    if (nextSyncAt === null) {
-      setNextSyncAt(Date.now() + SYNC_INTERVAL_MS);
-      return;
-    }
-    if (nowSec >= nextSyncAt) {
-      const ctrl = new AbortController();
-      void load(ctrl.signal);
-    }
-  }, [nowSec, open, feed, nextSyncAt, load]);
-
-  // ----------------------------------------------------- Leaflet lifecycle
-  useEffect(() => {
-    if (!mounted || !hostRef.current || mapRef.current) return;
-    let cancelled = false;
-    let map: LeafletNS.Map | null = null;
-
-    void (async () => {
-      const L = (await import("leaflet")).default;
-      if (cancelled || !hostRef.current) return;
-
-      map = L.map(hostRef.current, {
-        zoomControl: false,
-        attributionControl: false,
-        minZoom: 5,
-        maxZoom: 16,
-        // South Africa ONLY: rigid bounds, no ocean-drifting
-        maxBounds: L.latLngBounds(SA_LIMITS),
-        maxBoundsViscosity: 1.0,
-        zoomSnap: 0.5,
-        worldCopyJump: false,
-        keyboard: true,
-      });
-      map.fitBounds(L.latLngBounds(SA_BOUNDS), FIT_PAD);
-      mapRef.current = map;
-
-      tileStats.current = { errored: 0, loaded: 0 };
-      const sat = satelliteRef.current;
-      const tiles = L.tileLayer(sat ? GOOGLE_SATELLITE : GOOGLE_ROADMAP, {
-        subdomains: GOOGLE_SUBDOMAINS,
-        className: sat ? "fast-google-tiles-sat" : "fast-google-tiles",
-        minZoom: 4,
-        maxZoom: 19,
-        maxNativeZoom: 19,
-        crossOrigin: "anonymous",
-      });
-      tiles.on("tileerror", () => {
-        tileStats.current.errored += 1;
-        if (tileStats.current.errored > 10 && tileStats.current.loaded === 0) setTilesDown(true);
-      });
-      tiles.on("tileload", () => {
-        tileStats.current.loaded += 1;
-        if (tileStats.current.loaded >= 4) setTilesDown(false);
-      });
-      tiles.addTo(map);
-      tileRef.current = tiles;
-
-      layerRef.current = L.layerGroup().addTo(map);
-
-      map.on("zoomend", () => setZoom(map!.getZoom()));
-      setZoom(map.getZoom());
-      setMapReady((n) => n + 1);
-    })();
-
+    void sync();
+    const syncTimer = setInterval(() => void sync(), SYNC_MS);
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    const onOnline = () => setOnline(navigator.onLine);
+    const onOffline = () => setOnline(navigator.onLine);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    setOnline(navigator.onLine);
     return () => {
-      cancelled = true;
-      map?.remove();
-      mapRef.current = null;
-      layerRef.current = null;
-      tileRef.current = null;
-      markerEls.current.clear();
+      clearInterval(syncTimer);
+      clearInterval(tick);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
     };
-  }, [mounted]);
+  }, [open, mounted, sync]);
 
-  // ------------------------------------------------ layer swap (map/sat)
+  // war-board ticker — fresh disrespect every 10s
   useEffect(() => {
-    satelliteRef.current = satellite;
-    const map = mapRef.current;
-    const prev = tileRef.current;
-    if (!map || !prev) return;
-    let cancelled = false;
-    void (async () => {
-      const L = (await import("leaflet")).default;
-      if (cancelled || !mapRef.current) return;
-      prev.remove();
-      tileStats.current = { errored: 0, loaded: 0 };
-      const tiles = L.tileLayer(satellite ? GOOGLE_SATELLITE : GOOGLE_ROADMAP, {
-        subdomains: GOOGLE_SUBDOMAINS,
-        className: satellite ? "fast-google-tiles-sat" : "fast-google-tiles",
-        minZoom: 4,
-        maxZoom: 19,
-        maxNativeZoom: 19,
-        crossOrigin: "anonymous",
-      });
-      tiles.on("tileerror", () => {
-        tileStats.current.errored += 1;
-        if (tileStats.current.errored > 10 && tileStats.current.loaded === 0) setTilesDown(true);
-      });
-      tiles.on("tileload", () => {
-        tileStats.current.loaded += 1;
-        if (tileStats.current.loaded >= 4) setTilesDown(false);
-      });
-      tiles.addTo(mapRef.current);
-      tileRef.current = tiles;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [satellite]);
+    if (!open || !mounted) return;
+    const t = setInterval(() => setTagline((prev) => {
+      let next = pick(WAR_BOARD_TAGLINES);
+      let guard = 0;
+      while (next === prev && guard < 5) {
+        next = pick(WAR_BOARD_TAGLINES);
+        guard += 1;
+      }
+      return next;
+    }), 10_000);
+    return () => clearInterval(t);
+  }, [open, mounted]);
 
-  // ---------------------------------------------------- hotspot markers
-  const filtered = useMemo(() => {
-    if (!feed) return [];
-    const q = query.trim().toLowerCase();
-    return feed.hotspots.filter((h) => {
-      if (province !== "ALL" && h.province !== province) return false;
-      if (!q) return true;
-      if (h.area.toLowerCase().includes(q)) return true;
-      return h.gangs.some((g) => g.name.toLowerCase().includes(q));
+  // ------------------------------------------------------------- derived
+
+  const hotspots = feed?.hotspots ?? [];
+
+  const sorted = useMemo(() => {
+    return [...hotspots].sort((a, b) => {
+      const pa = PROVINCE_ORDER.indexOf(a.province);
+      const pb = PROVINCE_ORDER.indexOf(b.province);
+      if (pa !== pb) return pa - pb;
+      return b.intensity - a.intensity;
     });
-  }, [feed, query, province]);
+  }, [hotspots]);
 
-  const provinces = useMemo(() => {
-    const present = new Set(feed?.hotspots.map((h) => h.province) ?? []);
-    return PROVINCE_ORDER.filter((p) => present.has(p));
+  const selected = selectedIdx !== null ? (sorted[selectedIdx] ?? null) : null;
+
+  const nextSyncAt = useMemo(() => {
+    if (!feed) return null;
+    const at = Date.parse(feed.updatedAt);
+    return Number.isFinite(at) ? at + SYNC_MS : null;
   }, [feed]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    const layer = layerRef.current;
-    if (!map || !layer) return;
-    let cancelled = false;
+  const countdown = nextSyncAt ? fmtCountdown(nextSyncAt - now) : "—";
 
-    void (async () => {
-      const L = (await import("leaflet")).default;
-      if (cancelled || !layerRef.current || !mapRef.current) return;
-      const currentZoom = mapRef.current.getZoom();
-      layer.clearLayers();
-      markerEls.current.clear();
+  const turf = useMemo(() => countTurf(hotspots), [hotspots]);
 
-      for (const h of filtered) {
-        const d = 18 + h.intensity * 6;
-        const ringOpacity = Math.min(0.95, 0.38 + h.intensity * 0.115);
-        const active = selected ? hotspotKey(selected) === hotspotKey(h) : false;
-        const html = `
-          <button type="button" class="fast-hspot${active ? " fast-hspot-active" : ""}"
-                  style="width:${d}px;height:${d}px"
-                  aria-label="Documented hotspot: ${h.area}, ${h.province}">
-            <span class="fast-hspot-ring" style="opacity:${ringOpacity};border-width:${h.intensity >= 5 ? 2 : 1}px"></span>
-            ${h.intensity >= 4 ? '<span class="fast-hspot-ping" aria-hidden="true"></span>' : ""}
-            <span class="fast-hspot-dot"></span>
-          </button>`;
-        const icon = L.divIcon({
-          className: "fast-hspot-icon",
-          html,
-          iconSize: [d, d],
-          iconAnchor: [d / 2, d / 2],
-        });
-        const marker = L.marker([h.lat, h.lng], { icon, keyboard: false });
-        markerHotspots.set(marker, h);
-        marker.on("click", () => {
-          setAnalyticsOpen(false);
-          setSelected(h);
-        });
-        marker.addTo(layer);
-        if (currentZoom >= 9) {
-          marker.bindTooltip(h.area, {
-            className: "fast-hspot-label",
-            direction: "bottom",
-            offset: [0, 6],
-            permanent: true,
-          });
-        }
-        const el = marker.getElement();
-        if (el) markerEls.current.set(hotspotKey(h), el.firstElementChild as HTMLElement);
-      }
-    })();
+  const analytics = useMemo(() => {
+    const provinces = new Set(hotspots.map((h) => h.province)).size;
+    const perProvince = PROVINCE_ORDER.map((p) => ({
+      province: p,
+      count: hotspots.filter((h) => h.province === p).length,
+    })).filter((r) => r.count > 0);
+    const hottest = hotspots.reduce<Hotspot | null>(
+      (best, h) => (best === null || h.intensity > best.intensity ? h : best),
+      null
+    );
+    const threatTally = { MODERATE: 0, HIGH: 0, SEVERE: 0 } as Record<Threat, number>;
+    for (const h of hotspots) for (const g of h.gangs ?? []) threatTally[g.threat] += 1;
+    return { provinces, perProvince, hottest, threatTally };
+  }, [hotspots]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [filtered, selected, mapReady]);
+  /** The actual Google Map — a normal embed, themed by CSS filter. */
+  const mapSrc = useMemo(() => {
+    const c = selected ?? SA_CENTER;
+    const z = selected ? AREA_ZOOM : SA_ZOOM;
+    const t = theme === "sat" ? "k" : "m";
+    return `https://maps.google.com/maps?ll=${c.lat},${c.lng}&q=${c.lat},${c.lng}&z=${z}&t=${t}&hl=en&output=embed`;
+  }, [selected, theme]);
 
-  // tooltip visibility on zoom (no marker rebuild)
-  useEffect(() => {
-    const layer = layerRef.current;
-    if (!layer) return;
-    const markers = layer.getLayers() as LeafletNS.Marker[];
-    for (const m of markers) {
-      const label = m.getTooltip();
-      const h = markerHotspots.get(m);
-      if (zoom >= 9 && !label && h) {
-        m.bindTooltip(h.area, {
-          className: "fast-hspot-label",
-          direction: "bottom",
-          offset: [0, 6],
-          permanent: true,
-        });
-      } else if (zoom < 9 && label) {
-        m.unbindTooltip();
-      }
-    }
-  }, [zoom]);
-
-  // ------------------------------------------------------ detail panel
+  // GSAP entrance for the intel rail
   useGSAP(
     () => {
-      if (selected && panelRef.current && !REDUCED_MOTION) {
-        gsap.fromTo(
-          panelRef.current,
-          { opacity: 0, y: 16, scale: 0.985 },
-          { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: "power3.out", overwrite: "auto" }
-        );
-      }
-    },
-    { dependencies: [selected] }
-  );
-
-  // ---------------------------------------------- analytics panel motion
-  useGSAP(
-    () => {
-      if (!analyticsOpen || !analyticsRef.current) return;
-      if (REDUCED_MOTION) {
-        gsap.set(analyticsRef.current, { opacity: 1, x: 0, y: 0 });
-        return;
-      }
-      const desktop = window.matchMedia("(min-width: 640px)").matches;
+      if (REDUCED_MOTION || !listRef.current) return;
+      const rows = listRef.current.querySelectorAll("[data-area-row]");
       gsap.fromTo(
-        analyticsRef.current,
-        desktop ? { opacity: 0, x: 24 } : { opacity: 0, y: 28 },
-        { opacity: 1, x: 0, y: 0, duration: 0.34, ease: "power3.out", overwrite: "auto" }
+        rows,
+        { opacity: 0, y: 14 },
+        { opacity: 1, y: 0, duration: 0.4, stagger: 0.04, ease: "power3.out", overwrite: "auto" }
       );
     },
-    { dependencies: [analyticsOpen] }
+    { scope: listRef, dependencies: [sorted.length, selectedIdx] }
   );
 
-  // marker highlight follows selection without rebuilding markers
   useEffect(() => {
-    const activeKey = selected ? hotspotKey(selected) : null;
-    for (const [key, el] of markerEls.current) {
-      el.classList.toggle("fast-hspot-active", key === activeKey);
-    }
-  }, [selected, filtered]);
-
-  // drop a stale selection if its area vanished after a refresh
-  useEffect(() => {
-    if (!selected || !feed) return;
-    const key = hotspotKey(selected);
-    if (!feed.hotspots.some((h) => hotspotKey(h) === key)) setSelected(null);
-  }, [feed, selected]);
-
-  const zoomStep = useCallback((dir: 1 | -1) => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (dir === 1) map.zoomIn(1, { animate: !REDUCED_MOTION });
-    else map.zoomOut(1, { animate: !REDUCED_MOTION });
-  }, []);
-
-  const recenter = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.flyToBounds(SA_BOUNDS, { ...FIT_PAD, duration: REDUCED_MOTION ? 0 : 0.7 });
-    setSelected(null);
-  }, []);
-
-  const manualRefresh = useCallback(() => {
-    const ctrl = new AbortController();
-    void load(ctrl.signal, { refresh: true });
-  }, [load]);
-
-  // ----------------------------------------------- analytics computation
-  const analytics = useMemo(() => {
-    const hs = feed?.hotspots ?? [];
-    const dist = [0, 0, 0, 0, 0]; // index 0 -> intensity 1
-    const provMap = new Map<string, { count: number; max: number }>();
-    const gangMap = new Map<string, { areas: string[]; threat: Threat }>();
-    const provinceSet = new Set<string>();
-    let intensitySum = 0;
-    let severeAreas = 0;
-
-    for (const h of hs) {
-      provinceSet.add(h.province);
-      const level = Math.min(5, Math.max(1, Math.round(h.intensity)));
-      dist[level - 1] += 1;
-      intensitySum += h.intensity;
-
-      const p = provMap.get(h.province) ?? { count: 0, max: 0 };
-      p.count += 1;
-      p.max = Math.max(p.max, h.intensity);
-      provMap.set(h.province, p);
-
-      if (h.intensity === 5 || h.gangs.some((g) => g.threat === "SEVERE")) severeAreas += 1;
-
-      for (const g of h.gangs) {
-        const entry = gangMap.get(g.name) ?? { areas: [], threat: "MODERATE" as Threat };
-        if (!entry.areas.includes(h.area)) entry.areas.push(h.area);
-        if (THREAT_RANK[g.threat] > THREAT_RANK[entry.threat]) entry.threat = g.threat;
-        gangMap.set(g.name, entry);
-      }
-    }
-
-    const provinceRows = [...provMap.entries()]
-      .map(([name, v]) => ({ name, count: v.count, max: v.max }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-
-    const topGroups = [...gangMap.entries()]
-      .map(([name, v]) => ({ name, areas: v.areas, threat: v.threat }))
-      .sort((a, b) => b.areas.length - a.areas.length || a.name.localeCompare(b.name))
-      .slice(0, 6);
-
-    return {
-      areas: hs.length,
-      groups: gangMap.size,
-      provincesAffected: provinceSet.size,
-      avgIntensity: hs.length ? Math.round((intensitySum / hs.length) * 10) / 10 : 0,
-      severeAreas,
-      dist,
-      maxDist: Math.max(1, ...dist),
-      provinces: provinceRows,
-      topGroups,
+    if (!mounted) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
     };
-  }, [feed]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mounted, onClose]);
 
-  /** Deltas between the previous snapshot and the current feed. */
-  const trend = useMemo(() => {
-    if (!feed || !prevSnapshot) return null;
-    const prevMap = new Map(prevSnapshot.hotspots.map((h) => [hotspotKey(h), h]));
-    const curMap = new Map(feed.hotspots.map((h) => [hotspotKey(h), h]));
-    const appeared: string[] = [];
-    const gone: string[] = [];
-    const changed: { area: string; from: number; to: number }[] = [];
-
-    for (const h of feed.hotspots) {
-      const prev = prevMap.get(hotspotKey(h));
-      if (!prev) appeared.push(h.area);
-      else if (prev.intensity !== h.intensity) {
-        changed.push({ area: h.area, from: prev.intensity, to: h.intensity });
-      }
-    }
-    for (const [key, h] of prevMap) {
-      if (!curMap.has(key)) gone.push(h.area);
-    }
-    changed.sort(
-      (a, b) =>
-        Math.abs(b.to - b.from) - Math.abs(a.to - a.from) || a.area.localeCompare(b.area)
-    );
-
-    return {
-      appeared,
-      gone,
-      changed: changed.slice(0, 5),
-      changedTotal: changed.length,
-      vsLabel: formatUtc(prevSnapshot.updatedAt),
-    };
-  }, [feed, prevSnapshot]);
-
-  // countdown label (recomputed on every 1s heartbeat)
-  const syncing = loading || refreshing;
-  const countdownLabel = syncing
-    ? "SYNCING"
-    : nextSyncAt === null
-      ? "--:--"
-      : formatCountdown(Math.max(0, nextSyncAt - nowSec));
-
-  // ----------------------------------------------------------- render
-  if (!open && !mounted) return null;
-  if (typeof window === "undefined") return null;
-
-  const asOf = feed ? formatUtc(feed.updatedAt) : null;
+  if (!open || !mounted) return null;
 
   return createPortal(
-    <div
-      ref={overlayRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label="South Africa safety map"
-      className="fixed inset-0 z-[90] flex flex-col bg-black"
-    >
-      {/* ------------------------------------------------------- header */}
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-neutral-900 px-2 sm:gap-3 sm:px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close map"
-          className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
-        >
-          <ArrowLeft className="size-4" aria-hidden />
-        </button>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-mono text-[10px] font-medium uppercase tracking-widest text-neutral-100 sm:text-xs">
-            Surroundings — South Africa
-          </h2>
-          <p className="truncate text-[10px] text-neutral-500">
-            <span className="sm:hidden">Community safety intel</span>
-            <span className="hidden sm:inline">
-              Google Maps · community safety intel · geolocation disabled by design
-            </span>
-          </p>
-        </div>
-        {feed && (
-          <span className="hidden shrink-0 rounded-full border border-neutral-700 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 sm:inline">
-            {SOURCE_BADGE[feed.source]}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            setAnalyticsOpen((v) => !v);
-            setSelected(null);
-          }}
-          aria-label="Toggle analytics"
-          aria-expanded={analyticsOpen}
-          aria-controls="map-analytics"
-          className={`flex size-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-neutral-900 hover:text-white ${
-            analyticsOpen ? "bg-neutral-900 text-white" : "text-neutral-400"
-          }`}
-        >
-          <BarChart3 className="size-4" aria-hidden />
-        </button>
-        <button
-          type="button"
-          onClick={manualRefresh}
-          disabled={refreshing || loading}
-          aria-label="Refresh AI intel"
-          className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-40"
-        >
-          <RefreshCw className={`size-4${refreshing ? " animate-spin" : ""}`} aria-hidden />
-        </button>
-      </header>
-
-      {/* ---------------------------------------------------------- map */}
-      <div className="relative flex-1 overflow-hidden bg-black">
-        <div
-          ref={hostRef}
-          className="absolute inset-0 z-0"
-          aria-label="Interactive Google map of South Africa with documented hotspot areas"
-        />
-
-        {/* search + province chips */}
-        <div className="pointer-events-none absolute inset-x-3 top-3 z-[700] flex flex-col gap-2">
-          <div className="pointer-events-auto relative sm:max-w-72">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-neutral-600"
-              aria-hidden
-            />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search area or gang…"
-              aria-label="Search area or gang"
-              className="h-11 w-full rounded-full border border-neutral-800 bg-black/80 pl-9 pr-3 font-mono text-[11px] uppercase tracking-wider text-neutral-200 outline-none backdrop-blur-sm transition-colors placeholder:text-neutral-600 focus:border-neutral-600"
-            />
-          </div>
-          {(provinces.length > 0 || !!feed) && (
-            <div className="no-scrollbar pointer-events-auto flex gap-1.5 overflow-x-auto pb-0.5">
-              {["ALL", ...provinces].map((p) => {
-                const active = province === p;
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => setProvince(p)}
-                    className={`min-h-[36px] shrink-0 rounded-full border px-2.5 py-1 font-mono text-[9px] uppercase tracking-widest backdrop-blur-sm transition-colors ${
-                      active
-                        ? "border-white bg-white text-black"
-                        : "border-neutral-800 bg-black/80 text-neutral-400 hover:border-neutral-600 hover:text-white"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {error && feed && (
-            <div className="pointer-events-auto flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1 backdrop-blur-sm">
-              <TriangleAlert className="size-3 text-neutral-500" aria-hidden />
-              <span className="text-[10px] text-neutral-400">{error}</span>
-              <button
-                type="button"
-                onClick={() => setAttempt((a) => a + 1)}
-                className="min-h-[44px] px-2 font-mono text-[9px] uppercase tracking-widest text-neutral-200 underline-offset-2 hover:underline"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-          {tilesDown && !error && (
-            <div className="pointer-events-none flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 backdrop-blur-sm">
-              <TriangleAlert className="size-3 text-neutral-500" aria-hidden />
-              <span className="text-[10px] text-neutral-400">
-                Google tiles unreachable — hotspots still plotted
+    <div className="fixed inset-0 z-[90] bg-black" role="dialog" aria-label="Surroundings map">
+      <ScreenShell as="div" className="flex h-dvh flex-col">
+        {/* ---------------------------------------------------------- header */}
+        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+          <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
+            <button
+              onClick={onClose}
+              aria-label="Close map"
+              className="flex size-11 shrink-0 items-center justify-center rounded-xl text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+            >
+              <ArrowLeft className="size-5" aria-hidden />
+            </button>
+            <div className="flex min-w-0 flex-col">
+              <span className="gang-font text-2xl leading-none text-white">{MAP_TITLE}</span>
+              <span className="truncate font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-500">
+                {sub} · {hotspots.length} GEBIEDE · {turf.totalBlocks} BLOKKE
               </span>
             </div>
-          )}
-          {feed?.source === "fallback" && (
-            <div className="pointer-events-none flex max-w-full items-center gap-2 self-start rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 backdrop-blur-sm">
-              <TriangleAlert className="size-3 shrink-0 text-neutral-500" aria-hidden />
-              <span className="truncate text-[10px] text-neutral-400">
-                {feed.reason === "no-key"
-                  ? "Curated dataset — set GEMINI_API_KEY on the server for live AI intel"
-                  : "AI generation unavailable — serving curated dataset"}
+            <div className="flex-1" />
+            <button
+              onClick={() => setShowAnalytics((v) => !v)}
+              aria-pressed={showAnalytics}
+              aria-label="Toggle war analytics"
+              className={`flex size-11 shrink-0 items-center justify-center rounded-xl border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                showAnalytics
+                  ? "border-white bg-white text-black"
+                  : "border-neutral-800 text-neutral-400 hover:border-neutral-500 hover:text-white"
+              }`}
+            >
+              <BarChart3 className="size-5" aria-hidden />
+            </button>
+            <button
+              onClick={() => void sync()}
+              disabled={syncing}
+              aria-label="Sync intel now"
+              className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-neutral-800 text-neutral-400 outline-none transition-colors hover:border-neutral-500 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-40"
+            >
+              <RefreshCw className={`size-4 ${syncing ? "animate-spin" : ""}`} aria-hidden />
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-2 px-3 pb-2 sm:px-4">
+            <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              {MAP_REFRESH_NOTE}
+            </span>
+            <span className="flex items-center gap-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]">
+              <span className="rounded-full border border-neutral-800 px-2 py-0.5 tabular-nums text-neutral-300">
+                NEXT SYNC {countdown}
               </span>
-            </div>
-          )}
-        </div>
-
-        {/* zoom + layer controls (44px touch targets) */}
-        <div className="absolute bottom-3 right-3 z-[700] flex flex-col gap-1.5">
-          {[
-            { icon: Plus, label: "Zoom in", action: () => zoomStep(1) },
-            { icon: Minus, label: "Zoom out", action: () => zoomStep(-1) },
-            {
-              icon: Layers,
-              label: satellite ? "Switch to street map" : "Switch to satellite",
-              action: () => setSatellite((s) => !s),
-            },
-            {
-              icon: Crosshair,
-              label: "Recenter on South Africa",
-              action: recenter,
-            },
-          ].map(({ icon: Icon, label, action }) => (
-            <button
-              key={label}
-              type="button"
-              aria-label={label}
-              onClick={action}
-              className="flex size-11 items-center justify-center rounded-xl border border-neutral-800 bg-black/90 text-neutral-300 backdrop-blur-sm transition-colors hover:border-neutral-600 hover:text-white"
-            >
-              <Icon className="size-4" aria-hidden />
-            </button>
-          ))}
-        </div>
-
-        {/* hint — mobile users learn pinch/drag */}
-        {zoom < 7 && !loading && !!feed && (
-          <div className="pointer-events-none absolute bottom-3 left-1/2 z-[690] -translate-x-1/2">
-            <span className="whitespace-nowrap rounded-full border border-neutral-800 bg-black/80 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500 backdrop-blur-sm">
-              Drag · pinch or scroll to zoom
-            </span>
-          </div>
-        )}
-
-        {/* loading state (no bars — a pulse of text only) */}
-        {loading && !feed && (
-          <div className="absolute inset-0 z-[640] flex items-center justify-center bg-black/60">
-            <span className="animate-fast-pulse font-mono text-[11px] tracking-[0.3em] text-neutral-300">
-              PLOTTING INTEL…
-            </span>
-          </div>
-        )}
-
-        {/* hard error state (no data at all) */}
-        {error && !feed && !loading && (
-          <div className="absolute inset-0 z-[640] flex flex-col items-center justify-center gap-3 bg-black/85 px-6 text-center backdrop-blur-sm">
-            <TriangleAlert className="size-5 text-neutral-500" aria-hidden />
-            <span className="font-mono text-[11px] uppercase tracking-[0.25em] text-neutral-300">
-              Intel feed unavailable
-            </span>
-            <p className="max-w-xs text-xs text-neutral-500">{error}</p>
-            <button
-              type="button"
-              onClick={() => setAttempt((a) => a + 1)}
-              className="min-h-[44px] rounded-full border border-neutral-700 px-4 font-mono text-[10px] uppercase tracking-widest text-neutral-200 transition-colors hover:border-neutral-500 hover:bg-neutral-900"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {/* empty search result */}
-        {feed && !loading && filtered.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 z-[640] flex items-center justify-center">
-            <span className="rounded-full border border-neutral-800 bg-black/85 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-500 backdrop-blur-sm">
-              No areas match
-            </span>
-          </div>
-        )}
-
-        {/* --------------------------------------------- analytics panel */}
-        {analyticsOpen && feed && (
-          <div
-            ref={analyticsRef}
-            id="map-analytics"
-            role="region"
-            aria-label="Surroundings analytics"
-            className="absolute inset-x-0 bottom-0 z-[760] max-h-[70dvh] overflow-y-auto rounded-t-2xl border-t border-neutral-800 bg-neutral-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-16 sm:max-h-[calc(100%-6rem)] sm:w-96 sm:rounded-2xl sm:border sm:pb-4"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <h3 className="font-mono text-[10px] font-medium uppercase tracking-widest text-neutral-100">
-                  Analytics
-                </h3>
-                <span className="shrink-0 rounded-full border border-neutral-700 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider text-neutral-400">
+              {feed && (
+                <span className="rounded-full border border-neutral-800 px-2 py-0.5 text-neutral-400">
                   {SOURCE_BADGE[feed.source]}
                 </span>
+              )}
+            </span>
+          </div>
+        </header>
+
+        {/* ------------------------------------------------------- body */}
+        <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_420px]">
+          {/* -------------------------------------------------- the map */}
+          <section
+            aria-label="Google map of South Africa"
+            className="relative h-[46dvh] min-h-[280px] shrink-0 border-b border-neutral-900 lg:h-auto lg:min-h-0 lg:border-b-0 lg:border-r"
+          >
+            {online ? (
+              <iframe
+                key={mapSrc}
+                title="Google Maps — South Africa"
+                src={mapSrc}
+                loading="lazy"
+                allowFullScreen
+                referrerPolicy="no-referrer-when-downgrade"
+                className="absolute inset-0 size-full border-0"
+                style={{ filter: MAP_FILTERS[theme] }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
+                <WifiOff className="size-7 text-neutral-700" aria-hidden />
+                <p className="text-sm font-bold text-neutral-400">{MAP_OFFLINE_NOTE}</p>
               </div>
+            )}
+
+            {/* theme flip + country reset — above the map chrome */}
+            <div className="absolute right-3 top-3 flex flex-col gap-1.5">
               <button
-                type="button"
-                onClick={() => setAnalyticsOpen(false)}
-                aria-label="Close analytics"
-                className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-white"
+                onClick={() => setTheme("dark")}
+                aria-pressed={theme === "dark"}
+                className={`flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                  theme === "dark"
+                    ? "border-white bg-black/85 text-white"
+                    : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
+                }`}
               >
-                <X className="size-4" aria-hidden />
+                <Globe2 className="size-3.5" aria-hidden />
+                {MAP_THEME_DARK}
+              </button>
+              <button
+                onClick={() => setTheme("sat")}
+                aria-pressed={theme === "sat"}
+                className={`flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                  theme === "sat"
+                    ? "border-white bg-black/85 text-white"
+                    : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
+                }`}
+              >
+                <Satellite className="size-3.5" aria-hidden />
+                {MAP_THEME_SAT}
               </button>
             </div>
 
-            {/* KPI row */}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Kpi label="Areas tracked" value={String(analytics.areas)} />
-              <Kpi label="Documented groups" value={String(analytics.groups)} />
-              <Kpi label="Provinces affected" value={`${analytics.provincesAffected}/9`} />
-              <Kpi label="Avg intensity" value={analytics.avgIntensity.toFixed(1)} />
-              <div className="col-span-2">
-                <Kpi
-                  label="Severe areas"
-                  value={String(analytics.severeAreas)}
-                  note="Intensity 5 or any SEVERE-documented group"
-                />
-              </div>
+            {/* current pin + reset */}
+            <div className="absolute bottom-3 left-3 flex max-w-[70%] flex-col gap-1.5">
+              {selected && (
+                <span className="pointer-events-none flex items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/85 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-sm">
+                  <MapPin className="size-3.5 shrink-0" aria-hidden />
+                  <span className="truncate">{selected.area} · {selected.province}</span>
+                </span>
+              )}
+              <button
+                onClick={() => setSelectedIdx(null)}
+                className="pointer-events-auto flex min-h-[38px] w-fit items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/80 px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-300 backdrop-blur-sm outline-none transition-colors hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+              >
+                {MAP_PICK_COUNTRY}
+              </button>
             </div>
+          </section>
 
-            {/* threat distribution */}
-            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Threat distribution">
-              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                Threat distribution
-              </h4>
-              <div className="mt-2 space-y-1.5">
-                {[1, 2, 3, 4, 5].map((level) => {
-                  const count = analytics.dist[level - 1];
-                  const pct = Math.round((count / analytics.maxDist) * 100);
-                  return (
-                    <div key={level} className="flex items-center gap-2">
-                      <span className="w-6 shrink-0 font-mono text-[9px] uppercase text-neutral-500">
-                        L{level}
-                      </span>
-                      <div
-                        className="h-2.5 flex-1 overflow-hidden rounded-full bg-neutral-800"
-                        role="img"
-                        aria-label={`Intensity ${level}: ${count} ${count === 1 ? "area" : "areas"}`}
-                      >
-                        <div
-                          className="h-full rounded-full bg-white"
-                          style={{ width: `${count === 0 ? 0 : Math.max(6, pct)}%` }}
-                        />
+          {/* ----------------------------------------------- intel rail */}
+          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 sm:px-4 lg:pb-6">
+            {feedError && (
+              <div className="mb-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-center">
+                <p className="text-xs font-bold text-neutral-300">{feedError}</p>
+              </div>
+            )}
+
+            {/* war board */}
+            <section aria-label="War board" className="mb-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+              <div className="flex items-center gap-2">
+                <RadioTower className="size-4 text-neutral-400" aria-hidden />
+                <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
+                  WAR BOARD
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <ScoreCell label="FAST GUNS" value={turf.home} solid />
+                <ScoreCell label="AMERICANS" value={turf.ally} />
+                <ScoreCell label="VARADOS" value={turf.varados} struck />
+                <ScoreCell label="BRITISH" value={turf.british} struck />
+              </div>
+              <p className="mt-3 border-t border-neutral-900 pt-3 text-[13px] font-semibold leading-relaxed text-neutral-300">
+                {tagline}
+              </p>
+              <p className="mt-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-600">
+                {turfNote}
+              </p>
+            </section>
+
+            {/* analytics */}
+            {showAnalytics && (
+              <section aria-label="War analytics" className="mb-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="size-4 text-neutral-400" aria-hidden />
+                  <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
+                    {MAP_ANALYTICS_TITLE}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                  <Kpi label="GEBIEDE" value={hotspots.length} />
+                  <Kpi label="BLOKKE" value={turf.totalBlocks} />
+                  <Kpi label="PROVINCES" value={analytics.provinces} />
+                </div>
+                <div className="mt-4 flex flex-col gap-2">
+                  {(["SEVERE", "HIGH", "MODERATE"] as Threat[]).map((t) => {
+                    const total = Math.max(1, analytics.threatTally.SEVERE + analytics.threatTally.HIGH + analytics.threatTally.MODERATE);
+                    const pct = Math.round((analytics.threatTally[t] / total) * 100);
+                    return (
+                      <div key={t} className="flex items-center gap-2">
+                        <span className="w-20 font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-neutral-500">{t}</span>
+                        <span className="h-2 flex-1 overflow-hidden rounded-full bg-neutral-900">
+                          <span className="block h-full rounded-full bg-neutral-300" style={{ width: `${pct}%` }} />
+                        </span>
+                        <span className="w-8 text-right font-mono text-[9px] tabular-nums text-neutral-400">{pct}%</span>
                       </div>
-                      <span className="w-5 shrink-0 text-right font-mono text-[10px] tabular-nums text-neutral-300">
-                        {count}
-                      </span>
-                    </div>
+                    );
+                  })}
+                </div>
+                {analytics.hottest && (
+                  <p className="mt-4 border-t border-neutral-900 pt-3 text-[11px] font-semibold text-neutral-400">
+                    HOTSTE GEBIED · <span className="text-white">{analytics.hottest.area}</span> ({analytics.hottest.province})
+                  </p>
+                )}
+              </section>
+            )}
+
+            {/* hint */}
+            <p className="mb-3 text-center font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+              {MAP_TAP_AREA}
+            </p>
+
+            {/* area list */}
+            {sorted.length === 0 && !feedError ? (
+              <div className="rounded-2xl border border-dashed border-neutral-800 px-4 py-10 text-center">
+                <p className="text-sm font-bold text-neutral-400">Intel laai nog, ouen…</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {sorted.map((h, i) => {
+                  const isActive = selectedIdx === i;
+                  const tally = countTurf([h]);
+                  return (
+                    <article
+                      key={`${h.area}-${h.province}`}
+                      data-area-row
+                      className={`overflow-hidden rounded-2xl border bg-neutral-950 transition-colors ${
+                        isActive ? "border-neutral-400" : "border-neutral-800 hover:border-neutral-600"
+                      }`}
+                    >
+                      <button
+                        onClick={() => setSelectedIdx(isActive ? null : i)}
+                        aria-expanded={isActive}
+                        className="flex w-full flex-col gap-1.5 px-4 py-3.5 text-left outline-none"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="gang-font text-lg leading-tight text-white">{h.area}</span>
+                          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">
+                            {h.province}
+                          </span>
+                          <span className="flex-1" />
+                          <span
+                            className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] ${intensityChipClass(h.intensity)}`}
+                          >
+                            {MAP_INTENSITY[(Math.min(5, Math.max(1, h.intensity)) as 1 | 2 | 3 | 4 | 5)] ?? "STIL"}
+                          </span>
+                          <ChevronDown
+                            className={`size-4 shrink-0 text-neutral-600 transition-transform ${isActive ? "rotate-180" : ""}`}
+                            aria-hidden
+                          />
+                        </div>
+                        <p className="line-clamp-2 text-xs font-semibold leading-relaxed text-neutral-400">
+                          {h.summary}
+                        </p>
+                        <div className="flex flex-wrap gap-1.5 pt-0.5">
+                          {tally.home > 0 && <Chip label={`FAST GUNS · ${tally.home}`} cls={BLOCK_CHIP_CLASS.home} />}
+                          {tally.ally > 0 && <Chip label={`AMERICANS · ${tally.ally}`} cls={BLOCK_CHIP_CLASS.ally} />}
+                          {tally.rival > 0 && <Chip label={`VYAND · ${tally.rival}`} cls={BLOCK_CHIP_CLASS.rival} />}
+                          {tally.documented > 0 && <Chip label={`GEDOKUMENTEERD · ${tally.documented}`} cls={BLOCK_CHIP_CLASS.documented} />}
+                        </div>
+                      </button>
+
+                      {isActive && (
+                        <div className="border-t border-neutral-900 px-4 pb-4 pt-3">
+                          {(h.blocks ?? []).length > 0 && (
+                            <ul className="mb-3 flex flex-col gap-2">
+                              {(h.blocks ?? []).map((b) => (
+                                <li key={b.name} className="rounded-xl border border-neutral-900 bg-black px-3 py-2.5">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-[13px] font-bold text-neutral-100">{b.name}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em] ${BLOCK_CHIP_CLASS[b.allegiance]}`}>
+                                      {blockChipLabel(b)}
+                                    </span>
+                                  </div>
+                                  {b.note && (
+                                    <p className={`mt-1 text-[11px] font-semibold leading-relaxed ${b.allegiance === "rival" ? "italic text-neutral-500" : "text-neutral-500"}`}>
+                                      {b.note}
+                                    </p>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {(h.gangs ?? []).length > 0 && (
+                            <div className="flex flex-col gap-1.5">
+                              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+                                GEDOKUMENTEERDE GROEPE
+                              </span>
+                              {(h.gangs ?? []).map((gang) => (
+                                <div key={gang.name} className="flex items-baseline gap-2">
+                                  <span className="text-xs font-bold text-neutral-200">{gang.name}</span>
+                                  <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-neutral-600">
+                                    {gang.threat}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </article>
                   );
                 })}
               </div>
-            </section>
-
-            {/* province breakdown */}
-            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Province breakdown">
-              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                Province breakdown
-              </h4>
-              <ul className="mt-2 space-y-1.5">
-                {analytics.provinces.map((p) => (
-                  <li
-                    key={p.name}
-                    className="flex items-center gap-2"
-                    aria-label={`${p.name}: ${p.count} ${p.count === 1 ? "area" : "areas"}, peak intensity ${p.max} of 5`}
-                  >
-                    <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-300">{p.name}</span>
-                    <span className="shrink-0 font-mono text-[9px] tabular-nums text-neutral-500">
-                      ×{p.count}
-                    </span>
-                    <span className="flex shrink-0 gap-0.5" aria-hidden>
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <span
-                          key={n}
-                          className={`h-1 w-2.5 rounded-full ${n <= p.max ? "bg-white" : "bg-neutral-800"}`}
-                        />
-                      ))}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-
-            {/* top documented groups */}
-            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Top documented groups">
-              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                Top documented groups
-              </h4>
-              <ul className="mt-2 space-y-2">
-                {analytics.topGroups.map((g, i) => (
-                  <li key={g.name} className="rounded-xl border border-neutral-900 p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="shrink-0 font-mono text-[9px] tabular-nums text-neutral-600">
-                          {String(i + 1).padStart(2, "0")}
-                        </span>
-                        <span className="truncate text-xs text-neutral-200">{g.name}</span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <span className="rounded-full border border-neutral-800 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-neutral-400">
-                          {g.areas.length} {g.areas.length === 1 ? "AREA" : "AREAS"}
-                        </span>
-                        <span
-                          className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${threatChipClass(g.threat)}`}
-                        >
-                          {g.threat}
-                        </span>
-                      </div>
-                    </div>
-                    <p className="mt-1 truncate text-[10px] text-neutral-500" title={g.areas.join(" · ")}>
-                      {g.areas.join(" · ")}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            </section>
-
-            {/* trend vs last sync */}
-            <section className="mt-4 border-t border-neutral-900 pt-3" aria-label="Trend versus last sync">
-              <h4 className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                Trend vs last sync
-              </h4>
-              {!trend ? (
-                <div className="mt-2 rounded-xl border border-dashed border-neutral-800 p-3 text-center">
-                  <p className="font-mono text-[9px] uppercase tracking-widest text-neutral-400">
-                    First snapshot — baseline stored
-                  </p>
-                  <p className="mt-1 text-[10px] text-neutral-600">
-                    New, gone and shifted areas appear here after the next sync.
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-2 space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 rounded-lg bg-neutral-900/60 px-2.5 py-2">
-                    <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
-                      New areas
-                    </span>
-                    <span
-                      className="font-mono text-[10px] tabular-nums text-neutral-100"
-                      title={trend.appeared.join(", ") || undefined}
-                    >
-                      +{trend.appeared.length}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2 rounded-lg bg-neutral-900/60 px-2.5 py-2">
-                    <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
-                      Areas gone
-                    </span>
-                    <span
-                      className="font-mono text-[10px] tabular-nums text-neutral-100"
-                      title={trend.gone.join(", ") || undefined}
-                    >
-                      -{trend.gone.length}
-                    </span>
-                  </div>
-                  <div className="rounded-lg bg-neutral-900/60 px-2.5 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-400">
-                        Intensity shifts
-                      </span>
-                      <span className="font-mono text-[10px] tabular-nums text-neutral-100">
-                        {trend.changedTotal}
-                      </span>
-                    </div>
-                    {trend.changed.length > 0 && (
-                      <ul className="mt-1.5 space-y-1">
-                        {trend.changed.map((c) => (
-                          <li key={c.area} className="flex items-center justify-between gap-2">
-                            <span className="truncate font-mono text-[10px] text-neutral-300">{c.area}</span>
-                            <span className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400">
-                              {c.from}→{c.to}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  <p className="text-[9px] text-neutral-600">vs snapshot {trend.vsLabel}</p>
-                </div>
-              )}
-            </section>
-
-            {asOf && (
-              <p className="mt-4 border-t border-neutral-900 pt-2.5 text-[9px] text-neutral-600">
-                Feed generated {asOf}
-              </p>
             )}
           </div>
-        )}
-
-        {/* detail panel (bespoke bottom sheet / side card) */}
-        {selected && (
-          <div
-            ref={panelRef}
-            className="absolute inset-x-0 bottom-0 z-[750] max-h-[62vh] overflow-y-auto rounded-t-2xl border-t border-neutral-800 bg-neutral-950/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-16 sm:max-h-[calc(100%-6rem)] sm:w-80 sm:overflow-y-auto sm:rounded-2xl sm:border sm:pb-4"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="truncate text-sm font-medium text-neutral-100">{selected.area}</h3>
-                <p className="mt-0.5 font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                  {selected.province}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelected(null)}
-                aria-label="Close details"
-                className="flex size-11 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-white"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-
-            <div className="mt-3">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                  Documented intensity
-                </span>
-                <span className="font-mono text-[9px] text-neutral-400">{selected.intensity}/5</span>
-              </div>
-              <div className="mt-1.5 flex gap-1" aria-hidden>
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <span
-                    key={n}
-                    className={`h-1.5 flex-1 rounded-full ${
-                      n <= selected.intensity ? "bg-white" : "bg-neutral-800"
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {selected.summary && (
-              <p className="mt-3 text-xs leading-relaxed text-neutral-400">{selected.summary}</p>
-            )}
-
-            <div className="mt-3 space-y-2">
-              <span className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">
-                Documented groups
-              </span>
-              <ul className="max-h-40 space-y-2 overflow-y-auto pr-1">
-                {selected.gangs.map((g) => (
-                  <li key={g.name} className="rounded-xl border border-neutral-900 p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs text-neutral-200">{g.name}</span>
-                      <span
-                        className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${threatChipClass(g.threat)}`}
-                      >
-                        {g.threat}
-                      </span>
-                    </div>
-                    {g.notes && (
-                      <p className="mt-1 text-[10px] leading-relaxed text-neutral-500">{g.notes}</p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ------------------------------------------------------- footer */}
-      <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-neutral-900 px-3 py-2 sm:px-4">
-        <span className="text-[9px] text-neutral-600">Basemap © Google</span>
-        <span className="hidden text-[9px] text-neutral-600 md:inline">
-          Area-level awareness info only. Not law enforcement guidance.
-        </span>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {asOf && (
-            <span className="hidden text-[9px] text-neutral-600 lg:inline">AS OF {asOf}</span>
-          )}
-          <span
-            aria-label={
-              syncing ? "Intel sync in progress" : "Time until the next intel sync"
-            }
-            className="inline-flex items-center gap-1.5 rounded-full border border-neutral-800 bg-black/80 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-400 backdrop-blur-sm"
-          >
-            {syncing ? (
-              <span className="animate-fast-pulse tracking-widest">SYNCING</span>
-            ) : (
-              <>
-                <span className="text-neutral-600">NEXT SYNC</span>
-                <span className="tabular-nums text-neutral-200">{countdownLabel}</span>
-              </>
-            )}
-          </span>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-neutral-800 bg-black/80 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-500 backdrop-blur-sm">
-            <MapPinOff className="size-3" aria-hidden />
-            Geo: Off
-          </span>
         </div>
-      </footer>
+      </ScreenShell>
     </div>,
     document.body
+  );
+}
+
+// ------------------------------------------------------------------ pieces
+
+function ScoreCell({ label, value, solid = false, struck = false }: { label: string; value: number; solid?: boolean; struck?: boolean }) {
+  return (
+    <div
+      className={`flex flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2.5 ${
+        solid ? "border-white bg-white text-black" : struck ? "border-neutral-700 text-neutral-500" : "border-neutral-700 text-neutral-200"
+      }`}
+    >
+      <span className={`text-xl font-black tabular-nums ${struck ? "line-through" : ""}`}>{value}</span>
+      <span className={`text-center font-mono text-[8px] font-bold uppercase tracking-[0.16em] ${solid ? "text-black" : struck ? "text-neutral-600" : "text-neutral-500"}`}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function Kpi({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5 rounded-xl border border-neutral-900 px-2 py-2.5">
+      <span className="text-lg font-black tabular-nums text-white">{value}</span>
+      <span className="font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-neutral-500">{label}</span>
+    </div>
+  );
+}
+
+function Chip({ label, cls }: { label: string; cls: string }) {
+  return (
+    <span className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em] ${cls}`}>
+      {label}
+    </span>
   );
 }

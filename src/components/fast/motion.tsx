@@ -6,11 +6,39 @@
  * scope its own useGSAP animations. Reduced-motion is respected globally.
  */
 
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
+import { pick } from "@/lib/fast/copy";
 
 gsap.registerPlugin(useGSAP);
+
+/**
+ * House-voice line for screens that render on the SERVER (splash, gate,
+ * callsign, hub): deterministic first paint so SSR and hydration agree —
+ * then a fresh random flavour lands right after mount. Client-only screens
+ * can keep useState(() => pick(...)) since they never server-render.
+ */
+export function useHouseLine<T>(list: readonly T[]): T {
+  const [line, setLine] = useState<T>(list[0]);
+  useEffect(() => {
+    // deferred one tick: post-hydration flavour swap without a cascading
+    // render inside the effect body itself
+    const t = window.setTimeout(() => {
+      setLine((prev) => {
+        let next = pick(list);
+        let guard = 0;
+        while (next === prev && guard < 5) {
+          next = pick(list);
+          guard += 1;
+        }
+        return next;
+      });
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, []);
+  return line;
+}
 
 export const REDUCED_MOTION =
   typeof window !== "undefined" &&
