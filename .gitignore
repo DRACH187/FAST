@@ -52,3 +52,13 @@ prompt
 server.log
 # Skills directory
 /skills/
+# FAST: local data, artifacts, and user uploads never leave this machine
+/db/
+/upload/
+/verify/
+/agent-ctx/
+/tool-results/
+/download/
+/tests/
+/chat-service.log
+worklog.md

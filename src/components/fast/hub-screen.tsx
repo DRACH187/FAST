@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Copy,
   KeyRound,
+  Map as MapIcon,
   Plus,
   ShieldCheck,
   Trash2,
@@ -33,6 +34,7 @@ type HubProps = {
   onJoin: (code: string) => Promise<void>;
   onDelete: (code: string) => Promise<void>;
   onClose: (code: string) => void;
+  onOpenMap: () => void;
 };
 
 export function HubScreen({
@@ -44,6 +46,7 @@ export function HubScreen({
   onJoin,
   onDelete,
   onClose,
+  onOpenMap,
 }: HubProps) {
   const shellRef = useRef<HTMLElement>(null);
   const [joinOpen, setJoinOpen] = useState(false);
@@ -109,11 +112,11 @@ export function HubScreen({
           <Image
             src="/fast-logo.png"
             alt="FAST logo"
-            width={256}
-            height={256}
+            width={1254}
+            height={1254}
             priority
             draggable={false}
-            className="h-auto w-14 mix-blend-screen"
+            className="h-auto w-28 mix-blend-screen sm:w-32"
           />
           <div className="flex items-center gap-1.5 text-neutral-500">
             <ShieldCheck className="size-3.5" aria-hidden />
@@ -139,6 +142,12 @@ export function HubScreen({
             subtitle="Enter a 6-letter code"
             onClick={() => setJoinOpen(true)}
             disabled={busy}
+          />
+          <ActionCard
+            icon={MapIcon}
+            title="Surroundings map"
+            subtitle="South Africa · gang hotspot intel"
+            onClick={onOpenMap}
           />
           <ActionCard
             icon={Trash2}

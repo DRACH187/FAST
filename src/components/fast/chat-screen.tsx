@@ -6,9 +6,13 @@ import { useGSAP } from "@gsap/react";
 import {
   ArrowDown,
   ArrowLeft,
+  Camera,
   Copy,
+  EyeOff,
+  Flame,
   KeyRound,
   Lock,
+  Map as MapIcon,
   MoreVertical,
   SendHorizontal,
   ShieldAlert,
@@ -19,7 +23,9 @@ import {
 import { toast } from "@/components/fast/toast";
 import { ScreenShell } from "@/components/fast/motion";
 import { FastButton, FastModal, FastMenuItem, FastPopover } from "@/components/fast/primitives";
+import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
+import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
 
@@ -30,14 +36,17 @@ type ChatProps = {
   myFp: string;
   onBack: () => void;
   onSend: (text: string) => Promise<void>;
+  onSendPhoto: (bytes: Uint8Array) => Promise<void>;
+  onOpenMap: () => void;
   onDelete: (code: string) => Promise<void>;
 };
 
-export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProps) {
+export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenMap, onDelete }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -176,6 +185,14 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
                     setCodeOpen(true);
                   }}
                 />
+                <FastMenuItem
+                  icon={MapIcon}
+                  label="Surroundings map"
+                  onSelect={() => {
+                    close();
+                    onOpenMap();
+                  }}
+                />
                 <div className="mx-1.5 my-1 h-px bg-neutral-800" />
                 <FastMenuItem
                   icon={Trash2}
@@ -214,7 +231,8 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
             </div>
             <p className="max-w-[240px] text-xs leading-relaxed text-neutral-500">
               Sealed channel. Everything typed here is encrypted in your browser
-              before it ever leaves.
+              before it ever leaves. Photos burn after viewing — nothing is
+              stored, anywhere.
             </p>
           </div>
         ) : (
@@ -229,9 +247,13 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
                     {group.senderFp.slice(0, 4)}·{group.senderFp.slice(4, 8)}
                   </span>
                 )}
-                {group.items.map((m) => (
-                  <Bubble key={m.id} message={m} />
-                ))}
+                {group.items.map((m) =>
+                  m.kind === "photo" ? (
+                    <PhotoBubble key={m.id} message={m} mine={group.mine} />
+                  ) : (
+                    <Bubble key={m.id} message={m} />
+                  )
+                )}
                 <span className="px-1 font-mono text-[9px] text-neutral-700">
                   {formatTime(group.items[group.items.length - 1].ts)}
                 </span>
@@ -256,6 +278,14 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
       {/* composer (sticky footer) */}
       <footer className="mt-auto border-t border-neutral-900 bg-black/90 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md">
         <div className="mx-auto flex max-w-md items-end gap-2">
+          <button
+            onClick={() => setCameraOpen(true)}
+            disabled={!session.hasKey}
+            aria-label="Take photo"
+            className="flex size-11 shrink-0 items-center justify-center rounded-full border border-neutral-800 text-neutral-300 outline-none transition-colors hover:border-neutral-600 hover:text-white disabled:pointer-events-none disabled:opacity-30"
+          >
+            <Camera className="size-5" aria-hidden />
+          </button>
           <textarea
             ref={taRef}
             value={draft}
@@ -287,6 +317,19 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
           </button>
         </div>
       </footer>
+
+      {/* camera overlay — RAM-only capture */}
+      {cameraOpen && (
+        <CameraCapture
+          onClose={() => setCameraOpen(false)}
+          onCapture={(bytes) => {
+            setCameraOpen(false);
+            void onSendPhoto(bytes).catch((err) =>
+              toast.error(err instanceof Error ? err.message : "Photo not sent")
+            );
+          }}
+        />
+      )}
 
       {/* code dialog */}
       <FastModal open={codeOpen} onClose={() => setCodeOpen(false)} label="Session code">
@@ -395,6 +438,147 @@ function Bubble({ message }: { message: DecryptedMessage }) {
       }`}
     >
       {message.text}
+    </div>
+  );
+}
+
+const PHOTO_HARD_TTL_MS = 60_000; // bytes burn 60s after arrival
+const PHOTO_VIEW_MS = 20_000; // ...or 20s after you chose to look
+
+/**
+ * Ephemeral photo bullet. The pixels exist ONLY in RAM:
+ *  - rendered into a <canvas> (no <img>, no blob: URL kept, nothing to save)
+ *  - received photos need a tap; once opened they burn after 20 seconds
+ *  - after the hard TTL (or the view window) the bytes are literally zeroed
+ */
+function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const photoId = message.photoId ?? "";
+  const [state, setState] = useState<"armed" | "revealed" | "burned">(() => {
+    if (!photoId || !peekPhoto(photoId)) return "burned";
+    return mine ? "revealed" : "armed"; // your own shots show instantly
+  });
+  const [left, setLeft] = useState(0);
+
+  // GSAP pop-in like every other bubble
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ref.current,
+        { opacity: 0, y: 8, scale: 0.98 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.28, ease: "power3.out" }
+      );
+    },
+    { scope: ref }
+  );
+
+  // paint the RAM bytes into the canvas whenever the revealed state mounts —
+  // covers both sender auto-reveal and tap-to-view
+  useEffect(() => {
+    if (state !== "revealed") return;
+    const bytes = peekPhoto(photoId);
+    const canvas = canvasRef.current;
+    if (!bytes || !canvas) return;
+    const blob = new Blob([bytes as unknown as BlobPart], { type: "image/jpeg" });
+    const url = URL.createObjectURL(blob);
+    const img = new window.Image();
+    img.onload = () => {
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d")?.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      gsap.fromTo(canvas, { opacity: 0, scale: 0.985 }, { opacity: 1, scale: 1, duration: 0.3, ease: "power2.out" });
+    };
+    img.src = url;
+  }, [state, photoId]);
+
+  // burn: zero the bytes + clear the canvas
+  const burn = useCallback(() => {
+    burnPhoto(photoId);
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setState("burned");
+  }, [photoId]);
+
+  // countdown driver — hard TTL from arrival, shorter once revealed
+  useEffect(() => {
+    if (state === "burned") return;
+    const arrival = Date.parse(message.createdAt) || message.ts || Date.now();
+    const deadline = state === "revealed" && !mine ? Date.now() + PHOTO_VIEW_MS : arrival + PHOTO_HARD_TTL_MS;
+    const tick = () => {
+      const remain = deadline - Date.now();
+      if (remain <= 0) {
+        burn();
+        return;
+      }
+      setLeft(Math.ceil(remain / 1000));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [state, mine, message.createdAt, message.ts, burn]);
+
+  const reveal = useCallback(() => {
+    if (state !== "armed") return;
+    if (!peekPhoto(photoId)) {
+      setState("burned");
+      return;
+    }
+    setState("revealed"); // the paint effect handles drawing once mounted
+  }, [photoId, state]);
+
+  if (state === "burned") {
+    return (
+      <div
+        ref={ref}
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 px-3.5 py-2.5 will-change-transform"
+      >
+        <Flame className="size-3.5 shrink-0 text-neutral-600" aria-hidden />
+        <span className="font-mono text-[11px] uppercase tracking-wider text-neutral-600">burned · zeroed</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={`relative max-w-[85%] overflow-hidden rounded-2xl border will-change-transform ${
+        mine ? "rounded-br-md border-neutral-700 bg-neutral-950" : "rounded-bl-md border-neutral-800 bg-neutral-950"
+      }`}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {state === "revealed" ? (
+        <canvas
+          ref={canvasRef}
+          aria-label={mine ? "Photo you sent (ephemeral)" : "Received ephemeral photo"}
+          className="block max-h-[300px] w-auto max-w-full select-none"
+          draggable={false}
+        />
+      ) : (
+        <button
+          onClick={reveal}
+          aria-label="Tap to view photo — it burns afterwards"
+          className="flex min-h-[96px] w-44 flex-col items-center justify-center gap-2 px-4 py-6 outline-none sm:w-52"
+        >
+          <EyeOff className="size-5 text-neutral-500" aria-hidden />
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-neutral-400">
+            tap to view
+          </span>
+          <span className="font-mono text-[9px] uppercase tracking-wider text-neutral-600">
+            burns after viewing
+          </span>
+        </button>
+      )}
+
+      {/* burn countdown */}
+      <span
+        className="pointer-events-none absolute right-2 top-2 rounded-full border border-neutral-700 bg-black/70 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-neutral-300"
+        aria-hidden
+      >
+        {left}s
+      </span>
     </div>
   );
 }

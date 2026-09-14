@@ -26,6 +26,8 @@ export type DecryptedMessage = {
   counter?: number; // ratchet counter — stable logical identity per sender
   failed?: boolean; // AEAD authentication failure — tamper indicator
   sealed?: boolean; // arrived before this device held the session key
+  kind?: "text" | "photo"; // photos are ephemeral RAM-only bullets
+  photoId?: string; // key into the RAM photo store (never persisted)
 };
 
 const vault = {
@@ -40,7 +42,52 @@ const vault = {
   pending: new Map<string, MessageEnvelope[]>(),
   /** code -> Set of envelope ids already applied to the transcript */
   seen: new Map<string, Set<string>>(),
+  /** photoId -> decrypted image bytes. RAM ONLY — zero persistence, ever. */
+  photoBytes: new Map<string, Uint8Array>(),
+  /** code -> Set<photoId> so purgeSession can zero a session's photos */
+  photosBySession: new Map<string, Set<string>>(),
 };
+
+// -- ephemeral photos (RAM-only, burn-after-view) -----------------------------
+
+/** Hold decrypted photo bytes in RAM. Never touches any storage API. */
+export function stashPhoto(code: string, photoId: string, bytes: Uint8Array) {
+  vault.photoBytes.set(photoId, bytes);
+  let set = vault.photosBySession.get(code);
+  if (!set) {
+    set = new Set();
+    vault.photosBySession.set(code, set);
+  }
+  set.add(photoId);
+}
+
+/** Read photo bytes WITHOUT consuming them (null once burned). */
+export function peekPhoto(photoId: string): Uint8Array | null {
+  return vault.photoBytes.get(photoId) ?? null;
+}
+
+/**
+ * Burn a photo: zero every byte, drop every reference. The pixels are
+ * unrecoverable from this moment — the whole point of burn-after-view.
+ */
+export function burnPhoto(photoId: string) {
+  const bytes = vault.photoBytes.get(photoId);
+  if (bytes) bytes.fill(0);
+  vault.photoBytes.delete(photoId);
+  for (const set of vault.photosBySession.values()) set.delete(photoId);
+}
+
+/** Burn every photo of one session (delete/close/terminated). */
+export function burnSessionPhotos(code: string) {
+  const set = vault.photosBySession.get(code);
+  if (!set) return;
+  for (const id of set) {
+    const bytes = vault.photoBytes.get(id);
+    if (bytes) bytes.fill(0);
+    vault.photoBytes.delete(id);
+  }
+  vault.photosBySession.delete(code);
+}
 
 // -- identity ---------------------------------------------------------------
 
@@ -138,6 +185,7 @@ export function purgeSession(code: string) {
   vault.keyReceivedAt.delete(code);
   vault.pending.delete(code);
   vault.seen.delete(code);
+  burnSessionPhotos(code);
 }
 
 /** Dev/diagnostics: prove nothing was ever persisted. */

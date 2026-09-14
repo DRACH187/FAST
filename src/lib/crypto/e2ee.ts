@@ -294,3 +294,74 @@ export async function decryptMessage(
   const pt = await aesGcmOpen(key, envelope.iv, envelope.ciphertext, ad);
   return JSON.parse(td.decode(pt));
 }
+
+// ---------------------------------------------------------------------------
+// Ephemeral photos — same ratchet family, RAW-BYTE payload, RAM-only lifetime
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the unique AES key for ONE photo. Mirrors the message ratchet but
+ * with a dedicated domain separator so photo keys and message keys can never
+ * collide even at the same counter.
+ */
+async function derivePhotoKey(
+  sessionKey: Uint8Array,
+  code: string,
+  senderFp: string,
+  counter: number
+): Promise<CryptoKey> {
+  const ikm = await subtle.importKey(
+    "raw",
+    sessionKey as unknown as ArrayBuffer,
+    "HKDF",
+    false,
+    ["deriveKey"]
+  );
+  return subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: te.encode(`fast-photo|${code}`) as unknown as ArrayBuffer,
+      info: te.encode(`photo|${counter}|${senderFp}`) as unknown as ArrayBuffer,
+    },
+    ikm,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+export type PhotoEnvelope = {
+  id: string;
+  counter: number;
+  iv: string;
+  data: string; // base64 AES-256-GCM ciphertext of the image bytes
+};
+
+/** Encrypt raw image bytes (JPEG) into a photo envelope. */
+export async function encryptPhoto(
+  sessionKey: Uint8Array,
+  code: string,
+  senderFp: string,
+  counter: number,
+  bytes: Uint8Array
+): Promise<PhotoEnvelope> {
+  const key = await derivePhotoKey(sessionKey, code, senderFp, counter);
+  const ad = te.encode(`${code}|${senderFp}|${counter}|photo`);
+  const { iv, ciphertext } = await aesGcmSeal(key, bytes, ad);
+  return { id: crypto.randomUUID(), counter, iv, data: ciphertext };
+}
+
+/** Decrypt a photo envelope. Throws if the blob was tampered with. */
+export async function decryptPhoto(
+  sessionKey: Uint8Array,
+  code: string,
+  senderFp: string,
+  counter: number,
+  iv: string,
+  data: string
+): Promise<Uint8Array> {
+  const key = await derivePhotoKey(sessionKey, code, senderFp, counter);
+  const ad = te.encode(`${code}|${senderFp}|${counter}|photo`);
+  return aesGcmOpen(key, iv, data, ad);
+}

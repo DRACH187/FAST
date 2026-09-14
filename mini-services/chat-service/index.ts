@@ -25,7 +25,7 @@ const io = new Server(httpServer, {
   },
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 64 * 1024, // ciphertext blobs are small; reject whoppers
+  maxHttpBufferSize: 2 * 1024 * 1024, // messages are tiny; ephemeral photos ride the same pipe
 });
 
 const CODE_RE = /^[A-Z]{6}$/;
@@ -33,6 +33,7 @@ const FP_RE = /^[a-f0-9]{8,64}$/;
 const MAX_CIPHERTEXT = 8 * 1024; // ~8KB of base64 ciphertext per message
 const MAX_B64 = 2 * 1024; // IVs / wrapped keys / pubkeys are tiny
 const MAX_MSG_JSON = 16 * 1024; // hard cap on any single relayed frame
+const MAX_PHOTO_B64 = 1_600_000; // ephemeral encrypted photos (RAM-only relay)
 
 type Envelope = {
   code: string;
@@ -118,6 +119,22 @@ io.on("connection", (socket) => {
       fingerprint: data.fingerprint,
     });
   });
+
+  // Ephemeral photo relay — base64 ciphertext broadcast to the room.
+  // RAM-ONLY: this server keeps zero copies; it forwards and forgets.
+  socket.on(
+    "session:photo",
+    (p: { code: string; id: string; senderFp: string; counter: number; iv: string; data: string; createdAt: string }) => {
+      if (!p || !CODE_RE.test(p.code)) return;
+      if (typeof p.id !== "string" || p.id.length > 64) return;
+      if (!FP_RE.test(p.senderFp)) return;
+      if (typeof p.counter !== "number" || p.counter < 0 || p.counter > 1e9) return;
+      if (typeof p.iv !== "string" || p.iv.length > 512) return;
+      if (typeof p.data !== "string" || p.data.length < 16 || p.data.length > MAX_PHOTO_B64) return;
+      if (typeof p.createdAt !== "string" || p.createdAt.length > 40) return;
+      socket.to(p.code).emit("session:photo", p);
+    }
+  );
 
   // Wrapped session-key envelope — routed to the whole room, clients filter by forFp
   socket.on("session:key", (data: { code: string; envelope: { forFp: string; epk: string; iv: string; payload: string; fromFp: string } }) => {

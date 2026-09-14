@@ -18,6 +18,7 @@ const CODE_RE = /^[A-Z]{6}$/;
 const FP_RE = /^[a-f0-9]{8,64}$/;
 const MAX_CIPHERTEXT = 8 * 1024; // base64 ciphertext per message
 const MAX_B64 = 2 * 1024; // IVs / wrapped keys / pubkeys are tiny
+const MAX_PHOTO_B64 = 1_600_000; // ephemeral encrypted photos (RAM-only relay)
 
 type Envelope = {
   code: string;
@@ -55,7 +56,7 @@ export function startRelay(port = Number(process.env.RELAY_PORT ?? 3003)): void 
       cors: { origin: "*", methods: ["GET", "POST"] },
       pingTimeout: 60000,
       pingInterval: 25000,
-      maxHttpBufferSize: 64 * 1024,
+      maxHttpBufferSize: 2 * 1024 * 1024, // messages are tiny; photos ride the same pipe
     });
 
     function emitPresence(code: string) {
@@ -135,6 +136,22 @@ export function startRelay(port = Number(process.env.RELAY_PORT ?? 3003)): void 
           fingerprint: data.fingerprint,
         });
       });
+
+      // Ephemeral photo relay — base64 ciphertext broadcast to the room.
+      // RAM-ONLY: this server keeps zero copies; it forwards and forgets.
+      socket.on(
+        "session:photo",
+        (p: { code: string; id: string; senderFp: string; counter: number; iv: string; data: string; createdAt: string }) => {
+          if (!p || !CODE_RE.test(p.code)) return;
+          if (typeof p.id !== "string" || p.id.length > 64) return;
+          if (!FP_RE.test(p.senderFp)) return;
+          if (typeof p.counter !== "number" || p.counter < 0 || p.counter > 1e9) return;
+          if (typeof p.iv !== "string" || p.iv.length > 512) return;
+          if (typeof p.data !== "string" || p.data.length < 16 || p.data.length > MAX_PHOTO_B64) return;
+          if (typeof p.createdAt !== "string" || p.createdAt.length > 40) return;
+          socket.to(p.code).emit("session:photo", p);
+        }
+      );
 
       // Fired by the deleting client AFTER the DELETE API succeeded.
       // Everyone in the room is evicted — the session ceases to exist for all.

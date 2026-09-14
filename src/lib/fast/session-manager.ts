@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   decryptMessage,
+  decryptPhoto,
   encryptMessage,
+  encryptPhoto,
   generateSessionKey,
   unwrapSessionKey,
   wrapSessionKeyFor,
 } from "@/lib/crypto/e2ee";
 import {
+  burnPhoto,
   ensureIdentity,
   getSessionKey,
   hasSessionKey,
@@ -18,6 +21,7 @@ import {
   observeCounter,
   purgeSession,
   stashPending,
+  stashPhoto,
   storeSessionKey,
   takePending,
   type DecryptedMessage,
@@ -27,7 +31,7 @@ import { getRelay } from "@/lib/fast/relay";
 import { toast } from "@/components/fast/toast";
 import * as vault from "@/lib/fast/vault-db";
 
-export type Phase = "splash" | "gate" | "app";
+export type Phase = "splash" | "loading" | "gate" | "app";
 
 export type SessionView = {
   code: string;
@@ -81,6 +85,10 @@ export function useSessionManager() {
   /** every fingerprint this device has ever sent from (public material — see vault-db meta) */
   const myFps = useRef(new Set<string>());
   const restoreKick = useRef(false);
+  /** photoId -> burn timer — photos are RAM-only with a hard TTL */
+  const photoTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** how long decrypted photo bytes survive in RAM before they burn */
+  const PHOTO_TTL_MS = 60_000;
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -374,13 +382,70 @@ export function useSessionManager() {
       void wrapForKeylessMembers(data.code, [data.fingerprint]);
     };
 
+    /**
+     * Ephemeral photo arrived: decrypt straight into RAM, never touch disk.
+     * No key yet -> the photo is DROPPED by design (photos are never stored,
+     * not even sealed — there is nothing on the server to fetch later).
+     */
+    const onPhoto = (p: {
+      code: string;
+      id: string;
+      senderFp: string;
+      counter: number;
+      iv: string;
+      data: string;
+      createdAt: string;
+    }) => {
+      void (async () => {
+        if (!p || !CODE_RE.test(p.code)) return;
+        if (!markSeen(p.code, `ph:${p.id}`)) return;
+        observeCounter(p.code, p.counter);
+        const key = getSessionKey(p.code);
+        if (!key) return; // dropped — never queued, never persisted
+        let bytes: Uint8Array;
+        try {
+          bytes = await decryptPhoto(key, p.code, p.senderFp, p.counter, p.iv, p.data);
+        } catch {
+          return; // tampered or foreign blob — vanish silently
+        }
+        stashPhoto(p.code, p.id, bytes);
+        const timer = setTimeout(() => {
+          burnPhoto(p.id);
+          photoTimers.current.delete(p.id);
+        }, PHOTO_TTL_MS);
+        photoTimers.current.set(p.id, timer);
+        const mine = p.senderFp === identityRef.current?.fingerprint;
+        appendMessages(p.code, [
+          {
+            id: p.id,
+            code: p.code,
+            senderFp: p.senderFp,
+            mine,
+            text: "",
+            ts: Date.parse(p.createdAt) || Date.now(),
+            createdAt: p.createdAt,
+            counter: p.counter,
+            kind: "photo",
+            photoId: p.id,
+          },
+        ]);
+        if (!mine && activeCodeRef.current !== p.code) {
+          patchSession(p.code, (s) => ({ unread: s.unread + 1 }));
+        }
+      })();
+    };
+
     const onTerminated = (data: { code: string }) => {
       if (!data || !CODE_RE.test(data.code)) return;
       const wasOpen = sessionsRef.current.some((s) => s.code === data.code);
-      purgeSession(data.code);
+      purgeSession(data.code); // also zeroes the session's photo bytes
       const poll = keyPoll.current.get(data.code);
       if (poll) clearInterval(poll);
       keyPoll.current.delete(data.code);
+      for (const [pid, t] of photoTimers.current) {
+        clearTimeout(t);
+        photoTimers.current.delete(pid);
+      }
       wrappedFor.current.delete(data.code);
       unwrappedIds.current.delete(data.code);
       joinAt.current.delete(data.code);
@@ -412,6 +477,7 @@ export function useSessionManager() {
     relay.on("session:message", onMessage);
     relay.on("session:key", onKey);
     relay.on("session:keyrequest", onKeyRequest);
+    relay.on("session:photo", onPhoto);
     relay.on("session:terminated", onTerminated);
     relay.on("connect", onConnect);
     if (relay.connected) onConnect();
@@ -421,6 +487,7 @@ export function useSessionManager() {
       relay.off("session:message", onMessage);
       relay.off("session:key", onKey);
       relay.off("session:keyrequest", onKeyRequest);
+      relay.off("session:photo", onPhoto);
       relay.off("session:terminated", onTerminated);
       relay.off("connect", onConnect);
     };
@@ -576,10 +643,14 @@ export function useSessionManager() {
       // leaving a session DESTROYS our local key material — rejoining later
       // requires a fresh wrap from a member still inside.
       getRelay().emit("session:leave", { code });
-      purgeSession(code);
+      purgeSession(code); // zeroes keys + photo bytes
       const poll = keyPoll.current.get(code);
       if (poll) clearInterval(poll);
       keyPoll.current.delete(code);
+      for (const [pid, t] of photoTimers.current) {
+        clearTimeout(t);
+        photoTimers.current.delete(pid);
+      }
       wrappedFor.current.delete(code);
       unwrappedIds.current.delete(code);
       joinAt.current.delete(code);
@@ -597,9 +668,59 @@ export function useSessionManager() {
     await api.deleteSession(code);
     restoredIds.current.delete(code);
     void vault.forgetSession(code);
+    purgeSession(code); // zero local keys + photo bytes immediately
     // cascade done server-side; evict every device (including ours)
     getRelay().emit("session:terminated", { code });
   }, []);
+
+  /**
+   * Take a photo -> encrypt -> relay. NOTHING is persisted: no DB row, no
+   * vault blob, no wire cache. Only RAM on the devices currently in the room.
+   */
+  const sendPhoto = useCallback(
+    async (code: string, bytes: Uint8Array) => {
+      const identity = identityRef.current;
+      const key = getSessionKey(code);
+      if (!identity || !key) throw new Error("Session key not available yet.");
+
+      const counter = nextCounter(code);
+      const enc = await encryptPhoto(key, code, identity.fingerprint, counter, bytes);
+      const createdAt = new Date().toISOString();
+
+      stashPhoto(code, enc.id, bytes); // sender keeps its own RAM copy
+      const timer = setTimeout(() => {
+        burnPhoto(enc.id);
+        photoTimers.current.delete(enc.id);
+      }, PHOTO_TTL_MS);
+      photoTimers.current.set(enc.id, timer);
+
+      appendMessages(code, [
+        {
+          id: enc.id,
+          code,
+          senderFp: identity.fingerprint,
+          mine: true,
+          text: "",
+          ts: Date.now(),
+          createdAt,
+          counter,
+          kind: "photo",
+          photoId: enc.id,
+        },
+      ]);
+
+      getRelay().emit("session:photo", {
+        code,
+        id: enc.id,
+        senderFp: identity.fingerprint,
+        counter: enc.counter,
+        iv: enc.iv,
+        data: enc.data,
+        createdAt,
+      });
+    },
+    [appendMessages]
+  );
 
   const sendMessage = useCallback(
     async (code: string, text: string) => {
@@ -840,6 +961,7 @@ export function useSessionManager() {
     closeSession,
     deleteSession,
     sendMessage,
+    sendPhoto,
     setActiveCode,
   };
 }

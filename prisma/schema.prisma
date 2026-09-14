@@ -54,6 +54,17 @@ model EncryptedMessage {
   @@index([sessionId, createdAt])
 }
 
+// Server-side cache for the Gemini-generated South Africa safety map intel.
+// This is PUBLIC curated data (area-level, community-safety oriented) — never
+// user content, never key material. Cached so the free-tier API is hit at most
+// once per refresh window.
+model MapCache {
+  id        String   @id // e.g. "sa-gang-hotspots"
+  payload   String // JSON-serialized hotspot dataset
+  source    String // "gemini" | "fallback"
+  updatedAt DateTime @default(now())
+}
+
 // Outbound session-key distribution: the session key wrapped (encrypted)
 // per-recipient with an ephemeral ECDH exchange. Server stores the blob,
 // but without the recipient's private key (which never leaves the browser)
