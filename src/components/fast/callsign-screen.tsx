@@ -169,7 +169,7 @@ export function CallsignScreen({
             onClick={() => void submit()}
             className="w-full font-mono text-[11px] uppercase tracking-[0.28em]"
           >
-            {busy ? "Registering" : "Enter FAST"}
+            {busy ? "Registering" : "Enter FAST GUNS"}
           </FastButton>
         </div>
 

@@ -98,7 +98,7 @@ export function LiveScreen({
             </button>
             <Image
               src="/fast-logo.png"
-              alt="FAST"
+              alt="FAST GUNS"
               width={256}
               height={256}
               draggable={false}
@@ -129,7 +129,7 @@ export function LiveScreen({
               <SignalHigh className="size-7 text-neutral-700" aria-hidden />
               <p className="text-sm text-neutral-300">Nobody on the board yet.</p>
               <p className="max-w-[260px] text-[11px] leading-relaxed text-neutral-600">
-                Heartbeats land here within seconds of anyone opening FAST —
+                Heartbeats land here within seconds of anyone opening FAST GUNS —
                 including you.
               </p>
             </div>

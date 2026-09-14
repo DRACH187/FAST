@@ -22,6 +22,7 @@ import {
 import { toast } from "@/components/fast/toast";
 import { REDUCED_MOTION, ScreenShell, pressFeedback, staggerAnimChildren } from "@/components/fast/motion";
 import { FastButton, FastInput, FastModal, WipeChip } from "@/components/fast/primitives";
+import { ProfileSheet } from "@/components/fast/profile-sheet";
 import { useLivePresence } from "@/lib/fast/live";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
@@ -56,6 +57,8 @@ type HubProps = {
   onJoin: (code: string) => Promise<void>;
   onDelete: (code: string) => Promise<void>;
   onClose: (code: string) => void;
+  /** Delete/replace the saved nickname — returns to the callsign login. */
+  onSwitchCallsign: () => void;
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
@@ -71,6 +74,7 @@ export function HubScreen({
   onJoin,
   onDelete,
   onClose,
+  onSwitchCallsign,
   onOpenMap,
   onOpenWanted,
   onOpenLive,
@@ -81,6 +85,7 @@ export function HubScreen({
   const [deleteCode, setDeleteCode] = useState("");
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   // one 30s tick drives every wipe-countdown chip — rows never run timers
   const [now, setNow] = useState(() => Date.now());
@@ -155,7 +160,7 @@ export function HubScreen({
             <div className="flex items-center gap-4 pt-1">
               <Image
                 src="/fast-logo.png"
-                alt="FAST"
+                alt="FAST GUNS"
                 width={256}
                 height={256}
                 priority
@@ -163,11 +168,13 @@ export function HubScreen({
                 className="h-14 w-14 shrink-0 mix-blend-screen"
               />
               <div className="flex min-w-0 flex-1 flex-col">
-                <span className="font-mono text-base font-bold uppercase tracking-[0.5em] text-white">
-                  Fast
+                <span className="font-mono text-lg font-black uppercase text-white" style={{ letterSpacing: '0.3em', textShadow: '0 0 22px rgba(255,255,255,0.2)' }}>
+                  FAST GUNS
                 </span>
-                <span className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
-                  Secure sessions
+                <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
+                  <span className="font-bold tracking-[0.4em] text-neutral-400">187</span>
+                  <span aria-hidden>·</span>
+                  encrypted sessions
                 </span>
               </div>
               <span
@@ -182,9 +189,13 @@ export function HubScreen({
             {/* callsign + live counter row */}
             <div className="flex items-center gap-2">
               {callsign ? (
-                <span
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5"
-                  title={`Signed in as ${callsign.nickname}`}
+                <button
+                  onClick={(e) => {
+                    pressFeedback(e.currentTarget);
+                    setProfileOpen(true);
+                  }}
+                  aria-label={`Profile — signed in as ${callsign.nickname}`}
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5 outline-none transition-colors hover:border-neutral-500"
                 >
                   <ShieldCheck className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
                   <span
@@ -196,7 +207,7 @@ export function HubScreen({
                   >
                     {callsign.nickname}
                   </span>
-                </span>
+                </button>
               ) : null}
               <button
                 onClick={(e) => {
@@ -334,6 +345,15 @@ export function HubScreen({
       </nav>
 
       {/* created code — share it while it lives */}
+      {/* profile — callsign save/delete */}
+      <ProfileSheet
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        callsign={callsign}
+        identityFp={identityFp}
+        onSwitch={onSwitchCallsign}
+      />
+
       <FastModal open={created !== null} onClose={() => setCreated(null)} label="Session created">
         <div className="flex flex-col items-center gap-5 text-center">
           <h2 className="font-mono text-[10px] uppercase tracking-[0.35em] text-neutral-500">

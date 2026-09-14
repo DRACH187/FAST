@@ -14,15 +14,14 @@ const geistMono = Geist_Mono({
 });
 
 /**
- * DISCRETION: the site is deliberately anonymous to outsiders.
- *  - tab title is a blank-ish glyph, the app name never appears in metadata
- *  - nothing about encryption, sessions or the map leaks into the page head
- *  - indexing is refused at every layer (robots meta + X-Robots-Tag header
- *    in next.config.ts) so the deployment stays out of search results
+ * DISCRETION vs BRAND: the tab wears the house name ("FAST GUNS" — the 187
+ * mark), but nothing else leaks into the page head: no description, no
+ * keywords, indexing refused at every layer (robots meta + X-Robots-Tag
+ * header in next.config.ts) so the deployment stays out of search results.
  */
 export const metadata: Metadata = {
-  title: "—",
-  applicationName: " ",
+  title: "FAST GUNS",
+  applicationName: "FAST GUNS",
   description: " ",
   keywords: [],
   robots: { index: false, follow: false, nocache: true, googleBot: { index: false, follow: false } },

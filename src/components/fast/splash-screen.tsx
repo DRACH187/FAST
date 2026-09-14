@@ -8,22 +8,25 @@ import { useGSAP } from "@gsap/react";
 gsap.registerPlugin(useGSAP);
 
 /**
- * Splash — the FAST logo and its maker credit. Nothing else.
+ * Splash — the FAST GUNS logo, the 187 mark and its maker credit.
  * Logo perfectly centered at a confident scale (clamp 190px→330px), a GSAP
- * blur/scale entrance, two hairline pulse rings, the maker line fading in
- * underneath, and a cinematic exit. No progress bars. Click / tap / Enter to
- * skip.
+ * blur/scale entrance, two hairline pulse rings, the wordmark + 187 + maker
+ * line fading in underneath, and a cinematic exit. No progress bars.
+ * Click / tap / Enter to skip.
  */
 
 const LOGO_CLAMP = "clamp(190px, 58vw, 330px)";
 
 const CREDIT_LINE_1 = "MADE BY";
 const CREDIT_LINE_2 = "DRACH — GUNS BO SKIET N SMOGGLE";
+const WORDMARK = "FAST GUNS";
+const SYMBOL = "187";
 
 export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const logo = useRef<HTMLDivElement>(null);
   const credit = useRef<HTMLDivElement>(null);
+  const wordmark = useRef<HTMLDivElement>(null);
   const ringA = useRef<HTMLDivElement>(null);
   const ringB = useRef<HTMLDivElement>(null);
   const done = useRef(false);
@@ -37,10 +40,10 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
       onComplete();
       return;
     }
-    gsap.killTweensOf([logoEl, rootEl, credit.current, ringA.current, ringB.current]);
+    gsap.killTweensOf([logoEl, rootEl, credit.current, wordmark.current, ringA.current, ringB.current]);
     gsap
       .timeline({ onComplete })
-      .to([logoEl, credit.current], { scale: 1.06, opacity: 0, filter: "blur(10px)", duration: 0.5, ease: "power2.in", stagger: 0.04 }, 0)
+      .to([logoEl, wordmark.current, credit.current], { scale: 1.06, opacity: 0, filter: "blur(10px)", duration: 0.5, ease: "power2.in", stagger: 0.04 }, 0)
       .to([ringA.current, ringB.current], { opacity: 0, duration: 0.3, ease: "power2.in" }, 0)
       .to(rootEl, { opacity: 0, duration: 0.42, ease: "power2.in" }, 0.1);
   }, [onComplete]);
@@ -66,6 +69,14 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         { opacity: 0, y: 14, letterSpacing: "0.55em" },
         { opacity: 1, y: 0, letterSpacing: "0.34em", duration: 0.9, ease: "power3.out" },
         1.05
+      );
+
+      // wordmark + 187 — the brand, first thing after the logo lands
+      tl.fromTo(
+        wordmark.current,
+        { opacity: 0, y: 16, letterSpacing: "0.9em" },
+        { opacity: 1, y: 0, letterSpacing: "0.42em", duration: 0.9, ease: "power3.out" },
+        0.75
       );
 
       // hairline pulse rings — twice, then rest
@@ -102,7 +113,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
     <div
       ref={root}
       role="button"
-      aria-label="FAST — loading"
+      aria-label="FAST GUNS — loading"
       tabIndex={0}
       onClick={finish}
       onKeyDown={(e) => {
@@ -122,7 +133,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
           <div ref={logo} className="will-change-transform">
             <Image
               src="/fast-logo.png"
-              alt="FAST logo"
+              alt="FAST GUNS logo"
               width={1254}
               height={1254}
               priority
@@ -132,7 +143,19 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
               sizes={`${LOGO_CLAMP}`}
             />
           </div>
-          <div ref={credit} className="mt-7 flex flex-col items-center gap-1.5 px-6 text-center opacity-0">
+          <div ref={wordmark} className="mt-5 flex flex-col items-center gap-2.5 px-6 text-center opacity-0">
+            <h1 className="text-2xl font-black uppercase text-white sm:text-3xl" style={{ letterSpacing: "0.42em", paddingLeft: "0.42em", textShadow: "0 0 26px rgba(255,255,255,0.22)" }}>
+              {WORDMARK}
+            </h1>
+            <span className="flex items-center gap-2.5 text-neutral-400" aria-label="187">
+              <span className="h-px w-9 bg-neutral-700" aria-hidden />
+              <span className="font-mono text-xs font-bold tracking-[0.5em] text-neutral-200" style={{ paddingLeft: "0.5em" }}>
+                {SYMBOL}
+              </span>
+              <span className="h-px w-9 bg-neutral-700" aria-hidden />
+            </span>
+          </div>
+          <div ref={credit} className="mt-4 flex flex-col items-center gap-1.5 px-6 text-center opacity-0">
             <span className="font-mono text-[9px] uppercase text-neutral-500 sm:text-[10px]">{CREDIT_LINE_1}</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.34em] text-neutral-300 sm:text-xs">
               {CREDIT_LINE_2}

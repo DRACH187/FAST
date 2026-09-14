@@ -65,6 +65,7 @@ export default function Page() {
             }}
             onDelete={mgr.deleteSession}
             onClose={mgr.closeSession}
+            onSwitchCallsign={mgr.switchCallsign}
             onOpenMap={openMap}
             onOpenWanted={() => setWantedOpen(true)}
             onOpenLive={() => setLiveOpen(true)}

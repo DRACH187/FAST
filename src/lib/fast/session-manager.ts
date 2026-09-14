@@ -910,6 +910,14 @@ export function useSessionManager() {
     []
   );
 
+  /** Delete/replace the saved nickname: wipe the local record, return to login. */
+  const switchCallsign = useCallback(() => {
+    clearCallsign();
+    callsignRef.current = null;
+    setCallsignState(null);
+    setPhase("callsign");
+  }, []);
+
   const activeSession = useMemo(
     () => sessions.find((s) => s.code === activeCode) ?? null,
     [sessions, activeCode]
@@ -1077,6 +1085,7 @@ export function useSessionManager() {
     joinSession,
     openSession,
     closeSession,
+    switchCallsign,
     deleteSession,
     sendMessage,
     sendPhoto,

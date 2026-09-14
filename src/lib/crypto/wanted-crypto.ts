@@ -31,13 +31,15 @@ const PBKDF2_ITERATIONS = 310_000;
 const BOARD_SALT = "FAST.WANTED.BOARD.v1.aes256gcm";
 
 /** Content payload carried INSIDE the encrypted envelope. */
+export type WantedStatus = "WANTED" | "ELIMINATED";
+
 export type WantedContent = {
   title: string;
   description: string;
   alias: string;
   lastSeen: string;
   threat: 1 | 2 | 3 | 4 | 5;
-  status: "ACTIVE" | "CAPTURED" | "ELIMINATED" | "MISSING";
+  status: WantedStatus;
   bounty: string;
   by: string; // author callsign
   byRole: string; // "member" | "boss"
@@ -142,11 +144,9 @@ export async function decryptWantedContent(post: {
       alias: String(parsed.alias ?? "").slice(0, 60),
       lastSeen: String(parsed.lastSeen ?? "").slice(0, 60),
       threat: (Math.min(5, Math.max(1, Number(parsed.threat) || 3)) as WantedContent["threat"]),
-      status: (["ACTIVE", "CAPTURED", "ELIMINATED", "MISSING"] as const).includes(
-        parsed.status as WantedContent["status"]
-      )
-        ? (parsed.status as WantedContent["status"])
-        : "ACTIVE",
+      // ONLY two categories exist: WANTED and ELIMINATED. Legacy entries
+      // posted under the old four-status scheme fold into WANTED.
+      status: parsed.status === "ELIMINATED" ? "ELIMINATED" : "WANTED",
       bounty: String(parsed.bounty ?? "").slice(0, 60),
       by: String(parsed.by ?? "UNKNOWN").slice(0, 24),
       byRole: parsed.byRole === "boss" ? "boss" : "member",

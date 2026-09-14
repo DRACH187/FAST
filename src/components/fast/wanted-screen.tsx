@@ -23,13 +23,11 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
   ArrowLeft,
-  Ban,
   Camera,
   Check,
   Crosshair,
   FileWarning,
   Flame,
-  HelpCircle,
   ImagePlus,
   Lock,
   Search,
@@ -62,13 +60,12 @@ const MAX_IMG_BYTES = 900_000; // post-encryption b64 cap (~1.2MB)
 const STATUS_ALL = "ALL";
 type StatusFilter = typeof STATUS_ALL | WantedContent["status"];
 
-const STATUSES: WantedContent["status"][] = ["ACTIVE", "CAPTURED", "ELIMINATED", "MISSING"];
+/** ONLY two categories exist on this board: WANTED and ELIMINATED. */
+const STATUSES: WantedContent["status"][] = ["WANTED", "ELIMINATED"];
 
 const STATUS_ICON: Record<WantedContent["status"], typeof Skull> = {
-  ACTIVE: Crosshair,
-  CAPTURED: Ban,
+  WANTED: Crosshair,
   ELIMINATED: Skull,
-  MISSING: HelpCircle,
 };
 
 function threatLabel(threat: number): string {
@@ -103,7 +100,7 @@ const EMPTY_DRAFT: Draft = {
   lastSeen: "",
   bounty: "",
   threat: 3,
-  status: "ACTIVE",
+  status: "WANTED",
 };
 
 // ------------------------------------------------------- image pre-processing
@@ -482,7 +479,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             </button>
             <Image
               src="/fast-logo.png"
-              alt="FAST"
+              alt="FAST GUNS"
               width={256}
               height={256}
               draggable={false}
@@ -702,8 +699,8 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
             </div>
           </div>
 
-          {/* status segmented control */}
-          <div className="grid grid-cols-4 gap-1.5" role="radiogroup" aria-label="Status">
+          {/* category segmented control — WANTED or ELIMINATED, nothing else */}
+          <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Category">
             {STATUSES.map((s) => {
               const Icon = STATUS_ICON[s];
               const active = draft.status === s;
@@ -847,13 +844,9 @@ function WantedCard({ entry, onOpen }: { entry: BoardEntry; onOpen: () => void }
         <CardImage wire={wire} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
         <span
           className={`absolute left-2.5 top-2.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.18em] backdrop-blur-sm ${
-            content.status === "ACTIVE"
+            content.status === "WANTED"
               ? "border-white/70 bg-black/70 text-white"
-              : content.status === "CAPTURED"
-                ? "border-neutral-500 bg-black/70 text-neutral-300"
-                : content.status === "ELIMINATED"
-                  ? "border-neutral-700 bg-black/70 text-neutral-500 line-through"
-                  : "border-neutral-700 bg-black/70 text-neutral-400"
+              : "border-neutral-600 bg-black/70 text-neutral-400 line-through"
           }`}
         >
           <StatusIcon className="size-3" aria-hidden />

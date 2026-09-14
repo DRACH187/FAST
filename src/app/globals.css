@@ -111,15 +111,16 @@
   }
 }
 
-/* ------- transparent scrollbars (everywhere, webkit + firefox) ------- */
+/* ------- fully transparent scrollbars (everywhere, webkit + firefox) -------
+   Content scrolls, the chrome never shows — the requested invisible bars. */
 
 * {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 0;
+  height: 0;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -128,14 +129,13 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.24);
+  background: transparent;
 }
 
-/* fully invisible variant when content should float */
+/* utility alias kept for existing markup */
 .no-scrollbar {
   scrollbar-width: none;
   -ms-overflow-style: none;

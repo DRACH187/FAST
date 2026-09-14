@@ -123,7 +123,7 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
         {/* small wordmark — deliberately discreet */}
         <Image
           src="/fast-logo.png"
-          alt="FAST"
+          alt="FAST GUNS"
           width={256}
           height={256}
           priority

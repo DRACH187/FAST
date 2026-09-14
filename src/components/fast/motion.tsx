@@ -42,7 +42,17 @@ export function ScreenShell({
       gsap.fromTo(
         ref.current,
         { opacity: 0, y: 10 },
-        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.5,
+          ease: "power3.out",
+          // CRITICAL: strip the inline transform when done. A leftover
+          // transform (even identity) turns the shell into the containing
+          // block for position:fixed descendants — which pins the bottom
+          // nav to the end of the document instead of the viewport.
+          clearProps: "transform",
+        }
       );
     },
     { scope: ref }
@@ -72,6 +82,8 @@ export function staggerAnimChildren(scope: HTMLElement | null, opts?: { delay?: 
       delay: opts?.delay ?? 0.05,
       ease: "power3.out",
       overwrite: "auto",
+      // never leave residual transforms behind (breaks position:fixed)
+      clearProps: "transform",
     }
   );
 }
