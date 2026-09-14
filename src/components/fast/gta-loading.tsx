@@ -13,8 +13,8 @@ gsap.registerPlugin(useGSAP);
  *   0.0s–3.0s  BANNER 1 (slow Ken Burns push-in)
  *   2.6s–3.4s  crossfade to BANNER 2 (continues push-in)
  *   5.45s–6.0s cinematic fade-out into the site
- * A thin progress hairline + percentage counter + rotating security tips run
- * underneath. Nothing is clickable — it is a fixed 6 second ritual.
+ * The classic big percentage counter + rotating security tips run at the
+ * bottom — no loading bars. Nothing is clickable — a fixed 6 second ritual.
  */
 
 const TOTAL_MS = 6000;
@@ -30,7 +30,6 @@ export function GtaLoading({ onComplete }: { onComplete: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const banner1 = useRef<HTMLDivElement>(null);
   const banner2 = useRef<HTMLDivElement>(null);
-  const bar = useRef<HTMLDivElement>(null);
   const pct = useRef<HTMLSpanElement>(null);
   const tip = useRef<HTMLParagraphElement>(null);
   const done = useRef(false);
@@ -79,28 +78,12 @@ export function GtaLoading({ onComplete }: { onComplete: () => void }) {
           .to(rootEl, { opacity: 0, duration: 0.3, ease: "none" }, 5.7);
       }
 
-      // progress hairline + counter — 6s, linear
+      // big percentage counter — pure GTA, no bars
       const counter = { v: 0 };
-      tl.to(
-        bar.current,
-        {
-          scaleX: 1,
-          duration: reduced ? 6 : 5.45,
-          ease: reduced ? "none" : "power1.inOut",
-          onUpdate: () => {
-            if (pct.current) {
-              const shown = Math.round(counter.v * 100);
-              pct.current.textContent = `${shown}%`;
-            }
-          },
-        },
-        0
-      );
-      // counter tracks the same window as the bar
       gsap.to(counter, {
         v: 1,
-        duration: reduced ? 6 : 5.45,
-        ease: reduced ? "none" : "power1.inOut",
+        duration: 5.45,
+        ease: "power1.inOut",
         onUpdate: () => {
           if (pct.current) pct.current.textContent = `${Math.round(counter.v * 100)}%`;
         },
@@ -191,33 +174,20 @@ export function GtaLoading({ onComplete }: { onComplete: () => void }) {
         </span>
       </div>
 
-      {/* bottom chrome — GTA-style tip + big percentage + progress hairline */}
+      {/* bottom chrome — GTA-style tip + big percentage (no loading bars) */}
       <div className="absolute inset-x-0 bottom-0 px-4 pb-[max(1.4rem,env(safe-area-inset-bottom))] sm:px-6">
-        <div className="mx-auto max-w-3xl">
-          <div className="flex items-end justify-between gap-6">
-            <p
-              ref={tip}
-              className="max-w-md text-[11px] leading-relaxed text-neutral-400 sm:text-xs"
-              aria-live="polite"
-            />
-            <span
-              ref={pct}
-              className="shrink-0 font-mono text-4xl font-bold tabular-nums leading-none text-white sm:text-6xl"
-            >
-              0%
-            </span>
-          </div>
-          <div className="mt-4 h-px w-full bg-neutral-800">
-            <div ref={bar} className="h-px w-full origin-left bg-white" style={{ transform: "scaleX(0)" }} />
-          </div>
-          <div className="mt-2 flex items-center justify-between">
-            <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
-              loading environment
-            </span>
-            <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
-              end-to-end encrypted
-            </span>
-          </div>
+        <div className="mx-auto flex max-w-3xl items-end justify-between gap-6">
+          <p
+            ref={tip}
+            className="max-w-md text-[11px] leading-relaxed text-neutral-400 sm:text-xs"
+            aria-live="polite"
+          />
+          <span
+            ref={pct}
+            className="shrink-0 font-mono text-4xl font-bold tabular-nums leading-none text-white sm:text-6xl"
+          >
+            0%
+          </span>
         </div>
       </div>
     </div>

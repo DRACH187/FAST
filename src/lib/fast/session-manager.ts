@@ -78,6 +78,8 @@ export function useSessionManager() {
   const joinAt = useRef(new Map<string, string>()); // code -> ISO instant we registered
   const wireCache = useRef(new Map<string, Map<string, WireMessage>>()); // code -> id -> blob (sealed decrypt-on-key)
   const keyPoll = useRef(new Map<string, ReturnType<typeof setInterval>>());
+  /** codes whose full history has been backfilled since this key generation */
+  const backfilled = useRef(new Set<string>());
   /** codes registered with the relay during this tab generation (drives rejoin logic) */
   const registered = useRef(new Set<string>());
   /** restored-from-vault blob ids per code — eligible for re-decryption after a key re-wrap */
@@ -111,19 +113,32 @@ export function useSessionManager() {
     setSessions((prev) =>
       prev.map((s) => {
         if (s.code !== code) return s;
-        const knownIds = new Set(s.messages.map((m) => m.id));
         // optimistic entries carry client UUIDs while history rows carry DB
-        // cuids — (senderFp, counter) is the stable logical identity
+        // cuids — (senderFp, counter) is the stable logical identity.
+        // Sealed/failed placeholders yield to a real decryption of the same
+        // logical message (full-history backfill replaces them in place).
+        const incomingIds = new Set(incoming.map((m) => m.id));
+        const incomingPairs = new Set(
+          incoming.map((m) => (m.counter === undefined ? null : `${m.senderFp}:${m.counter}`))
+        );
+        const kept = s.messages.filter((m) => {
+          if (m.sealed || m.failed) {
+            if (incomingIds.has(m.id)) return false;
+            if (m.counter !== undefined && incomingPairs.has(`${m.senderFp}:${m.counter}`)) return false;
+          }
+          return true;
+        });
+        const knownIds = new Set(kept.map((m) => m.id));
         const knownPairs = new Set(
-          s.messages.map((m) => (m.counter === undefined ? null : `${m.senderFp}:${m.counter}`))
+          kept.map((m) => (m.counter === undefined ? null : `${m.senderFp}:${m.counter}`))
         );
         const fresh = incoming.filter((m) => {
           if (knownIds.has(m.id)) return false;
           if (m.counter !== undefined && knownPairs.has(`${m.senderFp}:${m.counter}`)) return false;
           return true;
         });
-        if (fresh.length === 0) return s;
-        return { ...s, messages: sortMessages([...s.messages, ...fresh]) };
+        if (fresh.length === 0) return kept.length === s.messages.length ? s : { ...s, messages: sortMessages(kept) };
+        return { ...s, messages: sortMessages([...kept, ...fresh]) };
       })
     );
   }, []);
@@ -253,6 +268,53 @@ export function useSessionManager() {
     restoredIds.current.delete(code); // one-shot reveal
   }, []);
 
+  /**
+   * FULL-history backfill: as soon as this device holds the session key it
+   * pulls the entire ciphertext transcript from the server and decrypts it
+   * locally. Every member sees the complete chat — nothing stays sealed once
+   * the key arrives (the server only ever held ciphertext, so the
+   * zero-knowledge model is untouched). Dedupe is handled by appendMessages.
+   */
+  const backfillHistory = useCallback(
+    async (code: string) => {
+      const key = getSessionKey(code);
+      if (!key || backfilled.current.has(code)) return;
+      backfilled.current.add(code);
+      try {
+        const { messages } = await api.fetchMessages(code); // full transcript
+        if (messages.length > 0) void vault.saveWire(code, messages);
+        const me = identityRef.current?.fingerprint;
+        const entries = await Promise.all(
+          messages.map(async (w) => {
+            markSeen(code, w.id);
+            const base: DecryptedMessage = {
+              id: w.id,
+              code,
+              senderFp: w.senderFp,
+              mine: myFps.current.has(w.senderFp) || w.senderFp === me,
+              text: "",
+              ts: 0,
+              createdAt: w.createdAt,
+              counter: w.counter,
+              sealed: false,
+            };
+            try {
+              const payload = await decryptMessage(key, code, w);
+              return { ...base, text: payload.t, ts: payload.ts, sealed: false };
+            } catch {
+              // AEAD mismatch = foreign/tampered blob — never render it
+              return { ...base, failed: true, sealed: false };
+            }
+          })
+        );
+        appendMessages(code, entries);
+      } catch {
+        backfilled.current.delete(code); // allow a retry on the next key adoption
+      }
+    },
+    [appendMessages]
+  );
+
   const adoptSessionKey = useCallback(
     async (code: string, raw: Uint8Array) => {
       storeSessionKey(code, raw);
@@ -271,8 +333,10 @@ export function useSessionManager() {
         pending.map((w) => toTranscriptEntry(code, w, w.senderFp === me))
       );
       appendMessages(code, entries);
+      // everyone holding the key sees the WHOLE chat — pull it all in
+      void backfillHistory(code);
     },
-    [appendMessages, patchSession, revealRestoredHistory, toTranscriptEntry]
+    [appendMessages, patchSession, revealRestoredHistory, toTranscriptEntry, backfillHistory]
   );
 
   const startKeyPolling = useCallback(
@@ -301,8 +365,14 @@ export function useSessionManager() {
               /* envelope not for this identity generation — try next */
             }
           }
-        } catch {
-          /* relay hiccup — poll again */
+        } catch (err) {
+          // session deleted server-side -> stop asking forever
+          if (err instanceof Error && /\(404\)/.test(err.message)) {
+            const t = keyPoll.current.get(code);
+            if (t) clearInterval(t);
+            keyPoll.current.delete(code);
+          }
+          /* otherwise: relay hiccup — poll again */
         }
       }, 3000);
       keyPoll.current.set(code, poll);
@@ -354,7 +424,7 @@ export function useSessionManager() {
       void toTranscriptEntry(env.code, wire, mine).then((entry) => {
         appendMessages(env.code, [entry]);
         if (entry.sealed && !mine && !hasSessionKey(env.code)) {
-          stashPending(env.code, wire);
+          stashPending(env.code, { ...wire, code: env.code });
           patchSession(env.code, (s) => ({ unread: s.unread + 1 }));
         } else if (!mine && activeCodeRef.current !== env.code) {
           patchSession(env.code, (s) => ({ unread: s.unread + 1 }));
@@ -452,6 +522,7 @@ export function useSessionManager() {
       wireCache.current.delete(data.code);
       registered.current.delete(data.code);
       restoredIds.current.delete(data.code);
+      backfilled.current.delete(data.code);
       void vault.forgetSession(data.code); // wipe local vault rows too
       setSessions((prev) => prev.filter((s) => s.code !== data.code));
       setActiveCode((cur) => (cur === data.code ? null : cur));
@@ -657,6 +728,7 @@ export function useSessionManager() {
       wireCache.current.delete(code);
       registered.current.delete(code);
       restoredIds.current.delete(code);
+      backfilled.current.delete(code);
       void vault.forgetSession(code); // a closed session should not resurrect after reload
       setSessions((prev) => prev.filter((s) => s.code !== code));
       setActiveCode((cur) => (cur === code ? null : cur));
@@ -667,6 +739,7 @@ export function useSessionManager() {
   const deleteSession = useCallback(async (code: string) => {
     await api.deleteSession(code);
     restoredIds.current.delete(code);
+    backfilled.current.delete(code);
     void vault.forgetSession(code);
     purgeSession(code); // zero local keys + photo bytes immediately
     // cascade done server-side; evict every device (including ours)

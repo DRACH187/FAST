@@ -75,9 +75,9 @@ export async function detectCurve(): Promise<CurveName> {
   return cachedCurve;
 }
 
-function algo(curve: CurveName): Algorithm {
+function algo(curve: CurveName): EcKeyGenParams {
   return curve === "X25519"
-    ? ({ name: "X25519" } as Algorithm)
+    ? ({ name: "X25519" } as EcKeyGenParams)
     : { name: "ECDH", namedCurve: "P-256" };
 }
 
@@ -91,7 +91,7 @@ export type Identity = {
 /** Generate a fresh ephemeral identity for this tab. */
 export async function generateIdentity(): Promise<Identity> {
   const curve = await detectCurve();
-  const keyPair = await subtle.generateKey(algo(curve), true, ["deriveKey", "deriveBits"]);
+  const keyPair = (await subtle.generateKey(algo(curve), true, ["deriveKey", "deriveBits"])) as CryptoKeyPair;
   const publicB64 = bufToB64(await subtle.exportKey("raw", keyPair.publicKey));
   return { curve, keyPair, publicB64, fingerprint: await fingerprintOf(publicB64) };
 }
@@ -183,7 +183,7 @@ export async function wrapSessionKeyFor(
   recipientFp: string
 ): Promise<WrappedKeyEnvelope> {
   const curve = await detectCurve();
-  const ephem = await subtle.generateKey(algo(curve), true, ["deriveKey", "deriveBits"]);
+  const ephem = (await subtle.generateKey(algo(curve), true, ["deriveKey", "deriveBits"])) as CryptoKeyPair;
   const peerPub = await importPeerPublic(curve, recipientPublicB64);
   const sharedBits = await ecdhBits(ephem.privateKey, peerPub);
   const wrapKey = await hkdfAesKey(

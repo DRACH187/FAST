@@ -20,6 +20,7 @@ export default function Page() {
   const mgr = useSessionManager();
   const [mapOpen, setMapOpen] = useState(false);
   const openMap = () => setMapOpen(true);
+  const active = mgr.activeSession;
 
   return (
     <div className="min-h-dvh bg-black text-neutral-100 flex flex-col">
@@ -30,13 +31,13 @@ export default function Page() {
       {mgr.phase === "gate" && <GateScreen onUnlock={mgr.unlock} />}
 
       {mgr.phase === "app" &&
-        (mgr.activeSession ? (
+        (active ? (
           <ChatScreen
-            session={mgr.activeSession}
+            session={active}
             myFp={mgr.identityFp}
             onBack={() => mgr.setActiveCode(null)}
-            onSend={(text) => mgr.sendMessage(mgr.activeSession.code, text)}
-            onSendPhoto={(bytes) => mgr.sendPhoto(mgr.activeSession.code, bytes)}
+            onSend={(text) => mgr.sendMessage(active.code, text)}
+            onSendPhoto={(bytes) => mgr.sendPhoto(active.code, bytes)}
             onOpenMap={openMap}
             onDelete={(code) => mgr.deleteSession(code)}
           />
@@ -47,7 +48,9 @@ export default function Page() {
             busy={mgr.connecting}
             onOpen={(code) => void mgr.openSession(code)}
             onStart={mgr.startSession}
-            onJoin={mgr.joinSession}
+            onJoin={async (code) => {
+              await mgr.joinSession(code);
+            }}
             onDelete={mgr.deleteSession}
             onClose={mgr.closeSession}
             onOpenMap={openMap}

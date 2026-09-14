@@ -10,17 +10,15 @@ gsap.registerPlugin(useGSAP);
 /**
  * Splash — the FAST logo and nothing else.
  * Perfectly centered at a confident scale (clamp 190px→330px), a GSAP
- * blur/scale entrance, two hairline pulse rings, a progress hairline and a
- * cinematic exit. Click / tap / Enter to skip.
+ * blur/scale entrance, two hairline pulse rings and a cinematic exit.
+ * No progress bars — just the mark. Click / tap / Enter to skip.
  */
 
-// must match the CSS clamp() used on the logo so the progress line tracks it
 const LOGO_CLAMP = "clamp(190px, 58vw, 330px)";
 
 export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const logo = useRef<HTMLDivElement>(null);
-  const bar = useRef<HTMLDivElement>(null);
   const ringA = useRef<HTMLDivElement>(null);
   const ringB = useRef<HTMLDivElement>(null);
   const done = useRef(false);
@@ -34,12 +32,11 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
       onComplete();
       return;
     }
-    gsap.killTweensOf([logoEl, rootEl, bar.current, ringA.current, ringB.current]);
+    gsap.killTweensOf([logoEl, rootEl, ringA.current, ringB.current]);
     gsap
       .timeline({ onComplete })
       .to(logoEl, { scale: 1.08, opacity: 0, filter: "blur(10px)", duration: 0.5, ease: "power2.in" }, 0)
       .to([ringA.current, ringB.current], { opacity: 0, duration: 0.3, ease: "power2.in" }, 0)
-      .to(bar.current, { opacity: 0, duration: 0.3, ease: "power2.in" }, 0)
       .to(rootEl, { opacity: 0, duration: 0.42, ease: "power2.in" }, 0.1);
   }, [onComplete]);
 
@@ -56,11 +53,6 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         logo.current,
         { opacity: 0, scale: 0.7, filter: "blur(16px)" },
         { opacity: 1, scale: 1, filter: "blur(0px)", duration: 1.15, ease: "expo.out" }
-      ).fromTo(
-        bar.current,
-        { scaleX: 0 },
-        { scaleX: 1, duration: 1.9, ease: "power1.inOut" },
-        0.3
       );
 
       // hairline pulse rings — twice, then rest
@@ -126,15 +118,6 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
             sizes={`${LOGO_CLAMP}`}
           />
         </div>
-      </div>
-
-      {/* progress hairline — positioned below the logo without shifting its centering */}
-      <div
-        className="absolute left-1/2 -translate-x-1/2"
-        style={{ top: `calc(50% + ${LOGO_CLAMP} / 2 + 30px)` }}
-        aria-hidden
-      >
-        <div ref={bar} className="h-px w-[clamp(120px,34vw,190px)] origin-left bg-neutral-600" style={{ transform: "scaleX(0)" }} />
       </div>
     </div>
   );

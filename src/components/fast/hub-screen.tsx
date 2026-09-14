@@ -48,7 +48,7 @@ export function HubScreen({
   onClose,
   onOpenMap,
 }: HubProps) {
-  const shellRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);

@@ -51,6 +51,26 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const kbRef = useRef<HTMLDivElement>(null);
+
+  // Mobile keyboards: size the chat to the VISUAL viewport so the composer
+  // always sits above the keyboard (iOS Safari keeps the layout viewport
+  // full-height, which would otherwise hide the input).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const el = kbRef.current;
+    if (!vv || !el) return;
+    const apply = () => {
+      el.style.height = `${vv.height}px`;
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+    };
+  }, []);
 
   const scrollToBottom = useCallback((smooth = true) => {
     const el = scrollRef.current;
@@ -118,9 +138,10 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
   }, [session.presence, myFp]);
 
   return (
+    <div ref={kbRef} className="flex h-dvh flex-col overflow-hidden">
     <ScreenShell
       as="main"
-      className="relative flex h-dvh flex-col bg-black"
+      className="relative flex min-h-0 flex-1 flex-col bg-black"
     >
       {/* header */}
       <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
@@ -128,7 +149,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
           <button
             aria-label="Back to sessions"
             onClick={onBack}
-            className="flex size-10 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
+            className="flex size-11 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
           >
             <ArrowLeft className="size-5" aria-hidden />
           </button>
@@ -169,7 +190,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
               <button
                 onClick={toggle}
                 aria-label="Session menu"
-                className="flex size-10 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
+                className="flex size-11 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
               >
                 <MoreVertical className="size-5" aria-hidden />
               </button>
@@ -269,7 +290,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
         <button
           onClick={() => scrollToBottom(true)}
           aria-label="Jump to latest message"
-          className="absolute bottom-24 right-4 z-10 flex size-10 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg outline-none transition-colors hover:text-white"
+          className="absolute bottom-28 right-4 z-10 flex size-11 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg outline-none transition-colors hover:text-white"
         >
           <ArrowDown className="size-4" aria-hidden />
         </button>
@@ -388,6 +409,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onSendPhoto, onOpenM
         </div>
       </FastModal>
     </ScreenShell>
+    </div>
   );
 }
 
