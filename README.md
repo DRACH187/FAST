@@ -9,6 +9,9 @@ viewing.
 Strictly **black · white · grey**. Normal system fonts. Every control is
 bespoke — no default browser or library chrome. Motion is GSAP-driven.
 
+Deploys clean to **Vercel** (no WebSocket server, no database requirement) and
+runs identically self-hosted.
+
 ---
 
 ## The flow
@@ -19,10 +22,11 @@ SPLASH (FAST logo, GSAP)                    ~3s
         └─> ACCESS GATE ("187")             constant-time check, rate limited
               └─> SESSION HUB               start / join / delete sessions
                     ├─> CHAT (E2EE, multiple sessions at once)
-                    └─> SURROUNDINGS MAP    SA gang hotspots (Gemini intel)
+                    └─> SURROUNDINGS MAP    Google Maps + SA gang hotspots (Gemini intel)
 ```
 
-- **Start session** — generates a fresh 6-letter code (e.g. `BZYFTB`).
+- **Start session** — mints a fresh 6-letter code **client-side** with real
+  crypto randomness (e.g. `BZYFTB`).
 - **Join session** — enter any 6-letter code; the session key is wrapped to
   your device by a member who holds it (Megolm-style outbound key wrap).
 - **Delete session** — erases the code, membership and full ciphertext
@@ -35,10 +39,10 @@ SPLASH (FAST logo, GSAP)                    ~3s
 | Layer | Implementation |
 |---|---|
 | 1 · Crypto | Web Crypto only: ephemeral **X25519** identity per tab (ECDH P-256 fallback), **AES-256-GCM** payloads, **HKDF-SHA256** per-message keys `HKDF(sessionKey, salt=code, info=msg|counter|senderFp)`. AEAD additional-data binds `code\|senderFp\|counter` (tamper ⇒ bubble marked *undecryptable*). |
-| 2 · Relay | Blind socket.io router (rooms per code). Validates shapes and size caps; keeps **zero state**, zero ciphertext copies. Ephemeral photos ride `session:photo` and are forwarded and forgotten. |
+| 2 · Transport | **Blind HTTP sync endpoint** (`POST /api/sessions/[code]/sync`) — one serverless function carries presence, message/key/photo deltas, key requests and termination. Validates shapes and size caps; stores **only ciphertext and public material**. Works on any host: no WebSocket servers, no sticky sessions, no database. Ephemeral photos ride the same endpoint in RAM with a hard 60s TTL — forwarded and forgotten. |
 | 3 · Gate | Shared passcode (`187`) verified with `timingSafeEqual` + constant delay + sliding-window rate limit. |
-| 4 · Data | SQLite via Prisma stores ONLY: session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs, wrapped key envelopes. Reload restores sessions (data-saving vault in IndexedDB holds **ciphertext only, never keys**). |
-| 5 · Perimeter | Security headers on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP). TLS terminates at the edge in production (wss everywhere). |
+| 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts). Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere.** |
+| 5 · Perimeter | Security headers on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP). TLS terminates at the edge in production. |
 
 ### Photo guarantee — "taken, never stored"
 
@@ -46,12 +50,12 @@ SPLASH (FAST logo, GSAP)                    ~3s
   fallback. Frames are drawn to a canvas and encoded to JPEG ≤1280px **in
   memory**.
 - The bytes are encrypted with a dedicated per-photo ratchet key
-  (`photo|counter|senderFp` domain) and relayed via socket **only** — no DB
-  row, no IndexedDB, no wire cache, no `localStorage`.
+  (`photo|counter|senderFp` domain) and pushed to the sync endpoint, which
+  holds them **in RAM for 60 seconds maximum** — no DB row, no IndexedDB, no
+  wire cache, no `localStorage`.
 - Rendered into a `<canvas>` (no `<img>`, no retained blob URLs, context menu
-  disabled). Received photos are **burn-after-view**: opening starts a 20s
-  fuse; a 60s hard TTL applies regardless. Burning literally zero-fills the
-  `Uint8Array`.
+  disabled). Received photos are **burn-after-view**: a 60s hard TTL applies
+  regardless. Burning literally zero-fills the `Uint8Array`.
 - Keys live in module RAM only and die with the tab. Closing a session or
   deleting it for everyone burns its photos immediately.
 
@@ -66,13 +70,14 @@ design, that history no longer exists in any readable form.
 
 `SURROUNDINGS — SOUTH AFRICA` is a community-safety awareness overlay:
 
-- Custom monochrome Leaflet map (OSM raster tiles re-graded to greyscale via
-  CSS — zero API keys), locked to South Africa bounds, **no geolocation
-  anywhere** (blocked by `Permissions-Policy` too).
+- **Real Google Maps tiles** (roadmap + satellite) rendered through Leaflet
+  and pushed through a grayscale CSS filter so the map stays strictly
+  monochrome — no API key required. Locked to South Africa bounds.
 - Hotspots (area-level) with intensity ratings and the gangs publicly
   documented to run them (threat-graded). Generated by **Gemini
-  `gemini-flash-latest`** (free tier, server-side only) and cached 24h in
-  SQLite; a curated offline dataset guarantees the feature works with no key.
+  `gemini-flash-latest`** (free tier, server-side only, 24h cache) — the
+  refresh button forces a fresh AI generation. A curated offline dataset
+  guarantees the feature works with no key or in unsupported regions.
 - *Geolocation is disabled by design — the map shows surroundings, never your
   location.*
 
@@ -81,52 +86,56 @@ design, that history no longer exists in any readable form.
 
 ## Data-saving tech
 
-- **Server**: ciphertext history per session survives reloads and re-joins
-  (sealed rows — readable again the moment a member re-wraps the key to your
-  device).
-- **Client vault (IndexedDB)**: session rows, ciphertext blobs (capped),
-  past device fingerprints for message attribution. Drafts live in
-  tab-scoped `sessionStorage`. **Zero key material is ever persisted.**
+- **Local vault (IndexedDB)**: every device saves its sessions and ciphertext
+  transcripts locally (capped), so history survives reloads and re-joins —
+  sealed rows become readable again the moment a member re-wraps the key to
+  your device. Past device fingerprints (public data) are kept for message
+  attribution. Drafts live in tab-scoped `sessionStorage`.
+- **Server**: process-memory room state with delta cursors — every client
+  pulls the full transcript on first sync and only deltas afterwards.
+- **Zero key material is ever persisted.**
 
 ## Run it
 
 ```bash
 bun install
-cp .env.example .env.local        # add DATABASE_URL (+ optional GEMINI_API_KEY)
-bun run db:push
-bun run dev                       # Next.js on :3000, relay boots on :3003
+cp .env.example .env.local        # optional: GEMINI_API_KEY, GATE_PASSCODE
+bun run dev                       # Next.js on :3000 — nothing else to run
 ```
 
 Open the app, wait out the boot ritual, enter `187`.
 
-Production standalone: `bun run build && bun run start` (relay binds :3003 in
-the same process via `src/instrumentation.ts`; the identical standalone relay
-lives in `mini-services/chat-service` for deployment behind its own
-supervisor).
+### Deploy to Vercel
+
+Push this repo to GitHub and import it in Vercel — zero configuration. Chat
+state lives in the sync function's memory (rooms self-heal across cold
+starts) and each device keeps its own encrypted history vault. For the
+strongest setup set `GEMINI_API_KEY` in Vercel → Settings → Environment
+Variables.
+
+Production standalone (any Node host): `bun run build && bun run start`.
 
 ### Environment
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | SQLite file for Prisma (required) |
-| `GEMINI_API_KEY` | Optional — enables live Gemini map intel; falls back to the curated dataset without it |
+| `GEMINI_API_KEY` | Optional — enables live Gemini map intel (free tier); a built-in fallback key and the curated dataset cover deployments without it |
 | `GATE_PASSCODE` | Optional — overrides the default `187` |
-| `RELAY_PORT` | Optional — relay port (default `3003`) |
+| `GEMINI_MODEL` | Optional — must stay a FREE flash-class model (default `gemini-flash-latest`) |
+| `DATABASE_URL` | Optional — SQLite file for the Prisma map-intel cache (self-host nicety only) |
 
 ## Stack
 
-Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · GSAP · socket.io ·
-Leaflet · Prisma/SQLite · Web Crypto. No crypto libraries — native primitives
-only.
+Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · GSAP · Leaflet ·
+Google Maps tiles · Web Crypto. No crypto libraries — native primitives only.
 
 ## Layout
 
 ```
 src/lib/crypto/       e2ee.ts (X25519 + HKDF + AES-GCM ratchet), keyvault.ts (RAM-only)
-src/lib/fast/         session-manager, relay client, vault-db (IndexedDB, ct-only)
-src/lib/relay-server.ts + instrumentation.ts   blind relay hosted in-process
-mini-services/chat-service  standalone relay artifact (port 3003)
-src/app/api/          gate · sessions · keys · messages · map/hotspots
+src/lib/fast/         session-manager, transport (HTTP sync client), memory-store,
+                      vault-db (IndexedDB, ct-only), ai.ts (Gemini, server-side)
+src/app/api/          gate · sessions/[code]/sync (the whole chat backend) · map/hotspots
 src/components/fast/  splash, gta-loading, gate, hub, chat, camera, map, primitives
-prisma/               schema (Session, Participant, EncryptedMessage, KeyEnvelope, MapCache)
+prisma/               optional MapCache schema (self-host intel cache)
 ```

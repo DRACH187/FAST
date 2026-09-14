@@ -3,15 +3,17 @@
 /**
  * FAST — SURROUNDINGS: South Africa community-safety map.
  *
- * Fully self-contained vector map. The basemap (simplified province
- * boundaries) ships inside the bundle as `sa-geo.ts`, so this screen makes
- * ZERO external requests — no tile provider, no API key, nothing that can
- * 403, rate-limit or observe the user. Pan / drag / pinch-zoom / wheel-zoom
- * are hand-rolled pointer handlers; all chrome is bespoke.
+ * Basemap: REAL Google Maps tiles (mt*.google.com raster endpoint — no API
+ * key required) rendered through Leaflet and pushed through a grayscale
+ * filter so the whole map stays strictly black/white/grey. A satellite
+ * layer is one tap away, filtered the same way.
  *
- * Strictly monochrome; threat levels are expressed with grey shades, borders
- * and weight only. Geolocation is intentionally NOT used anywhere.
- * Motion is GSAP-driven and respects prefers-reduced-motion.
+ * Hotspot intel: Gemini free flash model via /api/map/hotspots (curated
+ * offline fallback built in). Markers are bespoke divIcons; the detail
+ * panel, filters and footer are hand-rolled — zero default Leaflet chrome.
+ *
+ * Geolocation is intentionally NOT used anywhere. Motion is GSAP-driven and
+ * respects prefers-reduced-motion.
  */
 
 import {
@@ -20,23 +22,25 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import type * as LeafletNS from "leaflet";
 import {
   ArrowLeft,
   Crosshair,
+  Layers,
   MapPinOff,
   Minus,
   Plus,
+  RefreshCw,
   Search,
   TriangleAlert,
   X,
 } from "lucide-react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { SA_CITIES, SA_PROVINCES } from "@/lib/fast/sa-geo";
 import { REDUCED_MOTION } from "@/components/fast/motion";
+import "leaflet/dist/leaflet.css";
 
 gsap.registerPlugin(useGSAP);
 
@@ -58,9 +62,7 @@ type Hotspot = {
 
 type FeedSource = "gemini" | "fallback" | "cache";
 
-type Feed = { hotspots: Hotspot[]; source: FeedSource; updatedAt: string };
-
-type View = { k: number; x: number; y: number };
+type Feed = { hotspots: Hotspot[]; source: FeedSource; updatedAt: string; reason?: string };
 
 const PROVINCE_ORDER = [
   "Eastern Cape",
@@ -80,108 +82,42 @@ const SOURCE_BADGE: Record<FeedSource, string> = {
   fallback: "OFFLINE DATASET",
 };
 
+/** South Africa, with a little breathing room. */
+const SA_BOUNDS: LeafletNS.LatLngBoundsExpression = [
+  [-34.95, 16.3],
+  [-21.9, 33.3],
+];
+const FIT_PAD: LeafletNS.FitBoundsOptions = { padding: [24, 24], animate: !REDUCED_MOTION };
+
+const GOOGLE_ROADMAP = "https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en";
+const GOOGLE_SATELLITE = "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}&hl=en";
+const GOOGLE_SUBDOMAINS = ["mt0", "mt1", "mt2", "mt3"];
+
 function hotspotKey(h: Hotspot): string {
   return `${h.province}|${h.area.toLowerCase()}`;
 }
 
-// --------------------------------------------------------- projection setup
+/** WeakMap so the zoom layer can rebind area labels without rebuilds. */
+const markerHotspots = new WeakMap<LeafletNS.Marker, Hotspot>();
 
-/** Web-Mercator y (degrees) — screen y grows downward, so negate. */
-function mercY(lat: number): number {
-  const phi = (lat * Math.PI) / 180;
-  return -(180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + phi / 2));
-}
+// --------------------------------------------------------- injected styles
 
-const PX = (lng: number) => lng;
-const PY = (lat: number) => mercY(lat);
-
-// viewBox: fit the country with a small margin
-const BOUNDS = (() => {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of SA_PROVINCES) {
-    for (const ring of p.rings) {
-      for (const [lng, lat] of ring) {
-        const x = PX(lng);
-        const y = PY(lat);
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  return { minX, minY, maxX, maxY };
-})();
-
-const PAD = 0.5;
-const VB = {
-  x: BOUNDS.minX - PAD,
-  y: BOUNDS.minY - PAD,
-  w: BOUNDS.maxX - BOUNDS.minX + 2 * PAD,
-  h: BOUNDS.maxY - BOUNDS.minY + 2 * PAD,
-};
-
-const VIEW_BOX = `${VB.x} ${VB.y} ${VB.w} ${VB.h}`;
-const MIN_K = 1;
-const MAX_K = 26;
-
-/** Province outline path (all rings merged, even-odd fill). */
-function provincePath(rings: [number, number][][]): string {
-  return rings
-    .map(
-      (ring) =>
-        `M${ring.map(([lng, lat], i) => `${i === 0 ? "" : "L"}${PX(lng).toFixed(2)} ${PY(lat).toFixed(2)}`).join("")}Z`
-    )
-    .join(" ");
-}
-
-/** Rough visual centroid of the largest ring (for name labels). */
-function ringCentroid(rings: [number, number][][]): { x: number; y: number } {
-  let sx = 0;
-  let sy = 0;
-  let n = 0;
-  for (const [lng, lat] of rings[0]) {
-    sx += PX(lng);
-    sy += PY(lat);
-    n += 1;
-  }
-  return { x: sx / n, y: sy / n };
-}
-
-const PROVINCE_SHAPES = SA_PROVINCES.map((p) => ({
-  name: p.name,
-  d: provincePath(p.rings),
-  centroid: ringCentroid(p.rings),
-}));
-
-const CITIES = SA_CITIES.map((c) => ({ name: c.name, x: PX(c.lng), y: PY(c.lat) }));
-
-// graticule — light 2° grid for the tactical feel
-const GRID_LINES = (() => {
-  const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  for (let lng = 16; lng <= 34; lng += 2) {
-    lines.push({ x1: lng, y1: PY(-22), x2: lng, y2: PY(-36) });
-  }
-  for (let lat = -22; lat >= -36; lat -= 2) {
-    lines.push({ x1: 16, y1: PY(lat), x2: 34, y2: PY(lat) });
-  }
-  return lines;
-})();
-
-// --------------------------------------------------- injected marker styles
-
-function injectHotspotStyles() {
-  if (document.getElementById("fast-hotspot-styles")) return;
+function injectMapStyles() {
+  if (document.getElementById("fast-map-styles")) return;
   const style = document.createElement("style");
-  style.id = "fast-hotspot-styles";
+  style.id = "fast-map-styles";
   style.textContent = `
+/* monochrome enforcement on Google tiles — roadmap is inverted into a dark
+   grey map so it matches the all-black app and white markers pop */
+.fast-google-tiles { filter: grayscale(1) invert(1) brightness(0.82) contrast(1.12); }
+.fast-google-tiles-sat { filter: grayscale(1) brightness(0.68) contrast(1.15); }
+
+/* bespoke hotspot markers (constant screen size, Leaflet-anchored) */
+.fast-hspot-icon { background: transparent !important; border: none !important; }
 .fast-hspot {
-  position: absolute; display: flex; align-items: center; justify-content: center;
-  transform: translate(-50%, -50%); border-radius: 9999px; cursor: pointer;
-  background: transparent; border: none; padding: 0; outline: none;
+  position: relative; display: flex; align-items: center; justify-content: center;
+  border-radius: 9999px; cursor: pointer; background: transparent; border: none;
+  padding: 0; outline: none;
 }
 .fast-hspot-ring {
   position: absolute; inset: 0; border-radius: 9999px;
@@ -201,6 +137,18 @@ function injectHotspotStyles() {
   position: absolute; inset: 0; border-radius: 9999px;
   border: 1px solid #ffffff; animation: fast-hspot-ping 1.9s ease-out infinite;
 }
+.fast-hspot-label {
+  background: rgba(0,0,0,0.72); border: 1px solid #262626; color: #d4d4d4;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 9999px; box-shadow: none;
+}
+.fast-hspot-label::before { display: none; }
+
+/* keep Leaflet chrome invisible — all controls are bespoke */
+.leaflet-container { background: #000000; outline: none; font: inherit; }
+.leaflet-control-container { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .fast-hspot-ping { animation: none; opacity: 0; }
 }
@@ -216,23 +164,29 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 
   const [feed, setFeed] = useState<Feed | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   const [query, setQuery] = useState("");
   const [province, setProvince] = useState<string>("ALL");
   const [selected, setSelected] = useState<Hotspot | null>(null);
-  const [hoverProv, setHoverProv] = useState<string | null>(null);
 
-  const [view, setView] = useState<View>({ k: 1, x: 0, y: 0 });
-  const [size, setSize] = useState({ w: 0, h: 0 });
+  const [tilesDown, setTilesDown] = useState(false);
+  const [zoom, setZoom] = useState(6);
+  const [satellite, setSatellite] = useState(false);
+  /** bumped once the Leaflet map + marker layer exist — retriggers markers */
+  const [mapReady, setMapReady] = useState(0);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const viewRef = useRef<View>(view);
-  viewRef.current = view;
+  const mapRef = useRef<LeafletNS.Map | null>(null);
+  const layerRef = useRef<LeafletNS.LayerGroup | null>(null);
+  const tileRef = useRef<LeafletNS.TileLayer | null>(null);
+  const satelliteRef = useRef(false);
+  const markerEls = useRef(new Map<string, HTMLElement>());
+  const tileStats = useRef({ errored: 0, loaded: 0 });
 
   // open/close mount dance (derive during render — the React-sanctioned
   // pattern, same as FastModal): reopening starts with a clean detail panel.
@@ -244,9 +198,9 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     }
   }
 
-  // marker styles are injected once (they cover the HTML overlay markers)
+  // map styles are injected once per mount
   useEffect(() => {
-    if (mounted) injectHotspotStyles();
+    if (mounted) injectMapStyles();
   }, [mounted]);
 
   // ------------------------------------------------------------ GSAP open
@@ -297,14 +251,22 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   // ------------------------------------------------------- data fetch
   const haveFeedRef = useRef(false);
 
-  const load = useCallback(async (signal: AbortSignal) => {
-    setLoading(true);
+  const load = useCallback(async (signal: AbortSignal, opts: { refresh?: boolean } = {}) => {
+    if (opts.refresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/map/hotspots", { signal });
+      const res = await fetch(`/api/map/hotspots${opts.refresh ? "?refresh=1" : ""}`, { signal });
       const data: unknown = await res.json().catch(() => null);
       const body = data as
-        | { ok?: boolean; source?: FeedSource; updatedAt?: string; hotspots?: Hotspot[]; error?: string }
+        | {
+            ok?: boolean;
+            source?: FeedSource;
+            reason?: string;
+            updatedAt?: string;
+            hotspots?: Hotspot[];
+            error?: string;
+          }
         | null;
       if (!res.ok || !body?.ok || !Array.isArray(body.hotspots)) {
         setError(body?.error ?? `Intel feed error (HTTP ${res.status})`);
@@ -315,12 +277,16 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         hotspots: body.hotspots,
         source: body.source ?? "fallback",
         updatedAt: body.updatedAt ?? new Date().toISOString(),
+        reason: typeof body.reason === "string" ? body.reason : undefined,
       });
     } catch (err) {
       if ((err as Error | null)?.name === "AbortError") return;
       setError("Network error — could not reach the intel feed.");
     } finally {
-      if (!signal.aborted) setLoading(false);
+      if (!signal.aborted) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -331,212 +297,105 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     return () => ctrl.abort();
   }, [mounted, attempt, load]);
 
-  // ------------------------------------------------- host measurement
+  // ----------------------------------------------------- Leaflet lifecycle
   useEffect(() => {
-    if (!mounted || !hostRef.current) return;
-    const el = hostRef.current;
-    const ro = new ResizeObserver(() => {
-      setSize({ w: el.clientWidth, h: el.clientHeight });
-    });
-    ro.observe(el);
-    setSize({ w: el.clientWidth, h: el.clientHeight });
-    return () => ro.disconnect();
+    if (!mounted || !hostRef.current || mapRef.current) return;
+    let cancelled = false;
+    let map: LeafletNS.Map | null = null;
+
+    void (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || !hostRef.current) return;
+
+      map = L.map(hostRef.current, {
+        zoomControl: false,
+        attributionControl: false,
+        minZoom: 5,
+        maxZoom: 16,
+        maxBounds: L.latLngBounds([-36.5, 14.0], [-20.0, 35.8]),
+        maxBoundsViscosity: 0.85,
+        zoomSnap: 0.5,
+        worldCopyJump: false,
+        keyboard: true,
+      });
+      map.fitBounds(L.latLngBounds(SA_BOUNDS as unknown as [[number, number], [number, number]]), FIT_PAD);
+      mapRef.current = map;
+
+      tileStats.current = { errored: 0, loaded: 0 };
+      const sat = satelliteRef.current;
+      const tiles = L.tileLayer(sat ? GOOGLE_SATELLITE : GOOGLE_ROADMAP, {
+        subdomains: GOOGLE_SUBDOMAINS,
+        className: sat ? "fast-google-tiles-sat" : "fast-google-tiles",
+        minZoom: 4,
+        maxZoom: 19,
+        maxNativeZoom: 19,
+        crossOrigin: "anonymous",
+      });
+      tiles.on("tileerror", () => {
+        tileStats.current.errored += 1;
+        if (tileStats.current.errored > 10 && tileStats.current.loaded === 0) setTilesDown(true);
+      });
+      tiles.on("tileload", () => {
+        tileStats.current.loaded += 1;
+        if (tileStats.current.loaded >= 4) setTilesDown(false);
+      });
+      tiles.addTo(map);
+      tileRef.current = tiles;
+
+      layerRef.current = L.layerGroup().addTo(map);
+
+      map.on("zoomend", () => setZoom(map!.getZoom()));
+      setZoom(map.getZoom());
+      setMapReady((n) => n + 1);
+    })();
+
+    return () => {
+      cancelled = true;
+      map?.remove();
+      mapRef.current = null;
+      layerRef.current = null;
+      tileRef.current = null;
+      markerEls.current.clear();
+    };
   }, [mounted]);
 
-  // ----------------------------------------------------- pan/zoom engine
-  // svg-user units per pixel ("meet" letterboxing included).
-  // meet scales by min(w/VB.w, h/VB.h) px per unit -> units per px is MAX.
-  const unitScale = useMemo(() => {
-    if (size.w < 2 || size.h < 2) return 1;
-    return Math.max(VB.w / size.w, VB.h / size.h);
-  }, [size]);
-
-  const offsets = useMemo(() => {
-    if (size.w < 2 || size.h < 2) return { offX: 0, offY: 0 };
-    const s = unitScale;
-    return { offX: (size.w - VB.w / s) / 2, offY: (size.h - VB.h / s) / 2 };
-  }, [size, unitScale]);
-
-  /**
-   * Keep the country sensibly framed: the visible svg-user window is the
-   * element size / k (letterbox included). Its centre must stay within the
-   * country bounds (+ a small slack). When the whole country already fits an
-   * axis, that axis is centre-locked.
-   */
-  const clampView = useCallback(
-    (v: View): View => {
-      const k = Math.min(MAX_K, Math.max(MIN_K, v.k));
-      const cx = VB.x + VB.w / 2; // viewport centre in svg-user space (xMidYMid)
-      const cy = VB.y + VB.h / 2;
-      const wv = (size.w * unitScale) / k;
-      const hv = (size.h * unitScale) / k;
-      const SLACK = 2.2;
-      const fix = (centre: number, lo: number, hi: number, win: number) => {
-        if (win >= hi - lo) return (lo + hi) / 2;
-        return Math.min(Math.max(centre, lo + win / 2 - SLACK), hi - win / 2 + SLACK);
-      };
-      const mx = fix((cx - v.x) / k, BOUNDS.minX, BOUNDS.maxX, wv);
-      const my = fix((cy - v.y) / k, BOUNDS.minY, BOUNDS.maxY, hv);
-      return { k, x: cx - k * mx, y: cy - k * my };
-    },
-    [size, unitScale]
-  );
-
-  /** client point -> svg-user coords (viewBox space, before pan/zoom) */
-  const clientToSvg = useCallback(
-    (clientX: number, clientY: number) => {
-      const svg = svgRef.current;
-      if (!svg) return null;
-      const rect = svg.getBoundingClientRect();
-      const px = clientX - rect.left;
-      const py = clientY - rect.top;
-      return {
-        x: (px - offsets.offX) / unitScale + VB.x,
-        y: (py - offsets.offY) / unitScale + VB.y,
-      };
-    },
-    [offsets, unitScale]
-  );
-
-  /** zoom keeping a fixed svg-user anchor point */
-  const zoomAt = useCallback(
-    (anchor: { x: number; y: number }, nextK: number): View => {
-      const v = viewRef.current;
-      const mx = (anchor.x - v.x) / v.k;
-      const my = (anchor.y - v.y) / v.k;
-      return clampView({ k: nextK, x: anchor.x - nextK * mx, y: anchor.y - nextK * my });
-    },
-    [clampView]
-  );
-
-  const setViewClamped = useCallback(
-    (v: View) => {
-      setView(clampView(v));
-    },
-    [clampView]
-  );
-
-  // wheel zoom (non-passive so we can preventDefault)
+  // ------------------------------------------------ layer swap (map/sat)
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!mounted || !svg) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const p = clientToSvg(e.clientX, e.clientY);
-      if (!p) return;
-      const factor = Math.exp(-e.deltaY * 0.0016);
-      setViewClamped(zoomAt(p, viewRef.current.k * factor));
-    };
-    svg.addEventListener("wheel", onWheel, { passive: false });
-    return () => svg.removeEventListener("wheel", onWheel);
-  }, [mounted, clientToSvg, zoomAt, setViewClamped]);
-
-  // pointer pan + pinch
-  const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const pinch = useRef<{ d0: number; k0: number; anchor: { x: number; y: number } } | null>(null);
-  const panLast = useRef<{ x: number; y: number } | null>(null);
-
-  const onPointerDown = useCallback(
-    (e: ReactPointerEvent<SVGSVGElement>) => {
-      (e.target as Element).setPointerCapture?.(e.pointerId);
-      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pointers.current.size === 1) {
-        panLast.current = { x: e.clientX, y: e.clientY };
-      } else if (pointers.current.size === 2) {
-        panLast.current = null;
-        const [a, b] = [...pointers.current.values()];
-        const pa = clientToSvg(a.x, a.y);
-        const pb = clientToSvg(b.x, b.y);
-        if (pa && pb) {
-          pinch.current = {
-            d0: Math.max(8, Math.hypot(pb.x - pa.x, pb.y - pa.y)),
-            k0: viewRef.current.k,
-            anchor: { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 },
-          };
-        }
-      }
-    },
-    [clientToSvg]
-  );
-
-  const onPointerMove = useCallback(
-    (e: ReactPointerEvent<SVGSVGElement>) => {
-      if (!pointers.current.has(e.pointerId)) return;
-      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-      if (pointers.current.size >= 2 && pinch.current) {
-        const [a, b] = [...pointers.current.values()];
-        const pa = clientToSvg(a.x, a.y);
-        const pb = clientToSvg(b.x, b.y);
-        if (!pa || !pb) return;
-        const d = Math.max(8, Math.hypot(pb.x - pa.x, pb.y - pa.y));
-        setViewClamped(zoomAt(pinch.current.anchor, pinch.current.k0 * (d / pinch.current.d0)));
-        return;
-      }
-
-      if (panLast.current) {
-        const dx = (e.clientX - panLast.current.x) / unitScale;
-        const dy = (e.clientY - panLast.current.y) / unitScale;
-        panLast.current = { x: e.clientX, y: e.clientY };
-        const v = viewRef.current;
-        setViewClamped({ ...v, x: v.x + dx, y: v.y + dy });
-      }
-    },
-    [clientToSvg, setViewClamped, unitScale, zoomAt]
-  );
-
-  const onPointerUp = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
-    pointers.current.delete(e.pointerId);
-    if (pointers.current.size < 2) pinch.current = null;
-    if (pointers.current.size === 1) {
-      const [only] = [...pointers.current.values()];
-      panLast.current = { x: only.x, y: only.y };
-    } else if (pointers.current.size === 0) {
-      panLast.current = null;
-    }
-  }, []);
-
-  // animated zoom buttons (GSAP-driven so the motion matches the app)
-  const animateView = useCallback(
-    (target: View) => {
-      const proxy = { ...viewRef.current };
-      gsap.to(proxy, {
-        k: target.k,
-        x: target.x,
-        y: target.y,
-        duration: REDUCED_MOTION ? 0 : 0.45,
-        ease: "power3.out",
-        overwrite: "auto",
-        onUpdate: () => setView(clampView({ k: proxy.k, x: proxy.x, y: proxy.y })),
+    satelliteRef.current = satellite;
+    const map = mapRef.current;
+    const prev = tileRef.current;
+    if (!map || !prev) return;
+    let cancelled = false;
+    void (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || !mapRef.current) return;
+      prev.remove();
+      tileStats.current = { errored: 0, loaded: 0 };
+      const tiles = L.tileLayer(satellite ? GOOGLE_SATELLITE : GOOGLE_ROADMAP, {
+        subdomains: GOOGLE_SUBDOMAINS,
+        className: satellite ? "fast-google-tiles-sat" : "fast-google-tiles",
+        minZoom: 4,
+        maxZoom: 19,
+        maxNativeZoom: 19,
+        crossOrigin: "anonymous",
       });
-    },
-    [clampView]
-  );
+      tiles.on("tileerror", () => {
+        tileStats.current.errored += 1;
+        if (tileStats.current.errored > 10 && tileStats.current.loaded === 0) setTilesDown(true);
+      });
+      tiles.on("tileload", () => {
+        tileStats.current.loaded += 1;
+        if (tileStats.current.loaded >= 4) setTilesDown(false);
+      });
+      tiles.addTo(mapRef.current);
+      tileRef.current = tiles;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [satellite]);
 
-  const zoomStep = useCallback(
-    (dir: 1 | -1) => {
-      const v = viewRef.current;
-      // anchor = current viewport centre in svg-user space
-      const anchor = { x: VB.x + VB.w / 2, y: VB.y + VB.h / 2 };
-      const mx = (anchor.x - v.x) / v.k;
-      const my = (anchor.y - v.y) / v.k;
-      const k = Math.min(MAX_K, Math.max(MIN_K, v.k * (dir === 1 ? 1.6 : 1 / 1.6)));
-      animateView(clampView({ k, x: anchor.x - k * mx, y: anchor.y - k * my }));
-    },
-    [animateView, clampView]
-  );
-
-  const recenter = useCallback(() => {
-    animateView(clampView({ k: 1, x: 0, y: 0 }));
-    setSelected(null);
-  }, [animateView, clampView]);
-
-  // ---------------------------------------------------------- filtering
-  const provinces = useMemo(() => {
-    const present = new Set(feed?.hotspots.map((h) => h.province) ?? []);
-    return PROVINCE_ORDER.filter((p) => present.has(p));
-  }, [feed]);
-
+  // ---------------------------------------------------- hotspot markers
   const filtered = useMemo(() => {
     if (!feed) return [];
     const q = query.trim().toLowerCase();
@@ -548,36 +407,84 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     });
   }, [feed, query, province]);
 
-  const filteredKeys = useMemo(() => new Set(filtered.map(hotspotKey)), [filtered]);
+  const provinces = useMemo(() => {
+    const present = new Set(feed?.hotspots.map((h) => h.province) ?? []);
+    return PROVINCE_ORDER.filter((p) => present.has(p));
+  }, [feed]);
 
-  // project hotspots into map units
-  const plotted = useMemo(
-    () =>
-      filtered.map((h) => ({
-        h,
-        x: PX(h.lng),
-        y: PY(h.lat),
-      })),
-    [filtered]
-  );
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = layerRef.current;
+    if (!map || !layer) return;
+    let cancelled = false;
 
-  // ------------------------------------------------- marker layer motion
-  const markerLayerRef = useRef<HTMLDivElement>(null);
-  const firstPlot = useRef(true);
+    void (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || !layerRef.current || !mapRef.current) return;
+      const currentZoom = mapRef.current.getZoom();
+      layer.clearLayers();
+      markerEls.current.clear();
 
-  useGSAP(
-    () => {
-      if (!markerLayerRef.current) return;
-      if (REDUCED_MOTION) return;
-      gsap.fromTo(
-        markerLayerRef.current,
-        { opacity: 0 },
-        { opacity: 1, duration: firstPlot.current ? 0.6 : 0.3, ease: "power2.out" }
-      );
-      firstPlot.current = false;
-    },
-    { dependencies: [filteredKeys] }
-  );
+      for (const h of filtered) {
+        const d = 18 + h.intensity * 6;
+        const ringOpacity = Math.min(0.95, 0.38 + h.intensity * 0.115);
+        const active = selected ? hotspotKey(selected) === hotspotKey(h) : false;
+        const html = `
+          <button type="button" class="fast-hspot${active ? " fast-hspot-active" : ""}"
+                  style="width:${d}px;height:${d}px"
+                  aria-label="Documented hotspot: ${h.area}, ${h.province}">
+            <span class="fast-hspot-ring" style="opacity:${ringOpacity};border-width:${h.intensity >= 5 ? 2 : 1}px"></span>
+            ${h.intensity >= 4 ? '<span class="fast-hspot-ping" aria-hidden="true"></span>' : ""}
+            <span class="fast-hspot-dot"></span>
+          </button>`;
+        const icon = L.divIcon({
+          className: "fast-hspot-icon",
+          html,
+          iconSize: [d, d],
+          iconAnchor: [d / 2, d / 2],
+        });
+        const marker = L.marker([h.lat, h.lng], { icon, keyboard: false });
+        markerHotspots.set(marker, h);
+        marker.on("click", () => setSelected(h));
+        marker.addTo(layer);
+        if (currentZoom >= 9) {
+          marker.bindTooltip(h.area, {
+            className: "fast-hspot-label",
+            direction: "bottom",
+            offset: [0, 6],
+            permanent: true,
+          });
+        }
+        const el = marker.getElement();
+        if (el) markerEls.current.set(hotspotKey(h), el.firstElementChild as HTMLElement);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filtered, selected, mapReady]);
+
+  // tooltip visibility on zoom (no marker rebuild)
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const markers = layer.getLayers() as LeafletNS.Marker[];
+    for (const m of markers) {
+      const label = m.getTooltip();
+      const h = markerHotspots.get(m);
+      if (zoom >= 9 && !label && h) {
+        m.bindTooltip(h.area, {
+          className: "fast-hspot-label",
+          direction: "bottom",
+          offset: [0, 6],
+          permanent: true,
+        });
+      } else if (zoom < 9 && label) {
+        m.unbindTooltip();
+      }
+    }
+  }, [zoom]);
 
   // ------------------------------------------------------ detail panel
   useGSAP(
@@ -593,6 +500,31 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     { dependencies: [selected] }
   );
 
+  // marker highlight follows selection without rebuilding markers
+  useEffect(() => {
+    const activeKey = selected ? hotspotKey(selected) : null;
+    for (const [key, el] of markerEls.current) {
+      el.classList.toggle("fast-hspot-active", key === activeKey);
+    }
+  }, [selected, filtered]);
+
+  const zoomStep = useCallback((dir: 1 | -1) => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (dir === 1) map.zoomIn(1, { animate: !REDUCED_MOTION });
+    else map.zoomOut(1, { animate: !REDUCED_MOTION });
+  }, []);
+
+  const recenter = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.flyToBounds(
+      SA_BOUNDS as unknown as LeafletNS.LatLngBoundsLiteral,
+      { ...FIT_PAD, duration: REDUCED_MOTION ? 0 : 0.7 }
+    );
+    setSelected(null);
+  }, []);
+
   // ----------------------------------------------------------- render
   if (!open && !mounted) return null;
   if (typeof window === "undefined") return null;
@@ -600,15 +532,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   const asOf = feed
     ? new Date(feed.updatedAt).toISOString().slice(0, 16).replace("T", " ") + " UTC"
     : null;
-
-  /** map coords -> host pixel coords (markers keep constant screen size) */
-  const toPx = (mx: number, my: number) => {
-    const v = view;
-    return {
-      left: offsets.offX + (v.x + v.k * mx - VB.x) / unitScale,
-      top: offsets.offY + (v.y + v.k * my - VB.y) / unitScale,
-    };
-  };
 
   return createPortal(
     <div
@@ -633,164 +556,31 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             Surroundings — South Africa
           </h2>
           <p className="truncate text-[10px] text-neutral-500">
-            Community safety intel · geolocation disabled by design
+            Google Maps · community safety intel · geolocation disabled by design
           </p>
         </div>
         {feed && (
-          <span className="shrink-0 rounded-full border border-neutral-700 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300">
+          <span className="hidden shrink-0 rounded-full border border-neutral-700 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-neutral-300 sm:inline">
             {SOURCE_BADGE[feed.source]}
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => {
+            const ctrl = new AbortController();
+            void load(ctrl.signal, { refresh: true });
+          }}
+          disabled={refreshing || loading}
+          aria-label="Refresh AI intel"
+          className="flex size-9 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-40"
+        >
+          <RefreshCw className={`size-4${refreshing ? " animate-spin" : ""}`} aria-hidden />
+        </button>
       </header>
 
       {/* ---------------------------------------------------------- map */}
       <div className="relative flex-1 overflow-hidden bg-black">
-        <div ref={hostRef} className="absolute inset-0">
-          <svg
-            ref={svgRef}
-            viewBox={VIEW_BOX}
-            preserveAspectRatio="xMidYMid meet"
-            role="application"
-            aria-label="Interactive vector map of South Africa with documented hotspot areas"
-            className="absolute inset-0 h-full w-full touch-none select-none"
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onPointerLeave={onPointerUp}
-          >
-            <defs>
-              <radialGradient id="fast-map-glow" cx="50%" cy="42%" r="75%">
-                <stop offset="0%" stopColor="#161616" />
-                <stop offset="100%" stopColor="#050505" />
-              </radialGradient>
-            </defs>
-
-            {/* backdrop wash inside the viewBox */}
-            <rect x={VB.x} y={VB.y} width={VB.w} height={VB.h} fill="url(#fast-map-glow)" />
-
-            <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-              {/* graticule */}
-              <g aria-hidden>
-                {GRID_LINES.map((l, i) => (
-                  <line
-                    key={i}
-                    x1={l.x1}
-                    y1={l.y1}
-                    x2={l.x2}
-                    y2={l.y2}
-                    stroke="#1c1c1c"
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-              </g>
-
-              {/* provinces */}
-              {PROVINCE_SHAPES.map((p) => {
-                const active = province === p.name;
-                const hovered = hoverProv === p.name;
-                return (
-                  <path
-                    key={p.name}
-                    d={p.d}
-                    fill={active ? "#262626" : hovered ? "#1d1d1d" : "#111111"}
-                    stroke={active ? "#8a8a8a" : hovered ? "#5a5a5a" : "#333333"}
-                    strokeWidth={active ? 1.5 : 1}
-                    vectorEffect="non-scaling-stroke"
-                    fillRule="evenodd"
-                    className="transition-[fill,stroke] duration-200"
-                    onPointerEnter={() => setHoverProv(p.name)}
-                    onPointerLeave={() => setHoverProv((cur) => (cur === p.name ? null : cur))}
-                  />
-                );
-              })}
-            </g>
-          </svg>
-
-          {/* ---------------------------------------- HTML overlay layer */}
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            {/* city dots + labels (HTML layer = constant pixel size) */}
-            {size.w > 0 &&
-              CITIES.map((c) => {
-                const pt = toPx(c.x, c.y);
-                if (pt.left < -80 || pt.top < -40 || pt.left > size.w + 80 || pt.top > size.h + 40)
-                  return null;
-                return (
-                  <span key={c.name} className="absolute" style={{ left: pt.left, top: pt.top }}>
-                    <span
-                      className="absolute size-[5px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-neutral-500"
-                      aria-hidden
-                    />
-                    <span
-                      className="absolute whitespace-nowrap font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-500"
-                      style={{
-                        left: 8,
-                        top: -6,
-                        opacity: view.k >= 2.1 ? 0.6 : 0.34,
-                      }}
-                    >
-                      {c.name}
-                    </span>
-                  </span>
-                );
-              })}
-
-            {/* province names — appear once you zoom in a little */}
-            {size.w > 0 &&
-              view.k >= 1.8 &&
-              PROVINCE_SHAPES.filter((p) => province === "ALL" || p.name === province).map((p) => {
-                const pt = toPx(p.centroid.x, p.centroid.y);
-                if (pt.left < -100 || pt.top < -40 || pt.left > size.w + 100 || pt.top > size.h + 40)
-                  return null;
-                return (
-                  <span
-                    key={p.name}
-                    className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-600"
-                    style={{ left: pt.left, top: pt.top }}
-                  >
-                    {p.name}
-                  </span>
-                );
-              })}
-
-            {/* hotspot markers */}
-            <div ref={markerLayerRef} className="absolute inset-0">
-              {size.w > 0 &&
-                plotted.map(({ h, x, y }) => {
-                  const pt = toPx(x, y);
-                  if (pt.left < -60 || pt.top < -60 || pt.left > size.w + 60 || pt.top > size.h + 60)
-                    return null;
-                  const d = 18 + h.intensity * 6;
-                  const isActive = selected ? hotspotKey(selected) === hotspotKey(h) : false;
-                  const ringOpacity = Math.min(0.95, 0.38 + h.intensity * 0.115);
-                  return (
-                    <div key={hotspotKey(h)} className="absolute" style={{ left: pt.left, top: pt.top }}>
-                      <button
-                        type="button"
-                        aria-label={`Documented hotspot: ${h.area}, ${h.province}`}
-                        onClick={() => setSelected(h)}
-                        className={`fast-hspot${isActive ? " fast-hspot-active" : ""}`}
-                        style={{ width: d, height: d }}
-                      >
-                        <span
-                          className="fast-hspot-ring"
-                          style={{ opacity: ringOpacity, borderWidth: h.intensity >= 5 ? 2 : 1 }}
-                        />
-                        {h.intensity >= 4 && <span className="fast-hspot-ping" aria-hidden />}
-                        <span className="fast-hspot-dot" />
-                      </button>
-                      {view.k >= 2.6 && (
-                        <span className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-neutral-300">
-                          {h.area}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-            </div>
-          </div>
-        </div>
+        <div ref={hostRef} className="absolute inset-0 z-0" aria-label="Interactive Google map of South Africa with documented hotspot areas" />
 
         {/* search + province chips */}
         <div className="pointer-events-none absolute inset-x-3 top-3 z-[700] flex flex-col gap-2">
@@ -842,13 +632,36 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
               </button>
             </div>
           )}
+          {tilesDown && !error && (
+            <div className="pointer-events-none flex items-center gap-2 self-start rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5">
+              <TriangleAlert className="size-3 text-neutral-500" aria-hidden />
+              <span className="text-[10px] text-neutral-400">
+                Google tiles unreachable — hotspots still plotted
+              </span>
+            </div>
+          )}
+          {feed?.source === "fallback" && (
+            <div className="pointer-events-none flex max-w-full items-center gap-2 self-start rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5">
+              <TriangleAlert className="size-3 shrink-0 text-neutral-500" aria-hidden />
+              <span className="truncate text-[10px] text-neutral-400">
+                {feed.reason === "no-key"
+                  ? "Curated dataset — set GEMINI_API_KEY on the server for live AI intel"
+                  : "AI generation unavailable — serving curated dataset"}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* zoom controls (44px+ touch targets) */}
+        {/* zoom + layer controls (44px touch targets) */}
         <div className="absolute bottom-3 right-3 z-[700] flex flex-col gap-1.5">
           {[
             { icon: Plus, label: "Zoom in", action: () => zoomStep(1) },
             { icon: Minus, label: "Zoom out", action: () => zoomStep(-1) },
+            {
+              icon: Layers,
+              label: satellite ? "Switch to street map" : "Switch to satellite",
+              action: () => setSatellite((s) => !s),
+            },
             {
               icon: Crosshair,
               label: "Recenter on South Africa",
@@ -868,7 +681,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
         </div>
 
         {/* hint — mobile users learn pinch/drag */}
-        {view.k === 1 && !loading && !!feed && (
+        {zoom < 7 && !loading && !!feed && (
           <div className="pointer-events-none absolute bottom-3 left-1/2 z-[690] -translate-x-1/2">
             <span className="whitespace-nowrap rounded-full border border-neutral-800 bg-neutral-950/80 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-500">
               Drag · pinch or scroll to zoom
@@ -991,7 +804,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 
       {/* ------------------------------------------------------- footer */}
       <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-neutral-900 px-3 py-2 sm:px-4">
-        <span className="text-[9px] text-neutral-600">Boundaries · geoBoundaries (CC BY 3.0 IGO)</span>
+        <span className="text-[9px] text-neutral-600">Basemap © Google</span>
         <span className="text-[9px] text-neutral-600">
           Area-level awareness info only. Not law enforcement guidance.
         </span>

@@ -26,5 +26,3 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-
-// relay boot nudge 1789343412

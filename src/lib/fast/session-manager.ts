@@ -15,7 +15,6 @@ import {
   ensureIdentity,
   getSessionKey,
   hasSessionKey,
-  keyReceivedAt,
   markSeen,
   nextCounter,
   observeCounter,
@@ -27,7 +26,7 @@ import {
   type DecryptedMessage,
 } from "@/lib/crypto/keyvault";
 import { api, type WireMessage } from "@/lib/fast/api";
-import { getRelay } from "@/lib/fast/relay";
+import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
 import * as vault from "@/lib/fast/vault-db";
 
@@ -37,13 +36,26 @@ export type SessionView = {
   code: string;
   createdAt: string;
   members: Record<string, string>; // fingerprint -> public key
-  presence: string[]; // fingerprints currently in the relay room
+  presence: string[]; // fingerprints currently syncing with the room
   messages: DecryptedMessage[];
   hasKey: boolean;
   unread: number;
 };
 
 const CODE_RE = /^[A-Z]{6}$/;
+
+/** 23-letter alphabet: unambiguous letters only (no I/L/O look-alikes). */
+const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/** The code is minted CLIENT-SIDE with real crypto randomness — the server
+ *  never needs to be the origin of a session identity, which lets the room
+ *  self-heal across serverless cold starts. */
+function generateCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  let out = "";
+  for (let i = 0; i < 6; i++) out += ALPHABET[bytes[i] % ALPHABET.length];
+  return out;
+}
 
 function sortMessages(list: DecryptedMessage[]): DecryptedMessage[] {
   return [...list].sort((a, b) =>
@@ -56,7 +68,7 @@ function sortMessages(list: DecryptedMessage[]): DecryptedMessage[] {
  *  - the splash -> gate(187) -> app flow
  *  - multiple concurrent sessions per tab (hub <-> chat)
  *  - the E2EE handshake (session-key wrap/unwrap) and message ratchet
- *  - relay (socket.io) wiring and ciphertext persistence
+ *  - HTTP sync transport wiring and ciphertext persistence
  *
  * Security invariant: every value that leaves this module toward the network
  * is either public material or ciphertext. Plaintext exists only inside
@@ -69,18 +81,13 @@ export function useSessionManager() {
   const [activeCode, setActiveCode] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
-  // mirrors for stable access inside relay callbacks
+  // mirrors for stable access inside transport callbacks
   const sessionsRef = useRef<SessionView[]>([]);
   const activeCodeRef = useRef<string | null>(null);
   const identityRef = useRef<Awaited<ReturnType<typeof ensureIdentity>> | null>(null);
   const wrappedFor = useRef(new Map<string, Set<string>>()); // code -> fps I already wrapped
-  const unwrappedIds = useRef(new Map<string, Set<string>>()); // code -> envelope ids tried
-  const joinAt = useRef(new Map<string, string>()); // code -> ISO instant we registered
-  const wireCache = useRef(new Map<string, Map<string, WireMessage>>()); // code -> id -> blob (sealed decrypt-on-key)
   const keyPoll = useRef(new Map<string, ReturnType<typeof setInterval>>());
-  /** codes whose full history has been backfilled since this key generation */
-  const backfilled = useRef(new Set<string>());
-  /** codes registered with the relay during this tab generation (drives rejoin logic) */
+  /** codes registered with the transport during this tab generation (drives rejoin logic) */
   const registered = useRef(new Set<string>());
   /** restored-from-vault blob ids per code — eligible for re-decryption after a key re-wrap */
   const restoredIds = useRef(new Map<string, Set<string>>());
@@ -113,10 +120,10 @@ export function useSessionManager() {
     setSessions((prev) =>
       prev.map((s) => {
         if (s.code !== code) return s;
-        // optimistic entries carry client UUIDs while history rows carry DB
-        // cuids — (senderFp, counter) is the stable logical identity.
+        // optimistic entries carry client UUIDs and history rows reuse the
+        // same id now — (senderFp, counter) is the stable logical identity.
         // Sealed/failed placeholders yield to a real decryption of the same
-        // logical message (full-history backfill replaces them in place).
+        // logical message (full-history resync replaces them in place).
         const incomingIds = new Set(incoming.map((m) => m.id));
         const incomingPairs = new Set(
           incoming.map((m) => (m.counter === undefined ? null : `${m.senderFp}:${m.counter}`))
@@ -143,8 +150,13 @@ export function useSessionManager() {
     );
   }, []);
 
-  /** Decrypt one wire blob; returns a transcript entry (sealed if unreadable/pre-key). */
-  const toTranscriptEntry = useCallback(
+  /**
+   * Decrypt one wire blob. Key held -> decrypt (no timestamp gate: the user
+   * requirement is that EVERY member holding the session key sees the whole
+   * conversation — the server only ever held ciphertext, so this reveals
+   * nothing the server could). No key -> sealed until a member wraps it over.
+   */
+  const decryptWire = useCallback(
     async (code: string, wire: WireMessage, mine: boolean): Promise<DecryptedMessage> => {
       const base: DecryptedMessage = {
         id: wire.id,
@@ -158,9 +170,7 @@ export function useSessionManager() {
         sealed: true,
       };
       const key = getSessionKey(code);
-      if (!key || wire.createdAt < new Date(keyReceivedAt(code) - 2000).toISOString()) {
-        return base; // sealed: pre-key or pre-join
-      }
+      if (!key) return base; // sealed: key not on this device yet
       try {
         const payload = await decryptMessage(key, code, wire);
         return { ...base, text: payload.t, ts: payload.ts, counter: wire.counter, sealed: false };
@@ -175,7 +185,7 @@ export function useSessionManager() {
   // ------------------------------------------------------- key distribution
 
   const wrapForKeylessMembers = useCallback(
-    async (code: string, presenceOverride?: string[]) => {
+    async (code: string, requestedFps?: string[], liveMembers?: Record<string, string>) => {
       const identity = identityRef.current;
       const key = getSessionKey(code);
       if (!identity || !key || !hasSessionKey(code)) return;
@@ -183,23 +193,13 @@ export function useSessionManager() {
       const view = sessionsRef.current.find((s) => s.code === code);
       if (!view) return;
 
-      let members = view.members;
-      // use the live list from the relay event when provided — the state mirror
-      // lags one render behind and would drop first-contact members
-      const online = presenceOverride ?? view.presence;
+      // use the live list from the transport event when provided — the state
+      // mirror lags one render behind and would drop first-contact members.
+      // The live roster merges over it so the wrap never depends on stale state.
+      const members = { ...view.members, ...(liveMembers ?? {}) };
+      const online = requestedFps ?? view.presence;
       const targets = online.filter((fp) => fp !== identity.fingerprint);
       if (targets.length === 0) return;
-
-      // roster may be stale — refresh once when an unknown fingerprint appears
-      if (targets.some((fp) => !members[fp])) {
-        try {
-          const info = await api.getSession(code);
-          members = Object.fromEntries(info.participants.map((p) => [p.fingerprint, p.publicKey]));
-          patchSession(code, { members });
-        } catch {
-          return;
-        }
-      }
 
       const sent = wrappedFor.current.get(code) ?? new Set<string>();
       for (const fp of targets) {
@@ -208,14 +208,14 @@ export function useSessionManager() {
           const envelope = await wrapSessionKeyFor(identity, key, code, members[fp], fp);
           sent.add(fp);
           wrappedFor.current.set(code, sent);
-          await api.postKeyEnvelope(code, envelope); // persisted for offline retry
-          getRelay().emit("session:key", { code, envelope }); // instant path
+          // persisted for offline pickup — the target's poll delivers it
+          await transport.postKey(code, envelope, identity.fingerprint);
         } catch {
           sent.delete(fp);
         }
       }
     },
-    [patchSession]
+    []
   );
 
   /**
@@ -268,53 +268,6 @@ export function useSessionManager() {
     restoredIds.current.delete(code); // one-shot reveal
   }, []);
 
-  /**
-   * FULL-history backfill: as soon as this device holds the session key it
-   * pulls the entire ciphertext transcript from the server and decrypts it
-   * locally. Every member sees the complete chat — nothing stays sealed once
-   * the key arrives (the server only ever held ciphertext, so the
-   * zero-knowledge model is untouched). Dedupe is handled by appendMessages.
-   */
-  const backfillHistory = useCallback(
-    async (code: string) => {
-      const key = getSessionKey(code);
-      if (!key || backfilled.current.has(code)) return;
-      backfilled.current.add(code);
-      try {
-        const { messages } = await api.fetchMessages(code); // full transcript
-        if (messages.length > 0) void vault.saveWire(code, messages);
-        const me = identityRef.current?.fingerprint;
-        const entries = await Promise.all(
-          messages.map(async (w) => {
-            markSeen(code, w.id);
-            const base: DecryptedMessage = {
-              id: w.id,
-              code,
-              senderFp: w.senderFp,
-              mine: myFps.current.has(w.senderFp) || w.senderFp === me,
-              text: "",
-              ts: 0,
-              createdAt: w.createdAt,
-              counter: w.counter,
-              sealed: false,
-            };
-            try {
-              const payload = await decryptMessage(key, code, w);
-              return { ...base, text: payload.t, ts: payload.ts, sealed: false };
-            } catch {
-              // AEAD mismatch = foreign/tampered blob — never render it
-              return { ...base, failed: true, sealed: false };
-            }
-          })
-        );
-        appendMessages(code, entries);
-      } catch {
-        backfilled.current.delete(code); // allow a retry on the next key adoption
-      }
-    },
-    [appendMessages]
-  );
-
   const adoptSessionKey = useCallback(
     async (code: string, raw: Uint8Array) => {
       storeSessionKey(code, raw);
@@ -330,19 +283,21 @@ export function useSessionManager() {
       const pending = takePending(code);
       const me = identityRef.current?.fingerprint;
       const entries = await Promise.all(
-        pending.map((w) => toTranscriptEntry(code, w, w.senderFp === me))
+        pending.map((w) => decryptWire(code, w, w.senderFp === me))
       );
       appendMessages(code, entries);
-      // everyone holding the key sees the WHOLE chat — pull it all in
-      void backfillHistory(code);
+      // everyone holding the key sees the WHOLE chat — re-pull the full
+      // transcript so pre-key blobs are re-delivered decryptable and replace
+      // their sealed placeholders in place (dedupe handled by appendMessages)
+      transport.resync(code);
     },
-    [appendMessages, patchSession, revealRestoredHistory, toTranscriptEntry, backfillHistory]
+    [appendMessages, decryptWire, patchSession, revealRestoredHistory]
   );
 
   const startKeyPolling = useCallback(
     (code: string) => {
       if (keyPoll.current.has(code)) return;
-      const poll = setInterval(async () => {
+      const poll = setInterval(() => {
         const identity = identityRef.current;
         if (!identity || hasSessionKey(code)) {
           const t = keyPoll.current.get(code);
@@ -350,263 +305,223 @@ export function useSessionManager() {
           keyPoll.current.delete(code);
           return;
         }
-        try {
-          const tried = unwrappedIds.current.get(code) ?? new Set<string>();
-          const { envelopes } = await api.fetchKeyEnvelopes(code, identity.fingerprint);
-          for (const env of envelopes) {
-            if (tried.has(env.id)) continue;
-            tried.add(env.id);
-            unwrappedIds.current.set(code, tried);
-            try {
-              const raw = await unwrapSessionKey(identity, code, env);
-              await adoptSessionKey(code, raw);
-              return;
-            } catch {
-              /* envelope not for this identity generation — try next */
-            }
-          }
-        } catch (err) {
-          // session deleted server-side -> stop asking forever
-          if (err instanceof Error && /\(404\)/.test(err.message)) {
-            const t = keyPoll.current.get(code);
-            if (t) clearInterval(t);
-            keyPoll.current.delete(code);
-          }
-          /* otherwise: relay hiccup — poll again */
-        }
-      }, 3000);
+        // ask holders to wrap the session key for us (envelopes arrive via sync)
+        void transport.requestKey(code, identity.fingerprint).catch(() => undefined);
+      }, 5000);
       keyPoll.current.set(code, poll);
     },
-    [adoptSessionKey]
+    []
   );
 
-  // ------------------------------------------------------------ relay wiring
+  // --------------------------------------------------------- transport wiring
 
-  useEffect(() => {
-    if (phase !== "app") return;
-    const relay = getRelay();
-
-    const onPresence = (data: { code: string; fingerprints: string[] }) => {
-      if (!data || !CODE_RE.test(data.code)) return;
-      patchSession(data.code, { presence: data.fingerprints });
+  const onPresence = useCallback(
+    (data: { code: string; fingerprints: string[]; members: Record<string, string> }) => {
+      if (!CODE_RE.test(data.code)) return;
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.code === data.code
+            ? { ...s, presence: data.fingerprints, members: { ...s.members, ...data.members } }
+            : s
+        )
+      );
       // newcomer appeared -> holders wrap a key for them (live list, not state)
       if (identityRef.current && data.fingerprints.includes(identityRef.current.fingerprint)) {
         void wrapForKeylessMembers(data.code, data.fingerprints);
       }
-    };
+    },
+    [wrapForKeylessMembers]
+  );
 
-    const onMessage = (env: {
-      code: string;
-      id: string;
-      senderFp: string;
-      counter: number;
-      iv: string;
-      ciphertext: string;
-      createdAt: string;
-    }) => {
-      if (!env || !CODE_RE.test(env.code)) return;
-      if (!markSeen(env.code, env.id)) return;
-      observeCounter(env.code, env.counter);
-      const wire: WireMessage = {
-        id: env.id,
-        senderFp: env.senderFp,
-        counter: env.counter,
-        iv: env.iv,
-        ciphertext: env.ciphertext,
-        createdAt: env.createdAt ?? new Date().toISOString(),
-      };
-      const cache = wireCache.current.get(env.code) ?? new Map<string, WireMessage>();
-      cache.set(wire.id, wire);
-      wireCache.current.set(env.code, cache);
-      void vault.saveWire(env.code, [wire]); // data-saving: ciphertext at rest (no keys)
+  const onMessages = useCallback(
+    (data: { code: string; messages: WireMessage[]; initial: boolean }) => {
+      const { code, messages, initial } = data;
+      if (!CODE_RE.test(code) || messages.length === 0) return;
+      const fresh = messages.filter((w) => markSeen(code, w.id));
+      if (fresh.length === 0) return;
+      for (const w of fresh) observeCounter(code, w.counter);
+      void vault.saveWire(code, fresh); // data-saving: ciphertext at rest (no keys)
 
-      const mine = wire.senderFp === identityRef.current?.fingerprint;
-      void toTranscriptEntry(env.code, wire, mine).then((entry) => {
-        appendMessages(env.code, [entry]);
-        if (entry.sealed && !mine && !hasSessionKey(env.code)) {
-          stashPending(env.code, { ...wire, code: env.code });
-          patchSession(env.code, (s) => ({ unread: s.unread + 1 }));
-        } else if (!mine && activeCodeRef.current !== env.code) {
-          patchSession(env.code, (s) => ({ unread: s.unread + 1 }));
-        }
-      });
-    };
-
-    const onKey = (data: { code: string; envelope: { forFp: string; epk: string; iv: string; payload: string } }) => {
+      const me = identityRef.current?.fingerprint;
       void (async () => {
-        if (!data || !CODE_RE.test(data.code)) return;
+        const entries = await Promise.all(
+          fresh.map((w) => decryptWire(code, w, w.senderFp === me))
+        );
+        appendMessages(code, entries);
+        const keyHeld = hasSessionKey(code);
+        for (let i = 0; i < fresh.length; i++) {
+          const w = fresh[i];
+          const entry = entries[i];
+          const mine = w.senderFp === me;
+          if (entry.sealed && !mine && !keyHeld) {
+            stashPending(code, { ...w, code });
+          }
+        }
+        if (!initial) {
+          const notMine = fresh.filter((w) => w.senderFp !== me).length;
+          if (notMine > 0 && activeCodeRef.current !== code) {
+            patchSession(code, (s) => ({ unread: s.unread + notMine }));
+          }
+        }
+      })();
+    },
+    [appendMessages, decryptWire, patchSession]
+  );
+
+  const onKey = useCallback(
+    (data: { code: string; envelopes: WireEnvelope[] }) => {
+      void (async () => {
         const identity = identityRef.current;
-        if (!identity || data.envelope.forFp !== identity.fingerprint || hasSessionKey(data.code)) return;
-        try {
-          const raw = await unwrapSessionKey(identity, data.code, data.envelope);
-          await adoptSessionKey(data.code, raw);
-        } catch {
-          /* wrong generation — the 3s poll will find a usable envelope */
+        if (!identity) return;
+        for (const envelope of data.envelopes) {
+          if (envelope.forFp !== identity.fingerprint || hasSessionKey(data.code)) continue;
+          try {
+            const raw = await unwrapSessionKey(identity, data.code, envelope);
+            await adoptSessionKey(data.code, raw);
+            return; // key adopted — stop trying more envelopes
+          } catch {
+            /* wrong generation — a later request will get a fresh envelope */
+          }
         }
       })();
-    };
+    },
+    [adoptSessionKey]
+  );
 
-    const onKeyRequest = (data: { code: string; fingerprint: string }) => {
-      if (!data || !CODE_RE.test(data.code)) return;
-      if (data.fingerprint === identityRef.current?.fingerprint) return;
-      void wrapForKeylessMembers(data.code, [data.fingerprint]);
-    };
+  const onKeyRequest = useCallback(
+    (data: { code: string; fingerprints: string[]; members: Record<string, string> }) => {
+      if (!CODE_RE.test(data.code)) return;
+      const me = identityRef.current?.fingerprint;
+      const targets = data.fingerprints.filter((fp) => fp !== me);
+      if (targets.length === 0) return;
+      void wrapForKeylessMembers(data.code, targets, data.members);
+    },
+    [wrapForKeylessMembers]
+  );
 
-    /**
-     * Ephemeral photo arrived: decrypt straight into RAM, never touch disk.
-     * No key yet -> the photo is DROPPED by design (photos are never stored,
-     * not even sealed — there is nothing on the server to fetch later).
-     */
-    const onPhoto = (p: {
-      code: string;
-      id: string;
-      senderFp: string;
-      counter: number;
-      iv: string;
-      data: string;
-      createdAt: string;
-    }) => {
+  /**
+   * Ephemeral photo arrived: decrypt straight into RAM, never touch disk.
+   * No key yet -> the photo is DROPPED by design (photos are never stored,
+   * not even sealed — there is nothing on the server to fetch later).
+   */
+  const onPhoto = useCallback(
+    (data: { code: string; photos: { id: string; senderFp: string; counter: number; iv: string; data: string; createdAt: string }[] }) => {
       void (async () => {
-        if (!p || !CODE_RE.test(p.code)) return;
-        if (!markSeen(p.code, `ph:${p.id}`)) return;
-        observeCounter(p.code, p.counter);
-        const key = getSessionKey(p.code);
-        if (!key) return; // dropped — never queued, never persisted
-        let bytes: Uint8Array;
-        try {
-          bytes = await decryptPhoto(key, p.code, p.senderFp, p.counter, p.iv, p.data);
-        } catch {
-          return; // tampered or foreign blob — vanish silently
-        }
-        stashPhoto(p.code, p.id, bytes);
-        const timer = setTimeout(() => {
-          burnPhoto(p.id);
-          photoTimers.current.delete(p.id);
-        }, PHOTO_TTL_MS);
-        photoTimers.current.set(p.id, timer);
-        const mine = p.senderFp === identityRef.current?.fingerprint;
-        appendMessages(p.code, [
-          {
-            id: p.id,
-            code: p.code,
-            senderFp: p.senderFp,
-            mine,
-            text: "",
-            ts: Date.parse(p.createdAt) || Date.now(),
-            createdAt: p.createdAt,
-            counter: p.counter,
-            kind: "photo",
-            photoId: p.id,
-          },
-        ]);
-        if (!mine && activeCodeRef.current !== p.code) {
-          patchSession(p.code, (s) => ({ unread: s.unread + 1 }));
+        const { code, photos } = data;
+        if (!CODE_RE.test(code) || photos.length === 0) return;
+        const key = getSessionKey(code);
+        const me = identityRef.current?.fingerprint;
+        for (const p of photos) {
+          if (!markSeen(code, `ph:${p.id}`)) continue;
+          observeCounter(code, p.counter);
+          if (!key) return; // dropped — never queued, never persisted
+          let bytes: Uint8Array;
+          try {
+            bytes = await decryptPhoto(key, code, p.senderFp, p.counter, p.iv, p.data);
+          } catch {
+            continue; // tampered or foreign blob — vanish silently
+          }
+          stashPhoto(code, p.id, bytes);
+          const timer = setTimeout(() => {
+            burnPhoto(p.id);
+            photoTimers.current.delete(p.id);
+          }, PHOTO_TTL_MS);
+          photoTimers.current.set(p.id, timer);
+          const mine = p.senderFp === me;
+          appendMessages(code, [
+            {
+              id: p.id,
+              code,
+              senderFp: p.senderFp,
+              mine,
+              text: "",
+              ts: Date.parse(p.createdAt) || Date.now(),
+              createdAt: p.createdAt,
+              counter: p.counter,
+              kind: "photo",
+              photoId: p.id,
+            },
+          ]);
+          if (!mine && activeCodeRef.current !== code) {
+            patchSession(code, (s) => ({ unread: s.unread + 1 }));
+          }
         }
       })();
-    };
+    },
+    [appendMessages, patchSession]
+  );
 
-    const onTerminated = (data: { code: string }) => {
-      if (!data || !CODE_RE.test(data.code)) return;
-      const wasOpen = sessionsRef.current.some((s) => s.code === data.code);
-      purgeSession(data.code); // also zeroes the session's photo bytes
-      const poll = keyPoll.current.get(data.code);
-      if (poll) clearInterval(poll);
-      keyPoll.current.delete(data.code);
-      for (const [pid, t] of photoTimers.current) {
-        clearTimeout(t);
-        photoTimers.current.delete(pid);
-      }
-      wrappedFor.current.delete(data.code);
-      unwrappedIds.current.delete(data.code);
-      joinAt.current.delete(data.code);
-      wireCache.current.delete(data.code);
-      registered.current.delete(data.code);
-      restoredIds.current.delete(data.code);
-      backfilled.current.delete(data.code);
-      void vault.forgetSession(data.code); // wipe local vault rows too
-      setSessions((prev) => prev.filter((s) => s.code !== data.code));
-      setActiveCode((cur) => (cur === data.code ? null : cur));
-      if (wasOpen) {
-        toast.success(`Session ${data.code} was deleted for everyone`);
-      }
-    };
+  const onTerminated = useCallback((data: { code: string }) => {
+    if (!data || !CODE_RE.test(data.code)) return;
+    const code = data.code;
+    const wasOpen = sessionsRef.current.some((s) => s.code === code);
+    purgeSession(code); // also zeroes the session's photo bytes
+    const poll = keyPoll.current.get(code);
+    if (poll) clearInterval(poll);
+    keyPoll.current.delete(code);
+    for (const [pid, t] of photoTimers.current) {
+      clearTimeout(t);
+      photoTimers.current.delete(pid);
+    }
+    wrappedFor.current.delete(code);
+    registered.current.delete(code);
+    restoredIds.current.delete(code);
+    void vault.forgetSession(code); // wipe local vault rows too
+    setSessions((prev) => prev.filter((s) => s.code !== code));
+    setActiveCode((cur) => (cur === code ? null : cur));
+    if (wasOpen) {
+      toast.success(`Session ${code} was deleted for everyone`);
+    }
+  }, []);
 
-    const onConnect = () => {
-      // resync room membership after any reconnect
-      for (const s of sessionsRef.current) {
-        if (identityRef.current) {
-          relay.emit("session:join", { code: s.code, fingerprint: identityRef.current.fingerprint });
-          relay.emit("session:keyrequest", {
-            code: s.code,
-            fingerprint: identityRef.current.fingerprint,
-          });
-        }
-      }
-    };
-
-    relay.on("session:presence", onPresence);
-    relay.on("session:message", onMessage);
-    relay.on("session:key", onKey);
-    relay.on("session:keyrequest", onKeyRequest);
-    relay.on("session:photo", onPhoto);
-    relay.on("session:terminated", onTerminated);
-    relay.on("connect", onConnect);
-    if (relay.connected) onConnect();
-
-    return () => {
-      relay.off("session:presence", onPresence);
-      relay.off("session:message", onMessage);
-      relay.off("session:key", onKey);
-      relay.off("session:keyrequest", onKeyRequest);
-      relay.off("session:photo", onPhoto);
-      relay.off("session:terminated", onTerminated);
-      relay.off("connect", onConnect);
-    };
-  }, [phase, patchSession, appendMessages, toTranscriptEntry, adoptSessionKey, wrapForKeylessMembers]);
+  useEffect(() => {
+    if (phase !== "app") return;
+    const offs = [
+      transport.on("presence", onPresence),
+      transport.on("messages", onMessages),
+      transport.on("key", onKey),
+      transport.on("keyrequest", onKeyRequest),
+      transport.on("photo", onPhoto),
+      transport.on("terminated", onTerminated),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [phase, onPresence, onMessages, onKey, onKeyRequest, onPhoto, onTerminated]);
 
   // ---------------------------------------------------------------- actions
 
   const registerAndJoinRoom = useCallback(
-    async (code: string) => {
+    async (code: string, opts: { create?: boolean } = {}) => {
       const identity = await ensureIdentity();
       identityRef.current = identity;
       setIdentityFp(identity.fingerprint);
 
-      const now = new Date().toISOString();
-      joinAt.current.set(code, now);
-      const { members } = await api.join(code, identity.fingerprint, identity.publicB64);
-
-      const relay = getRelay();
-      if (!relay.connected) {
-        setConnecting(true);
-        await new Promise<void>((resolve) => {
-          const done = () => resolve();
-          if (relay.connected) return done();
-          relay.once("connect", done);
-          setTimeout(done, 4000);
+      setConnecting(true);
+      try {
+        // registers the participant + starts the sync loop (throws when the
+        // room does not exist and we are not its creator)
+        const { members } = await transport.join(code, identity.fingerprint, identity.publicB64, {
+          create: opts.create,
         });
+        registered.current.add(code);
+        return { members, fingerprint: identity.fingerprint };
+      } finally {
         setConnecting(false);
       }
-      relay.emit("session:join", { code, fingerprint: identity.fingerprint });
-      registered.current.add(code);
-
-      const memberMap = Object.fromEntries(members.map((m) => [m.fingerprint, m.publicKey]));
-      return { members: memberMap, fingerprint: identity.fingerprint };
     },
     []
   );
 
   const startSession = useCallback(async () => {
-    const { code, createdAt } = await api.createSession();
+    const code = generateCode();
     const key = generateSessionKey();
     storeSessionKey(code, key);
     void vault.markKeyHeld(code);
-    const { members } = await registerAndJoinRoom(code);
+    const { members } = await registerAndJoinRoom(code, { create: true });
     setSessions((prev) => [
       ...prev,
       {
         code,
-        createdAt,
+        createdAt: new Date().toISOString(),
         members,
         presence: [identityRef.current?.fingerprint ?? ""],
         messages: [],
@@ -624,15 +539,18 @@ export function useSessionManager() {
       const code = rawCode.trim().toUpperCase();
       if (!CODE_RE.test(code)) throw new Error("Codes are 6 letters (A–Z).");
 
-      const info = await api.getSession(code); // 404 -> throws, UI shows "not found"
-      await registerAndJoinRoom(code);
+      const identity = await ensureIdentity();
+      identityRef.current = identity;
+      setIdentityFp(identity.fingerprint);
 
-      const identity = identityRef.current!;
+      // registers + starts the sync loop; throws "Session not found (404)"
+      // when the room does not exist
+      const { members } = await registerAndJoinRoom(code, { create: false });
       const alreadyHasKey = hasSessionKey(code) || sessionsRef.current.some((s) => s.code === code && s.hasKey);
 
       if (!alreadyHasKey) {
         // announce + ask holders to wrap the session key for us
-        getRelay().emit("session:keyrequest", { code, fingerprint: identity.fingerprint });
+        void transport.requestKey(code, identity.fingerprint).catch(() => undefined);
         startKeyPolling(code);
       }
 
@@ -642,8 +560,8 @@ export function useSessionManager() {
           ...prev,
           {
             code,
-            createdAt: info.createdAt,
-            members: Object.fromEntries(info.participants.map((p) => [p.fingerprint, p.publicKey])),
+            createdAt: new Date().toISOString(),
+            members,
             presence: [identity.fingerprint],
             messages: [],
             hasKey: alreadyHasKey,
@@ -652,21 +570,9 @@ export function useSessionManager() {
         ];
       });
       setActiveCode(code);
-
-      // pull ciphertext history from the moment we registered
-      try {
-        const { messages } = await api.fetchMessages(code, joinAt.current.get(code));
-        void vault.saveWire(code, messages);
-        const entries = await Promise.all(
-          messages.map((w) => toTranscriptEntry(code, w, w.senderFp === identity.fingerprint))
-        );
-        appendMessages(code, entries);
-      } catch {
-        /* history is best-effort */
-      }
       return code;
     },
-    [registerAndJoinRoom, startKeyPolling, toTranscriptEntry, appendMessages]
+    [registerAndJoinRoom, startKeyPolling]
   );
 
   const openSession = useCallback(
@@ -676,44 +582,28 @@ export function useSessionManager() {
       const identity = identityRef.current;
       if (!identity) return;
 
-      // restored sessions (post-reload) may not be registered with the relay
-      // yet — join now so a member can re-wrap the key to this device
-      if (!registered.current.has(code)) {
+      // restored sessions (post-reload) may not be registered with the
+      // transport yet — join now so a member can re-wrap the key to this device
+      if (!registered.current.has(code) || !transport.isJoined(code)) {
         try {
           await registerAndJoinRoom(code);
           if (!hasSessionKey(code)) {
-            getRelay().emit("session:keyrequest", { code, fingerprint: identity.fingerprint });
+            void transport.requestKey(code, identity.fingerprint).catch(() => undefined);
             startKeyPolling(code);
           }
         } catch {
           /* offline — sealed transcript still viewable */
         }
       }
-
-      if (!hasSessionKey(code)) return;
-      try {
-        const since = new Date(keyReceivedAt(code) - 2000).toISOString();
-        const { messages } = await api.fetchMessages(code, since);
-        void vault.saveWire(code, messages);
-        const entries = await Promise.all(
-          messages.map((w) => {
-            markSeen(code, w.id);
-            return toTranscriptEntry(code, w, w.senderFp === identity.fingerprint);
-          })
-        );
-        appendMessages(code, entries);
-      } catch {
-        /* best-effort */
-      }
     },
-    [appendMessages, patchSession, registerAndJoinRoom, startKeyPolling, toTranscriptEntry]
+    [patchSession, registerAndJoinRoom, startKeyPolling]
   );
 
   const closeSession = useCallback(
     (code: string) => {
       // leaving a session DESTROYS our local key material — rejoining later
       // requires a fresh wrap from a member still inside.
-      getRelay().emit("session:leave", { code });
+      transport.leave(code);
       purgeSession(code); // zeroes keys + photo bytes
       const poll = keyPoll.current.get(code);
       if (poll) clearInterval(poll);
@@ -723,12 +613,8 @@ export function useSessionManager() {
         photoTimers.current.delete(pid);
       }
       wrappedFor.current.delete(code);
-      unwrappedIds.current.delete(code);
-      joinAt.current.delete(code);
-      wireCache.current.delete(code);
       registered.current.delete(code);
       restoredIds.current.delete(code);
-      backfilled.current.delete(code);
       void vault.forgetSession(code); // a closed session should not resurrect after reload
       setSessions((prev) => prev.filter((s) => s.code !== code));
       setActiveCode((cur) => (cur === code ? null : cur));
@@ -737,17 +623,20 @@ export function useSessionManager() {
   );
 
   const deleteSession = useCallback(async (code: string) => {
-    await api.deleteSession(code);
+    const identity = identityRef.current;
     restoredIds.current.delete(code);
-    backfilled.current.delete(code);
     void vault.forgetSession(code);
     purgeSession(code); // zero local keys + photo bytes immediately
-    // cascade done server-side; evict every device (including ours)
-    getRelay().emit("session:terminated", { code });
+    // soft-terminate server-side; every member's next sync evicts itself
+    try {
+      await transport.terminate(code, identity?.fingerprint ?? "00000000");
+    } catch {
+      /* room may already be gone — local wipe still applies */
+    }
   }, []);
 
   /**
-   * Take a photo -> encrypt -> relay. NOTHING is persisted: no DB row, no
+   * Take a photo -> encrypt -> sync. NOTHING is persisted: no DB row, no
    * vault blob, no wire cache. Only RAM on the devices currently in the room.
    */
   const sendPhoto = useCallback(
@@ -782,15 +671,19 @@ export function useSessionManager() {
         },
       ]);
 
-      getRelay().emit("session:photo", {
+      // RAM-only relay with a 60s server TTL — it forwards, then forgets
+      await transport.postPhoto(
         code,
-        id: enc.id,
-        senderFp: identity.fingerprint,
-        counter: enc.counter,
-        iv: enc.iv,
-        data: enc.data,
-        createdAt,
-      });
+        {
+          id: enc.id,
+          senderFp: identity.fingerprint,
+          counter: enc.counter,
+          iv: enc.iv,
+          data: enc.data,
+          createdAt,
+        },
+        identity.fingerprint
+      );
     },
     [appendMessages]
   );
@@ -822,15 +715,20 @@ export function useSessionManager() {
         },
       ]);
 
-      let saved: { serverId: string; createdAt: string };
       try {
-        saved = await api.postMessage(code, {
-          id: wire.id,
-          senderFp: wire.senderFp,
-          counter: wire.counter,
-          iv: wire.iv,
-          ciphertext: wire.ciphertext,
-        });
+        // the sync response doubles as an instant delta poll — everyone
+        // else picks this message up on their very next sync tick
+        await transport.postMessage(
+          code,
+          {
+            id: wire.id,
+            senderFp: wire.senderFp,
+            counter: wire.counter,
+            iv: wire.iv,
+            ciphertext: wire.ciphertext,
+          },
+          identity.fingerprint
+        );
       } catch (err) {
         // roll back the optimistic bubble — never fake a delivery
         setSessions((prev) =>
@@ -840,32 +738,8 @@ export function useSessionManager() {
         );
         throw err;
       }
-      getRelay().emit("session:message", { code, ...wire, createdAt: saved.createdAt });
 
-      void vault.saveWire(code, [
-        {
-          id: saved.serverId,
-          senderFp: wire.senderFp,
-          counter: wire.counter,
-          iv: wire.iv,
-          ciphertext: wire.ciphertext,
-          createdAt: saved.createdAt,
-        },
-      ]);
-
-      // adopt the server's identity + clock so history refetches dedupe cleanly
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.code === code
-            ? {
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === id ? { ...m, id: saved.serverId, createdAt: saved.createdAt } : m
-                ),
-              }
-            : s
-        )
-      );
+      void vault.saveWire(code, [wire]);
     },
     [appendMessages]
   );
@@ -883,14 +757,14 @@ export function useSessionManager() {
     [sessions, activeCode]
   );
 
-  // gentle safety: refresh transcript of the open session when tab regains focus
+  // gentle safety: resync the open session when the tab regains focus
   useEffect(() => {
     if (phase !== "app" || !activeCode) return;
     const code = activeCode;
-    const onFocus = () => void openSession(code);
+    const onFocus = () => transport.wake();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [phase, activeCode, openSession]);
+  }, [phase, activeCode]);
 
   // ------------------------------------------------- data-saving (vault-db)
 
@@ -915,11 +789,13 @@ export function useSessionManager() {
 
       for (const row of stored) {
         if (sessionsRef.current.some((s) => s.code === row.code)) continue;
+        const identity = identityRef.current;
+        if (!identity) return;
         try {
-          const info = await api.getSession(row.code); // 404 -> gone for everyone, forget it
-          const members = Object.fromEntries(
-            info.participants.map((p) => [p.fingerprint, p.publicKey])
-          );
+          // registers + verifies the room still exists (404 -> gone for everyone)
+          const { members } = await transport.join(row.code, identity.fingerprint, identity.publicB64, {
+            create: false,
+          });
           setSessions((prev) =>
             prev.some((s) => s.code === row.code)
               ? prev
@@ -927,7 +803,7 @@ export function useSessionManager() {
                   ...prev,
                   {
                     code: row.code,
-                    createdAt: info.createdAt,
+                    createdAt: row.createdAt,
                     members,
                     presence: [],
                     messages: [],
@@ -936,6 +812,7 @@ export function useSessionManager() {
                   },
                 ]
           );
+          registered.current.add(row.code);
           // restored ciphertext — sealed until the key comes back
           const ids = new Set<string>();
           const entries: DecryptedMessage[] = [];
@@ -962,23 +839,19 @@ export function useSessionManager() {
         }
       }
 
-      // reconnect every restored room (relay join + key request + polling)
+      // reconnect every restored room (key request + polling)
       for (const row of stored) {
-        try {
-          await registerAndJoinRoom(row.code);
-          if (!hasSessionKey(row.code)) {
-            getRelay().emit("session:keyrequest", {
-              code: row.code,
-              fingerprint: identityFp,
-            });
-            startKeyPolling(row.code);
+        if (!hasSessionKey(row.code)) {
+          try {
+            await transport.requestKey(row.code, identityFp);
+          } catch {
+            /* stay sealed; opening the session manually retries */
           }
-        } catch {
-          /* stay sealed; opening the session manually retries */
+          startKeyPolling(row.code);
         }
       }
     },
-    [appendMessages, registerAndJoinRoom, startKeyPolling]
+    [appendMessages, startKeyPolling]
   );
 
   // kick the restore exactly once per entry into the app phase

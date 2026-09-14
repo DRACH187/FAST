@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { clientIp, json, rateLimit } from "@/lib/server-guard";
+import { geminiApiKey, geminiGenerate } from "@/lib/fast/ai";
 
 /**
  * SURROUNDINGS — South Africa community-safety intel feed.
@@ -8,16 +9,22 @@ import { clientIp, json, rateLimit } from "@/lib/server-guard";
  * Area-level, public-information awareness data only (open-source reporting /
  * academic research on documented gang activity). NOT law-enforcement guidance.
  *
- * Pipeline: 10s/IP rate limit -> 24h MapCache -> Gemini (free flash model,
- * JSON mode) -> strict zod validation + sanitisation -> curated offline
- * fallback. The key NEVER leaves the server; the response body only ever
- * carries the sanitised dataset.
+ * Pipeline: rate limit -> in-memory 24h cache (serverless-safe) -> optional
+ * SQLite MapCache (self-host only) -> Gemini FREE flash model (JSON mode) ->
+ * strict zod validation + sanitisation -> curated offline fallback. The key
+ * NEVER leaves the server; the response body only ever carries the sanitised
+ * dataset. `?refresh=1` skips the caches for a fresh AI generation.
  */
 
 export const dynamic = "force-dynamic";
 
 const CACHE_ID = "sa-gang-hotspots";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// process-wide memory cache — survives across requests in the same lambda /
+// server process, which is the only storage guarantee on Vercel
+type MemCache = { hotspots: SanitizedHotspot[]; source: "gemini" | "fallback"; updatedAt: number };
+let memCache: MemCache | null = null;
 
 // ---------------------------------------------------------------- schema
 
@@ -154,51 +161,8 @@ Hard requirements:
 - No instructions, no safety-advice framing, no glorification, no sensationalism. Neutral, encyclopedic tone.
 - Output ONLY the JSON array. No markdown, no commentary, no code fences.`;
 
-type GeminiReply = {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
-  }>;
-};
-
 async function fetchFromGemini(): Promise<SanitizedHotspot[] | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-
-  let res: Response;
-  try {
-    res = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: PROMPT }] }],
-          generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
-        }),
-        cache: "no-store",
-        signal: AbortSignal.timeout(20_000),
-      }
-    );
-  } catch {
-    return null; // network error / timeout
-  }
-
-  if (!res.ok) return null;
-
-  let reply: GeminiReply;
-  try {
-    reply = (await res.json()) as GeminiReply;
-  } catch {
-    return null;
-  }
-
-  const text = (reply.candidates?.[0]?.content?.parts ?? [])
-    .map((p) => (typeof p.text === "string" ? p.text : ""))
-    .join("")
-    .trim();
+  const text = await geminiGenerate(PROMPT, 20_000);
   if (!text) return null;
 
   // Strip markdown fences if the model wrapped the array anyway.
@@ -423,9 +387,24 @@ const FALLBACK: SanitizedHotspot[] = [
 // ------------------------------------------------------------------- route
 
 export async function GET(req: Request) {
-  // 1. In-memory sliding-window rate limit: 1 request / 10s / IP.
+  // 1. Sliding-window rate limit: 1 generation / 10s / IP (cached reads pass).
   const rl = rateLimit(`hotspots:${clientIp(req)}`, 1, 10_000);
+  const refresh = new URL(req.url).searchParams.get("refresh") === "1";
+
+  const serveMem = () =>
+    memCache && Date.now() - memCache.updatedAt < CACHE_TTL_MS
+      ? json({
+          ok: true,
+          source: memCache.source,
+          updatedAt: new Date(memCache.updatedAt).toISOString(),
+          hotspots: memCache.hotspots,
+        })
+      : null;
+
+  // 2a. Rate-limited requests still get cached intel instead of a hard 429.
   if (!rl.ok) {
+    const cached = serveMem();
+    if (cached) return cached;
     return json(
       { ok: false, error: "Slow down — the intel feed refreshes every 10 seconds." },
       429,
@@ -433,22 +412,30 @@ export async function GET(req: Request) {
     );
   }
 
-  // 2. 24h server-side cache.
-  try {
-    const cached = await db.mapCache.findUnique({ where: { id: CACHE_ID } });
-    if (cached && Date.now() - cached.updatedAt.getTime() < CACHE_TTL_MS) {
-      const cachedHotspots = sanitizeHotspots(JSON.parse(cached.payload) as unknown[]);
-      if (cachedHotspots.length > 0) {
-        return json({
-          ok: true,
-          source: "cache",
-          updatedAt: cached.updatedAt.toISOString(),
-          hotspots: cachedHotspots,
-        });
+  // 2b. Fresh generations pass the limiter; otherwise serve warm caches.
+  if (!refresh) {
+    const cached = serveMem();
+    if (cached) return cached;
+
+    // 2c. Optional SQLite cache (self-host only — read-only FS on Vercel).
+    try {
+      const cached = await db.mapCache.findUnique({ where: { id: CACHE_ID } });
+      if (cached && Date.now() - cached.updatedAt.getTime() < CACHE_TTL_MS) {
+        const cachedHotspots = sanitizeHotspots(JSON.parse(cached.payload) as unknown[]);
+        if (cachedHotspots.length > 0) {
+          const cachedSource = cached.source === "gemini" ? "gemini" : "fallback";
+          memCache = { hotspots: cachedHotspots, source: cachedSource, updatedAt: cached.updatedAt.getTime() };
+          return json({
+            ok: true,
+            source: "cache",
+            updatedAt: cached.updatedAt.toISOString(),
+            hotspots: cachedHotspots,
+          });
+        }
       }
+    } catch {
+      // cache layer failed -> fall through to a fresh resolve
     }
-  } catch {
-    // cache layer failed -> fall through to a fresh resolve
   }
 
   // 3-5. Gemini (free model) with strict validation; curated fallback on any failure.
@@ -468,9 +455,13 @@ export async function GET(req: Request) {
     source = "fallback";
   }
 
+  // tell the client WHY it is seeing the curated dataset (drives a hint chip)
+  const aiReason = source === "fallback" ? (geminiApiKey() ? "generation-failed" : "no-key") : undefined;
+
   const updatedAt = new Date();
 
-  // 6. Persist for the next 24h (never fail the request over the cache).
+  // 6. Cache for the next 24h (memory always; SQLite best-effort self-host).
+  memCache = { hotspots, source, updatedAt: updatedAt.getTime() };
   try {
     await db.mapCache.upsert({
       where: { id: CACHE_ID },
@@ -478,13 +469,14 @@ export async function GET(req: Request) {
       update: { payload: JSON.stringify(hotspots), source, updatedAt },
     });
   } catch {
-    // persistence is best-effort
+    // persistence is best-effort (read-only filesystem on Vercel)
   }
 
   // 7. Respond (no-store is applied by the json helper).
   return json({
     ok: true,
     source,
+    reason: aiReason,
     updatedAt: updatedAt.toISOString(),
     hotspots,
   });
