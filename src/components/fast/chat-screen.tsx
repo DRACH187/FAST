@@ -1,32 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Textarea } from "@/components/ui/textarea";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -40,8 +16,14 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
+import { toast } from "@/components/fast/toast";
+import { ScreenShell } from "@/components/fast/motion";
+import { FastButton, FastModal, FastMenuItem, FastPopover } from "@/components/fast/primitives";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
+
+gsap.registerPlugin(useGSAP);
 
 type ChatProps = {
   session: SessionView;
@@ -69,17 +51,27 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
 
   useEffect(() => {
     scrollToBottom(false);
-  }, [session.code]);
+  }, [session.code, scrollToBottom]);
 
   useEffect(() => {
     if (atBottom) scrollToBottom(true);
-  }, [session.messages.length]);
+  }, [session.messages.length, atBottom, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
   }, []);
+
+  // data-saving: restore + persist the composer draft (tab-scoped)
+  useEffect(() => {
+    setDraft(loadDraft(session.code));
+  }, [session.code]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => saveDraft(session.code, draft), 300);
+    return () => window.clearTimeout(t);
+  }, [draft, session.code]);
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -88,6 +80,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
     try {
       await onSend(text);
       setDraft("");
+      clearDraft(session.code);
       if (taRef.current) taRef.current.style.height = "auto";
       requestAnimationFrame(() => scrollToBottom(true));
     } catch (err) {
@@ -95,7 +88,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
     } finally {
       setSending(false);
     }
-  }, [draft, onSend, scrollToBottom, sending, session.hasKey]);
+  }, [draft, onSend, scrollToBottom, sending, session.hasKey, session.code]);
 
   const grouped = useMemo(() => {
     const groups: { senderFp: string; mine: boolean; items: DecryptedMessage[] }[] = [];
@@ -111,33 +104,32 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
   }, [session.messages]);
 
   const otherCount = useMemo(() => {
-    const others = new Set(
-      session.presence.filter((fp) => fp !== myFp)
-    );
+    const others = new Set(session.presence.filter((fp) => fp !== myFp));
     return others.size;
   }, [session.presence, myFp]);
 
   return (
-    <main className="h-dvh flex flex-col bg-black animate-fast-fade-in">
+    <ScreenShell
+      as="main"
+      className="relative flex h-dvh flex-col bg-black"
+    >
       {/* header */}
-      <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 backdrop-blur-md pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
         <div className="flex h-14 items-center gap-2 px-3">
-          <Button
-            size="icon"
-            variant="ghost"
+          <button
             aria-label="Back to sessions"
             onClick={onBack}
-            className="size-10 rounded-full text-neutral-400 hover:bg-neutral-900 hover:text-white"
+            className="flex size-10 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
           >
             <ArrowLeft className="size-5" aria-hidden />
-          </Button>
+          </button>
 
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <div className="flex flex-col leading-tight">
               <span className="font-mono text-sm font-bold tracking-[0.22em] text-white">
                 {session.code}
               </span>
-              <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-neutral-500">
+              <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-neutral-500">
                 <Users className="size-3" aria-hidden />
                 {otherCount > 0 ? `${otherCount + 1} live` : "solo"}
                 {session.hasKey ? (
@@ -154,7 +146,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
 
           {session.hasKey && (
             <span
-              className="hidden xs:flex sm:flex items-center gap-1 rounded-full border border-neutral-800 px-2.5 py-1 text-[9px] font-mono uppercase tracking-[0.2em] text-neutral-400"
+              className="hidden items-center gap-1 rounded-full border border-neutral-800 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.2em] text-neutral-400 sm:flex"
               title="Messages are sealed with per-message keys in your browser"
             >
               <ShieldCheck className="size-3.5" aria-hidden />
@@ -162,39 +154,40 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
             </span>
           )}
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="icon"
-                variant="ghost"
+          <FastPopover
+            label="Session menu"
+            button={({ toggle }) => (
+              <button
+                onClick={toggle}
                 aria-label="Session menu"
-                className="size-10 rounded-full text-neutral-400 hover:bg-neutral-900 hover:text-white"
+                className="flex size-10 items-center justify-center rounded-full text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-white"
               >
                 <MoreVertical className="size-5" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              sideOffset={8}
-              className="w-52 rounded-2xl border-neutral-800 bg-neutral-950"
-            >
-              <DropdownMenuItem
-                onClick={() => setCodeOpen(true)}
-                className="gap-2 rounded-xl text-neutral-200 focus:bg-neutral-900"
-              >
-                <Copy className="size-4" aria-hidden />
-                Copy code
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-neutral-800" />
-              <DropdownMenuItem
-                onClick={() => setDeleteOpen(true)}
-                className="gap-2 rounded-xl text-neutral-200 focus:bg-neutral-900"
-              >
-                <Trash2 className="size-4" aria-hidden />
-                Delete for everyone
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <FastMenuItem
+                  icon={Copy}
+                  label="Copy code"
+                  onSelect={() => {
+                    close();
+                    setCodeOpen(true);
+                  }}
+                />
+                <div className="mx-1.5 my-1 h-px bg-neutral-800" />
+                <FastMenuItem
+                  icon={Trash2}
+                  label="Delete for everyone"
+                  onSelect={() => {
+                    close();
+                    setDeleteOpen(true);
+                  }}
+                />
+              </>
+            )}
+          </FastPopover>
         </div>
       </header>
 
@@ -210,7 +203,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="slim-scroll relative flex-1 overflow-y-auto overflow-x-hidden px-4 py-4"
+        className="relative flex-1 overflow-x-hidden overflow-y-auto px-4 py-4"
         role="log"
         aria-label="Encrypted transcript"
       >
@@ -239,7 +232,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
                 {group.items.map((m) => (
                   <Bubble key={m.id} message={m} />
                 ))}
-                <span className="px-1 text-[9px] font-mono text-neutral-700">
+                <span className="px-1 font-mono text-[9px] text-neutral-700">
                   {formatTime(group.items[group.items.length - 1].ts)}
                 </span>
               </div>
@@ -254,7 +247,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
         <button
           onClick={() => scrollToBottom(true)}
           aria-label="Jump to latest message"
-          className="absolute bottom-24 right-4 z-10 flex size-10 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg transition-colors hover:text-white"
+          className="absolute bottom-24 right-4 z-10 flex size-10 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-300 shadow-lg outline-none transition-colors hover:text-white"
         >
           <ArrowDown className="size-4" aria-hidden />
         </button>
@@ -263,7 +256,7 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
       {/* composer (sticky footer) */}
       <footer className="mt-auto border-t border-neutral-900 bg-black/90 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-md">
         <div className="mx-auto flex max-w-md items-end gap-2">
-          <Textarea
+          <textarea
             ref={taRef}
             value={draft}
             onChange={(e) => {
@@ -282,83 +275,100 @@ export function ChatScreen({ session, myFp, onBack, onSend, onDelete }: ChatProp
             disabled={!session.hasKey}
             rows={1}
             aria-label="Message"
-            className="slim-scroll max-h-[120px] min-h-[44px] flex-1 resize-none rounded-2xl border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 focus-visible:ring-neutral-700"
+            className="max-h-[120px] min-h-[44px] flex-1 resize-none rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-100 outline-none transition-colors placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-60"
           />
-          <Button
-            size="icon"
+          <button
             onClick={() => void send()}
             disabled={!session.hasKey || !draft.trim() || sending}
             aria-label="Send message"
-            className="size-11 shrink-0 rounded-full bg-white text-black transition-transform hover:bg-neutral-200 active:scale-95 disabled:opacity-30"
+            className="flex size-11 shrink-0 items-center justify-center rounded-full bg-white text-black outline-none transition-all hover:bg-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
           >
             <SendHorizontal className="size-5" aria-hidden />
-          </Button>
+          </button>
         </div>
       </footer>
 
       {/* code dialog */}
-      <Dialog open={codeOpen} onOpenChange={setCodeOpen}>
-        <DialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <DialogHeader className="items-center text-center">
-            <DialogTitle className="text-xs font-mono uppercase tracking-[0.3em] text-neutral-400">
-              Session code
-            </DialogTitle>
-          </DialogHeader>
+      <FastModal open={codeOpen} onClose={() => setCodeOpen(false)} label="Session code">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
+            Session code
+          </h2>
           <button
             onClick={() => {
               void navigator.clipboard.writeText(session.code);
               toast.success("Code copied");
             }}
-            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 py-4 transition-colors hover:border-neutral-600 min-h-[44px]"
+            className="flex min-h-[44px] w-full items-center justify-center gap-3 rounded-2xl border border-neutral-800 py-4 outline-none transition-colors hover:border-neutral-600"
           >
             <span className="font-mono text-2xl font-bold tracking-[0.3em] text-white">
               {session.code}
             </span>
             <Copy className="size-4 text-neutral-400" aria-hidden />
           </button>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </FastModal>
 
       {/* delete confirm */}
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <AlertDialogHeader className="items-center text-center">
-            <AlertDialogTitle className="flex items-center gap-2 text-sm">
+      <FastModal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        label={`Delete ${session.code} for everyone`}
+      >
+        <div className="flex flex-col gap-4 text-center">
+          <div>
+            <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
               <ShieldAlert className="size-4 text-neutral-300" aria-hidden />
               Delete {session.code} for everyone?
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-xs leading-relaxed text-neutral-500">
+            </h2>
+            <p className="mt-2 text-xs leading-relaxed text-neutral-500">
               Every member is ejected immediately and the ciphertext history is
               erased. There is no undo.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <FastButton
+              onClick={() => {
                 setDeleteOpen(false);
                 void onDelete(session.code).catch((err) =>
                   toast.error(err instanceof Error ? err.message : "Delete failed")
                 );
               }}
-              className="w-full rounded-xl bg-white text-black hover:bg-neutral-200 min-h-[44px]"
+              className="w-full"
             >
               Delete for everyone
-            </AlertDialogAction>
-            <AlertDialogCancel className="w-full rounded-xl border-neutral-800 bg-transparent text-neutral-400 min-h-[44px]">
+            </FastButton>
+            <FastButton variant="ghost" className="w-full" onClick={() => setDeleteOpen(false)}>
               Cancel
-            </AlertDialogCancel>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </main>
+            </FastButton>
+          </div>
+        </div>
+      </FastModal>
+    </ScreenShell>
   );
 }
 
 function Bubble({ message }: { message: DecryptedMessage }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // GSAP: every bubble pops in on mount
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ref.current,
+        { opacity: 0, y: 8, scale: 0.98 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.28, ease: "power3.out" }
+      );
+    },
+    { scope: ref }
+  );
+
   if (message.failed) {
     return (
-      <div className="animate-fast-bubble-in flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-700 bg-neutral-950 px-3.5 py-2.5">
+      <div
+        ref={ref}
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-700 bg-neutral-950 px-3.5 py-2.5 will-change-transform"
+      >
         <ShieldAlert className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
         <span className="text-xs italic text-neutral-500">Undecryptable — integrity check failed</span>
       </div>
@@ -366,7 +376,10 @@ function Bubble({ message }: { message: DecryptedMessage }) {
   }
   if (message.sealed) {
     return (
-      <div className="animate-fast-bubble-in flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-3.5 py-2.5">
+      <div
+        ref={ref}
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-3.5 py-2.5 will-change-transform"
+      >
         <Lock className="size-3 shrink-0 text-neutral-600" aria-hidden />
         <span className="text-xs italic text-neutral-600">Sealed — arrived before your key</span>
       </div>
@@ -374,7 +387,8 @@ function Bubble({ message }: { message: DecryptedMessage }) {
   }
   return (
     <div
-      className={`animate-fast-bubble-in max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
+      ref={ref}
+      className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed will-change-transform ${
         message.mine
           ? "rounded-br-md bg-white text-black"
           : "rounded-bl-md border border-neutral-800 bg-neutral-900 text-neutral-100"

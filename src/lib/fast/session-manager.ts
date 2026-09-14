@@ -24,6 +24,8 @@ import {
 } from "@/lib/crypto/keyvault";
 import { api, type WireMessage } from "@/lib/fast/api";
 import { getRelay } from "@/lib/fast/relay";
+import { toast } from "@/components/fast/toast";
+import * as vault from "@/lib/fast/vault-db";
 
 export type Phase = "splash" | "gate" | "app";
 
@@ -72,6 +74,13 @@ export function useSessionManager() {
   const joinAt = useRef(new Map<string, string>()); // code -> ISO instant we registered
   const wireCache = useRef(new Map<string, Map<string, WireMessage>>()); // code -> id -> blob (sealed decrypt-on-key)
   const keyPoll = useRef(new Map<string, ReturnType<typeof setInterval>>());
+  /** codes registered with the relay during this tab generation (drives rejoin logic) */
+  const registered = useRef(new Set<string>());
+  /** restored-from-vault blob ids per code — eligible for re-decryption after a key re-wrap */
+  const restoredIds = useRef(new Map<string, Set<string>>());
+  /** every fingerprint this device has ever sent from (public material — see vault-db meta) */
+  const myFps = useRef(new Set<string>());
+  const restoreKick = useRef(false);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -186,9 +195,61 @@ export function useSessionManager() {
     [patchSession]
   );
 
+  /**
+   * Data-saving continuity: after a reload the session key is gone (RAM-only
+   * by design), so restored ciphertext renders sealed. Once a member re-wraps
+   * the key to this device, blobs it provably held before the reload become
+   * decryptable again and replace their sealed placeholders in place.
+   */
+  const revealRestoredHistory = useCallback(async (code: string) => {
+    const ids = restoredIds.current.get(code);
+    const key = getSessionKey(code);
+    if (!ids || ids.size === 0 || !key || myFps.current.size === 0) return;
+    let blobs: WireMessage[] = [];
+    try {
+      blobs = await vault.loadWire(code);
+    } catch {
+      return;
+    }
+    if (blobs.length === 0) return;
+    const replacements = new Map<string, DecryptedMessage>();
+    await Promise.all(
+      blobs.map(async (w) => {
+        if (!ids.has(w.id)) return;
+        try {
+          const payload = await decryptMessage(key, code, w);
+          replacements.set(w.id, {
+            id: w.id,
+            code,
+            senderFp: w.senderFp,
+            mine: myFps.current.has(w.senderFp),
+            text: payload.t,
+            ts: payload.ts,
+            createdAt: w.createdAt,
+            counter: w.counter,
+            sealed: false,
+          });
+        } catch {
+          /* corrupt or foreign blob — stays sealed */
+        }
+      })
+    );
+    if (replacements.size === 0) return;
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.code !== code) return s;
+        const messages = s.messages.map((m) => replacements.get(m.id) ?? m);
+        return { ...s, messages: sortMessages(messages) };
+      })
+    );
+    restoredIds.current.delete(code); // one-shot reveal
+  }, []);
+
   const adoptSessionKey = useCallback(
     async (code: string, raw: Uint8Array) => {
       storeSessionKey(code, raw);
+      void vault.markKeyHeld(code); // local attestation: this device held the key
+      void revealRestoredHistory(code);
       const poll = keyPoll.current.get(code);
       if (poll) {
         clearInterval(poll);
@@ -203,7 +264,7 @@ export function useSessionManager() {
       );
       appendMessages(code, entries);
     },
-    [appendMessages, patchSession, toTranscriptEntry]
+    [appendMessages, patchSession, revealRestoredHistory, toTranscriptEntry]
   );
 
   const startKeyPolling = useCallback(
@@ -279,6 +340,7 @@ export function useSessionManager() {
       const cache = wireCache.current.get(env.code) ?? new Map<string, WireMessage>();
       cache.set(wire.id, wire);
       wireCache.current.set(env.code, cache);
+      void vault.saveWire(env.code, [wire]); // data-saving: ciphertext at rest (no keys)
 
       const mine = wire.senderFp === identityRef.current?.fingerprint;
       void toTranscriptEntry(env.code, wire, mine).then((entry) => {
@@ -323,12 +385,13 @@ export function useSessionManager() {
       unwrappedIds.current.delete(data.code);
       joinAt.current.delete(data.code);
       wireCache.current.delete(data.code);
+      registered.current.delete(data.code);
+      restoredIds.current.delete(data.code);
+      void vault.forgetSession(data.code); // wipe local vault rows too
       setSessions((prev) => prev.filter((s) => s.code !== data.code));
       setActiveCode((cur) => (cur === data.code ? null : cur));
       if (wasOpen) {
-        void import("sonner").then(({ toast }) =>
-          toast.success(`Session ${data.code} was deleted for everyone`)
-        );
+        toast.success(`Session ${data.code} was deleted for everyone`);
       }
     };
 
@@ -387,6 +450,7 @@ export function useSessionManager() {
         setConnecting(false);
       }
       relay.emit("session:join", { code, fingerprint: identity.fingerprint });
+      registered.current.add(code);
 
       const memberMap = Object.fromEntries(members.map((m) => [m.fingerprint, m.publicKey]));
       return { members: memberMap, fingerprint: identity.fingerprint };
@@ -398,6 +462,7 @@ export function useSessionManager() {
     const { code, createdAt } = await api.createSession();
     const key = generateSessionKey();
     storeSessionKey(code, key);
+    void vault.markKeyHeld(code);
     const { members } = await registerAndJoinRoom(code);
     setSessions((prev) => [
       ...prev,
@@ -453,6 +518,7 @@ export function useSessionManager() {
       // pull ciphertext history from the moment we registered
       try {
         const { messages } = await api.fetchMessages(code, joinAt.current.get(code));
+        void vault.saveWire(code, messages);
         const entries = await Promise.all(
           messages.map((w) => toTranscriptEntry(code, w, w.senderFp === identity.fingerprint))
         );
@@ -470,10 +536,27 @@ export function useSessionManager() {
       patchSession(code, { unread: 0 });
       setActiveCode(code);
       const identity = identityRef.current;
-      if (!identity || !hasSessionKey(code)) return;
+      if (!identity) return;
+
+      // restored sessions (post-reload) may not be registered with the relay
+      // yet — join now so a member can re-wrap the key to this device
+      if (!registered.current.has(code)) {
+        try {
+          await registerAndJoinRoom(code);
+          if (!hasSessionKey(code)) {
+            getRelay().emit("session:keyrequest", { code, fingerprint: identity.fingerprint });
+            startKeyPolling(code);
+          }
+        } catch {
+          /* offline — sealed transcript still viewable */
+        }
+      }
+
+      if (!hasSessionKey(code)) return;
       try {
         const since = new Date(keyReceivedAt(code) - 2000).toISOString();
         const { messages } = await api.fetchMessages(code, since);
+        void vault.saveWire(code, messages);
         const entries = await Promise.all(
           messages.map((w) => {
             markSeen(code, w.id);
@@ -485,7 +568,7 @@ export function useSessionManager() {
         /* best-effort */
       }
     },
-    [appendMessages, patchSession, toTranscriptEntry]
+    [appendMessages, patchSession, registerAndJoinRoom, startKeyPolling, toTranscriptEntry]
   );
 
   const closeSession = useCallback(
@@ -501,6 +584,9 @@ export function useSessionManager() {
       unwrappedIds.current.delete(code);
       joinAt.current.delete(code);
       wireCache.current.delete(code);
+      registered.current.delete(code);
+      restoredIds.current.delete(code);
+      void vault.forgetSession(code); // a closed session should not resurrect after reload
       setSessions((prev) => prev.filter((s) => s.code !== code));
       setActiveCode((cur) => (cur === code ? null : cur));
     },
@@ -509,6 +595,8 @@ export function useSessionManager() {
 
   const deleteSession = useCallback(async (code: string) => {
     await api.deleteSession(code);
+    restoredIds.current.delete(code);
+    void vault.forgetSession(code);
     // cascade done server-side; evict every device (including ours)
     getRelay().emit("session:terminated", { code });
   }, []);
@@ -560,6 +648,17 @@ export function useSessionManager() {
       }
       getRelay().emit("session:message", { code, ...wire, createdAt: saved.createdAt });
 
+      void vault.saveWire(code, [
+        {
+          id: saved.serverId,
+          senderFp: wire.senderFp,
+          counter: wire.counter,
+          iv: wire.iv,
+          ciphertext: wire.ciphertext,
+          createdAt: saved.createdAt,
+        },
+      ]);
+
       // adopt the server's identity + clock so history refetches dedupe cleanly
       setSessions((prev) =>
         prev.map((s) =>
@@ -598,6 +697,133 @@ export function useSessionManager() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [phase, activeCode, openSession]);
+
+  // ------------------------------------------------- data-saving (vault-db)
+
+  /**
+   * Restore-on-unlock: pull session rows + ciphertext blobs out of IndexedDB,
+   * drop any session the server no longer knows, feed the blobs into the
+   * transcript as sealed entries, then reconnect every room so members can
+   * re-wrap the session key to this device (which reveals the history).
+   */
+  const restoreFromVault = useCallback(
+    async (identityFp: string) => {
+      let stored: vault.StoredSession[] = [];
+      let wire: Record<string, WireMessage[]> = {};
+      try {
+        const data = await vault.loadVault();
+        stored = data.sessions;
+        wire = data.wire;
+      } catch {
+        return;
+      }
+      if (stored.length === 0) return;
+
+      for (const row of stored) {
+        if (sessionsRef.current.some((s) => s.code === row.code)) continue;
+        try {
+          const info = await api.getSession(row.code); // 404 -> gone for everyone, forget it
+          const members = Object.fromEntries(
+            info.participants.map((p) => [p.fingerprint, p.publicKey])
+          );
+          setSessions((prev) =>
+            prev.some((s) => s.code === row.code)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    code: row.code,
+                    createdAt: info.createdAt,
+                    members,
+                    presence: [],
+                    messages: [],
+                    hasKey: false,
+                    unread: row.unread,
+                  },
+                ]
+          );
+          // restored ciphertext — sealed until the key comes back
+          const ids = new Set<string>();
+          const entries: DecryptedMessage[] = [];
+          for (const w of wire[row.code] ?? []) {
+            ids.add(w.id);
+            entries.push({
+              id: w.id,
+              code: row.code,
+              senderFp: w.senderFp,
+              mine: myFps.current.has(w.senderFp),
+              text: "",
+              ts: 0,
+              createdAt: w.createdAt,
+              counter: w.counter,
+              sealed: true,
+            });
+          }
+          if (entries.length > 0) {
+            restoredIds.current.set(row.code, ids);
+            appendMessages(row.code, entries);
+          }
+        } catch {
+          void vault.forgetSession(row.code);
+        }
+      }
+
+      // reconnect every restored room (relay join + key request + polling)
+      for (const row of stored) {
+        try {
+          await registerAndJoinRoom(row.code);
+          if (!hasSessionKey(row.code)) {
+            getRelay().emit("session:keyrequest", {
+              code: row.code,
+              fingerprint: identityFp,
+            });
+            startKeyPolling(row.code);
+          }
+        } catch {
+          /* stay sealed; opening the session manually retries */
+        }
+      }
+    },
+    [appendMessages, registerAndJoinRoom, startKeyPolling]
+  );
+
+  // kick the restore exactly once per entry into the app phase
+  useEffect(() => {
+    if (phase !== "app" || restoreKick.current) return;
+    restoreKick.current = true;
+    void (async () => {
+      const identity = await ensureIdentity();
+      identityRef.current = identity;
+      setIdentityFp(identity.fingerprint);
+      // remember every fingerprint this device has sent from (public info)
+      try {
+        const prevFps = await vault.getMyFingerprints();
+        for (const fp of prevFps) myFps.current.add(fp);
+      } catch {
+        /* meta store unavailable */
+      }
+      myFps.current.add(identity.fingerprint);
+      void vault.recordMyFingerprint(identity.fingerprint);
+      await restoreFromVault(identity.fingerprint);
+    })();
+  }, [phase, restoreFromVault]);
+
+  // debounce-persist session metadata whenever it changes
+  useEffect(() => {
+    if (phase !== "app") return;
+    const t = window.setTimeout(() => {
+      void vault.saveSessions(
+        sessions.map((s) => ({
+          code: s.code,
+          createdAt: s.createdAt,
+          unread: s.unread,
+          heldKey: s.hasKey,
+          savedAt: Date.now(),
+        }))
+      );
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [sessions, phase]);
 
   return {
     phase,

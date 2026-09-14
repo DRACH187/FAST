@@ -1,27 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import Image from "next/image";
-import { toast } from "sonner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import {
   ArrowRight,
   ChevronRight,
@@ -33,7 +15,12 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { toast } from "@/components/fast/toast";
+import { ScreenShell, staggerAnimChildren } from "@/components/fast/motion";
+import { FastButton, FastInput, FastModal } from "@/components/fast/primitives";
 import type { SessionView } from "@/lib/fast/session-manager";
+
+gsap.registerPlugin(useGSAP);
 
 const CODE_RE = /^[A-Z]{6}$/;
 
@@ -58,12 +45,19 @@ export function HubScreen({
   onDelete,
   onClose,
 }: HubProps) {
+  const shellRef = useRef<HTMLElement>(null);
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteCode, setDeleteCode] = useState("");
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
+
+  // GSAP: staggered hub entrance
+  useGSAP(
+    () => staggerAnimChildren(shellRef.current),
+    { scope: shellRef }
+  );
 
   const handleStart = useCallback(async () => {
     try {
@@ -107,10 +101,11 @@ export function HubScreen({
   }, []);
 
   return (
-    <main className="min-h-dvh flex flex-col animate-fast-fade-in">
-      <div className="flex-1 w-full max-w-md mx-auto px-5 pt-10 pb-6 flex flex-col gap-8">
+    <ScreenShell as="main" className="flex min-h-dvh flex-col">
+      <div ref={shellRef} className="contents">
+      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-8 px-5 pb-6 pt-12">
         {/* brand */}
-        <header className="flex flex-col items-center gap-3">
+        <header data-anim className="flex flex-col items-center gap-3">
           <Image
             src="/fast-logo.png"
             alt="FAST logo"
@@ -118,67 +113,46 @@ export function HubScreen({
             height={256}
             priority
             draggable={false}
-            className="w-16 h-auto mix-blend-screen"
+            className="h-auto w-14 mix-blend-screen"
           />
           <div className="flex items-center gap-1.5 text-neutral-500">
             <ShieldCheck className="size-3.5" aria-hidden />
-            <span className="text-[10px] font-mono uppercase tracking-[0.3em]">
+            <span className="font-mono text-[10px] uppercase tracking-[0.3em]">
               End-to-end encrypted
             </span>
           </div>
         </header>
 
         {/* actions */}
-        <section aria-label="Session actions" className="grid gap-3">
-          <button
+        <section data-anim aria-label="Session actions" className="grid gap-3">
+          <ActionCard
+            icon={Plus}
+            solid
+            title="Start session"
+            subtitle="Generate a fresh 6-letter code"
             onClick={handleStart}
             disabled={busy}
-            className="group flex items-center gap-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-left transition-colors hover:border-neutral-600 hover:bg-neutral-900 disabled:opacity-50 min-h-[60px]"
-          >
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white text-black transition-transform group-hover:scale-105">
-              <Plus className="size-5" aria-hidden />
-            </span>
-            <span className="flex-1">
-              <span className="block text-sm font-medium text-neutral-100">Start session</span>
-              <span className="block text-xs text-neutral-500">Generate a fresh 6-letter code</span>
-            </span>
-            <ChevronRight className="size-4 text-neutral-600 transition-transform group-hover:translate-x-0.5" aria-hidden />
-          </button>
-
-          <button
+          />
+          <ActionCard
+            icon={KeyRound}
+            title="Join session"
+            subtitle="Enter a 6-letter code"
             onClick={() => setJoinOpen(true)}
             disabled={busy}
-            className="group flex items-center gap-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-left transition-colors hover:border-neutral-600 hover:bg-neutral-900 disabled:opacity-50 min-h-[60px]"
-          >
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-neutral-800 text-neutral-100 transition-transform group-hover:scale-105">
-              <KeyRound className="size-5" aria-hidden />
-            </span>
-            <span className="flex-1">
-              <span className="block text-sm font-medium text-neutral-100">Join session</span>
-              <span className="block text-xs text-neutral-500">Enter a 6-letter code</span>
-            </span>
-            <ChevronRight className="size-4 text-neutral-600 transition-transform group-hover:translate-x-0.5" aria-hidden />
-          </button>
-
-          <button
+          />
+          <ActionCard
+            icon={Trash2}
+            ghost
+            title="Delete session"
+            subtitle="Erase it for every participant"
             onClick={() => setDeleteOpen(true)}
             disabled={busy}
-            className="group flex items-center gap-4 rounded-2xl border border-neutral-900 bg-transparent p-4 text-left transition-colors hover:border-neutral-700 hover:bg-neutral-950 disabled:opacity-50 min-h-[60px]"
-          >
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-neutral-800 text-neutral-400 transition-transform group-hover:scale-105">
-              <Trash2 className="size-4.5" aria-hidden />
-            </span>
-            <span className="flex-1">
-              <span className="block text-sm font-medium text-neutral-300">Delete session</span>
-              <span className="block text-xs text-neutral-600">Erase it for every participant</span>
-            </span>
-            <ChevronRight className="size-4 text-neutral-700 transition-transform group-hover:translate-x-0.5" aria-hidden />
-          </button>
+          />
         </section>
 
         {/* open sessions */}
-        <section aria-label="Open sessions" className="flex flex-col gap-3">
-          <h2 className="text-[10px] font-mono uppercase tracking-[0.3em] text-neutral-600">
+        <section data-anim aria-label="Open sessions" className="flex flex-col gap-3">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-600">
             Open sessions {sessions.length > 0 && `· ${sessions.length}`}
           </h2>
 
@@ -189,43 +163,12 @@ export function HubScreen({
           ) : (
             <ul className="grid gap-2.5">
               {sessions.map((s) => (
-                <li key={s.code} className="relative">
-                  <button
-                    onClick={() => onOpen(s.code)}
-                    className="group flex w-full items-center gap-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3.5 text-left transition-colors hover:border-neutral-600 hover:bg-neutral-900 min-h-[60px]"
-                  >
-                    <span className="font-mono text-base font-semibold tracking-[0.25em] text-neutral-100">
-                      {s.code}
-                    </span>
-                    <span className="flex items-center gap-1 text-[11px] text-neutral-500">
-                      <Users className="size-3" aria-hidden />
-                      {s.presence.length}
-                    </span>
-                    {!s.hasKey && (
-                      <span
-                        className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-neutral-500 animate-fast-pulse"
-                        title="Waiting for a member to hand you the session key"
-                      >
-                        <KeyRound className="size-3" aria-hidden />
-                        key
-                      </span>
-                    )}
-                    <span className="flex-1" />
-                    {s.unread > 0 && (
-                      <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[10px] font-bold text-black">
-                        {s.unread > 99 ? "99+" : s.unread}
-                      </span>
-                    )}
-                    <ArrowRight className="size-4 text-neutral-600 transition-transform group-hover:translate-x-0.5" aria-hidden />
-                  </button>
-                  <button
-                    onClick={() => setLeaveCode(s.code)}
-                    aria-label={`Close session ${s.code} on this device`}
-                    className="absolute -right-2 -top-2 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-500 transition-colors hover:text-white hover:border-neutral-500"
-                  >
-                    <X className="size-3.5" aria-hidden />
-                  </button>
-                </li>
+                <SessionRow
+                  key={s.code}
+                  session={s}
+                  onOpen={() => onOpen(s.code)}
+                  onClose={() => setLeaveCode(s.code)}
+                />
               ))}
             </ul>
           )}
@@ -233,9 +176,9 @@ export function HubScreen({
       </div>
 
       {/* sticky footer */}
-      <footer className="mt-auto w-full max-w-md mx-auto px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+      <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
         <div className="flex flex-col items-center gap-1 border-t border-neutral-900 pt-4 text-center">
-          <p className="text-[10px] font-mono uppercase tracking-[0.25em] text-neutral-600">
+          <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-neutral-600">
             Keys live in this tab only
           </p>
           <p className="font-mono text-[10px] text-neutral-700">
@@ -245,32 +188,30 @@ export function HubScreen({
       </footer>
 
       {/* created code */}
-      <Dialog open={created !== null} onOpenChange={(o) => !o && setCreated(null)}>
-        <DialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <DialogHeader className="items-center text-center">
-            <DialogTitle className="text-xs font-mono uppercase tracking-[0.3em] text-neutral-400">
+      <FastModal open={created !== null} onClose={() => setCreated(null)} label="Session created">
+        <div className="flex flex-col items-center gap-5 text-center">
+          <div>
+            <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
               Session created
-            </DialogTitle>
-            <DialogDescription className="text-xs text-neutral-500">
+            </h2>
+            <p className="mt-2 text-xs text-neutral-500">
               Share the code — it works from anywhere.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center justify-center gap-3 py-2">
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-3 py-1">
             <span className="font-mono text-3xl font-bold tracking-[0.3em] text-white">
               {created}
             </span>
-            <Button
-              size="icon"
-              variant="outline"
+            <button
               aria-label="Copy session code"
-              className="rounded-full border-neutral-700 bg-transparent"
               onClick={() => created && copyCode(created)}
+              className="flex size-10 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 outline-none transition-colors hover:border-neutral-500 hover:text-white"
             >
               <Copy className="size-4" aria-hidden />
-            </Button>
+            </button>
           </div>
-          <Button
-            className="w-full rounded-xl bg-white text-black hover:bg-neutral-200 min-h-[44px]"
+          <FastButton
+            className="w-full"
             onClick={() => {
               const code = created;
               setCreated(null);
@@ -278,28 +219,27 @@ export function HubScreen({
             }}
           >
             Enter session
-          </Button>
-        </DialogContent>
-      </Dialog>
+          </FastButton>
+        </div>
+      </FastModal>
 
       {/* join */}
-      <Dialog
+      <FastModal
         open={joinOpen}
-        onOpenChange={(o) => {
-          setJoinOpen(o);
-          if (!o) setJoinCode("");
+        onClose={() => {
+          setJoinOpen(false);
+          setJoinCode("");
         }}
+        label="Join session"
       >
-        <DialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <DialogHeader className="items-center text-center">
-            <DialogTitle className="text-xs font-mono uppercase tracking-[0.3em] text-neutral-400">
+        <div className="flex flex-col gap-4">
+          <div className="text-center">
+            <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-neutral-400">
               Join session
-            </DialogTitle>
-            <DialogDescription className="text-xs text-neutral-500">
-              Enter the 6-letter code.
-            </DialogDescription>
-          </DialogHeader>
-          <Input
+            </h2>
+            <p className="mt-2 text-xs text-neutral-500">Enter the 6-letter code.</p>
+          </div>
+          <FastInput
             autoFocus
             value={joinCode}
             onChange={(e) => {
@@ -314,33 +254,40 @@ export function HubScreen({
             autoComplete="off"
             spellCheck={false}
             maxLength={6}
-            className="h-14 rounded-xl border-neutral-800 bg-black text-center font-mono text-xl font-bold tracking-[0.4em] uppercase placeholder:text-neutral-700"
+            className="text-center font-mono text-xl font-bold tracking-[0.4em] uppercase"
           />
-          <Button
+          <FastButton
             disabled={!CODE_RE.test(joinCode)}
             onClick={() => void submitJoin(joinCode)}
-            className="w-full rounded-xl bg-white text-black hover:bg-neutral-200 min-h-[44px]"
+            className="w-full"
           >
             Join
-          </Button>
-        </DialogContent>
-      </Dialog>
+          </FastButton>
+        </div>
+      </FastModal>
 
       {/* delete for everyone */}
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <AlertDialogHeader className="items-center text-center">
-            <AlertDialogTitle className="flex items-center gap-2 text-sm">
+      <FastModal
+        open={deleteOpen}
+        onClose={() => {
+          setDeleteOpen(false);
+          setDeleteCode("");
+        }}
+        label="Terminate a session"
+      >
+        <div className="flex flex-col gap-4">
+          <div className="text-center">
+            <h2 className="flex items-center justify-center gap-2 text-sm font-medium text-neutral-100">
               <Trash2 className="size-4 text-neutral-300" aria-hidden />
               Terminate a session
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-xs leading-relaxed text-neutral-500">
+            </h2>
+            <p className="mt-2 text-xs leading-relaxed text-neutral-500">
               This erases the code, its membership and the full ciphertext history —
               for <span className="text-neutral-300">every</span> participant, immediately
               and irreversibly.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <Input
+            </p>
+          </div>
+          <FastInput
             value={deleteCode}
             onChange={(e) => setDeleteCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6))}
             placeholder="CODE"
@@ -349,52 +296,170 @@ export function HubScreen({
             autoComplete="off"
             spellCheck={false}
             maxLength={6}
-            className="h-12 rounded-xl border-neutral-800 bg-black text-center font-mono text-lg font-bold tracking-[0.4em] uppercase placeholder:text-neutral-700"
+            className="text-center font-mono text-lg font-bold tracking-[0.4em] uppercase"
           />
-          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
-            <AlertDialogAction
+          <div className="flex flex-col gap-2">
+            <FastButton
               disabled={!CODE_RE.test(deleteCode.trim())}
-              onClick={(e) => {
-                e.preventDefault();
-                void submitDelete();
-              }}
-              className="w-full rounded-xl bg-white text-black hover:bg-neutral-200 min-h-[44px]"
+              onClick={() => void submitDelete()}
+              className="w-full"
             >
               Delete for everyone
-            </AlertDialogAction>
-            <AlertDialogCancel className="w-full rounded-xl border-neutral-800 bg-transparent text-neutral-400 min-h-[44px]">
+            </FastButton>
+            <FastButton
+              variant="ghost"
+              className="w-full"
+              onClick={() => {
+                setDeleteOpen(false);
+                setDeleteCode("");
+              }}
+            >
               Cancel
-            </AlertDialogCancel>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </FastButton>
+          </div>
+        </div>
+      </FastModal>
 
       {/* leave (local close) */}
-      <AlertDialog open={leaveCode !== null} onOpenChange={(o) => !o && setLeaveCode(null)}>
-        <AlertDialogContent className="max-w-xs rounded-3xl border-neutral-800 bg-neutral-950 p-6">
-          <AlertDialogHeader className="items-center text-center">
-            <AlertDialogTitle className="text-sm">Close {leaveCode} here?</AlertDialogTitle>
-            <AlertDialogDescription className="text-xs leading-relaxed text-neutral-500">
+      <FastModal
+        open={leaveCode !== null}
+        onClose={() => setLeaveCode(null)}
+        label="Close session on this device"
+      >
+        <div className="flex flex-col gap-5">
+          <div className="text-center">
+            <h2 className="text-sm font-medium text-neutral-100">Close {leaveCode} here?</h2>
+            <p className="mt-2 text-xs leading-relaxed text-neutral-500">
               Your device discards its key material for this session. Others keep chatting —
               to return you will need a member to hand you the key again.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
-            <AlertDialogAction
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <FastButton
+              className="w-full"
               onClick={() => {
                 if (leaveCode) onClose(leaveCode);
                 setLeaveCode(null);
               }}
-              className="w-full rounded-xl bg-white text-black hover:bg-neutral-200 min-h-[44px]"
             >
               Close session here
-            </AlertDialogAction>
-            <AlertDialogCancel className="w-full rounded-xl border-neutral-800 bg-transparent text-neutral-400 min-h-[44px]">
+            </FastButton>
+            <FastButton variant="ghost" className="w-full" onClick={() => setLeaveCode(null)}>
               Stay
-            </AlertDialogCancel>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </main>
+            </FastButton>
+          </div>
+        </div>
+      </FastModal>
+      </div>
+    </ScreenShell>
+  );
+}
+
+// ---------------------------------------------------------------- pieces
+
+type ActionCardProps = {
+  icon: typeof Plus;
+  title: string;
+  subtitle: string;
+  onClick: () => void;
+  disabled?: boolean;
+  solid?: boolean;
+  ghost?: boolean;
+};
+
+function ActionCard({ icon: Icon, title, subtitle, onClick, disabled, solid, ghost }: ActionCardProps) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`group flex min-h-[64px] w-full items-center gap-4 rounded-2xl border p-4 text-left outline-none transition-all duration-200 focus-visible:border-neutral-500 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50 ${
+        ghost
+          ? "border-neutral-900 bg-transparent hover:border-neutral-700 hover:bg-neutral-950"
+          : "border-neutral-800/80 bg-neutral-950 hover:border-neutral-600 hover:bg-neutral-900"
+      }`}
+    >
+      <span
+        className={`flex size-10 shrink-0 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105 ${
+          solid ? "bg-white text-black" : ghost ? "border border-neutral-800 text-neutral-400" : "bg-neutral-800 text-neutral-100"
+        }`}
+      >
+        <Icon className="size-5" aria-hidden />
+      </span>
+      <span className="flex-1">
+        <span className="block text-sm font-medium text-neutral-100">{title}</span>
+        <span className="block text-xs text-neutral-500">{subtitle}</span>
+      </span>
+      <ChevronRight
+        className="size-4 text-neutral-600 transition-transform duration-200 group-hover:translate-x-0.5"
+        aria-hidden
+      />
+    </button>
+  );
+}
+
+function SessionRow({
+  session,
+  onOpen,
+  onClose,
+}: {
+  session: SessionView;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  const rowRef = useRef<HTMLLIElement>(null);
+
+  // GSAP: rows pop in as they appear (including restored sessions)
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        rowRef.current,
+        { opacity: 0, y: 12, scale: 0.98 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.4, ease: "power3.out" }
+      );
+    },
+    { scope: rowRef }
+  );
+
+  return (
+    <li ref={rowRef} className="relative will-change-transform">
+      <button
+        onClick={onOpen}
+        className="group flex min-h-[60px] w-full items-center gap-3 rounded-2xl border border-neutral-800/80 bg-neutral-950 px-4 py-3.5 text-left outline-none transition-colors duration-200 hover:border-neutral-600 hover:bg-neutral-900 focus-visible:border-neutral-500"
+      >
+        <span className="font-mono text-base font-semibold tracking-[0.22em] text-neutral-100">
+          {session.code}
+        </span>
+        <span className="flex items-center gap-1 text-[11px] text-neutral-500">
+          <Users className="size-3" aria-hidden />
+          {session.presence.length}
+        </span>
+        {!session.hasKey && (
+          <span
+            className="flex animate-fast-pulse items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-neutral-500"
+            title="Waiting for a member to hand you the session key"
+          >
+            <KeyRound className="size-3" aria-hidden />
+            key
+          </span>
+        )}
+        <span className="flex-1" />
+        {session.unread > 0 && (
+          <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[10px] font-bold text-black">
+            {session.unread > 99 ? "99+" : session.unread}
+          </span>
+        )}
+        <ArrowRight
+          className="size-4 text-neutral-600 transition-transform duration-200 group-hover:translate-x-0.5"
+          aria-hidden
+        />
+      </button>
+      <button
+        onClick={onClose}
+        aria-label={`Close session ${session.code} on this device`}
+        className="absolute -right-2 -top-2 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-500 outline-none transition-colors hover:border-neutral-500 hover:text-white"
+      >
+        <X className="size-3.5" aria-hidden />
+      </button>
+    </li>
   );
 }

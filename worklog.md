@@ -63,3 +63,34 @@ Stage Summary:
 - Crypto: ECDH(X25519->P-256 fallback) + HKDF-SHA256 + AES-256-GCM, per-message keys, Megolm-style wrapped key distribution, pre-join sealed history, tamper-marked failures.
 - Server stores ONLY: code, public keys, {senderFp, counter, iv, ciphertext}, wrapped key envelopes. Relay is blind. Gate + rate limits + security headers at the edge.
 - Key artifacts: src/lib/crypto/{e2ee,keyvault}.ts, src/lib/fast/{session-manager,api,relay}.ts, src/lib/relay-server.ts, src/instrumentation.ts, src/components/fast/{splash,gate,hub,chat}-screen.tsx, src/app/api/{gate,sessions/**}, prisma/schema.prisma, mini-services/chat-service.
+
+---
+Task ID: 3
+Agent: Z.ai Code (main orchestrator)
+Task: UI overhaul per user request — improve splash screen (bigger centered logo), remove ALL default element styling (everything bespoke), transparent scrollbars, GSAP animations throughout, and data-saving persistence tech.
+
+Work Log:
+- Installed gsap + @gsap/react; registered useGSAP plugin; all major motion now GSAP-driven (splash timeline, screen entrances, staggers, modal/popover/toast in-out, shake feedback, bubble pop-in). prefers-reduced-motion respected globally.
+- Splash rebuilt: logo scaled up to clamp(190px,58vw,330px), dead-centered via absolute grid (progress hairline positioned below center so it never shifts the logo), GSAP blur/scale entrance + breathing hold + two hairline pulse rings + progress bar + cinematic exit; click/tap/Enter skip.
+- Fully bespoke primitives (src/components/fast/primitives.tsx): FastModal (portal, GSAP enter/exit, bottom-sheet on mobile / centered on desktop, scroll lock, Esc + backdrop close), FastPopover + FastMenuItem (custom dropdown), FastButton, FastInput. Deleted shadcn usages: InputOTP, Dialog, AlertDialog, DropdownMenu, Button, Textarea, sonner Toaster (component file removed).
+- Custom toast system (src/components/fast/toast.tsx): module store + useSyncExternalStore + GSAP enter/exit, monochrome white-chip design, replaces sonner everywhere (gate/hub/chat/session-manager).
+- motion.tsx: ScreenShell (GSAP fade+rise screen entrance, as="main" etc.), staggerAnimChildren, shakeElement, pressFeedback helpers.
+- Gate rebuilt: hand-rolled 3-cell OTP (auto-advance, backspace-nav, arrow-nav, paste-fill, auto-submit), GSAP stagger entrance + GSAP shake/border-flash on rejection.
+- Hub rebuilt: custom ActionCards, SessionRow (GSAP pop-in per row — covers restored sessions appearing), bespoke modals for created-code/join/delete/leave, staggered entrance via data-anim.
+- Chat rebuilt: bespoke header (back, menu popover), custom bubbles with per-mount GSAP pop-in, custom composer (textarea + send), custom code/delete modals.
+- Data-saving tech (src/lib/fast/vault-db.ts): IndexedDB "fast-vault" (sessions store: code/createdAt/unread/heldKey; wire store: ciphertext blobs capped 200/session; meta store: this device's past fingerprints — public material only). Drafts in tab-scoped sessionStorage (plaintext drafts die with the tab). Security invariant kept: zero key material persisted.
+- session-manager wiring: persist wire blobs on live-message/send/history-fetch; debounce-persist session rows; restore-on-unlock (server-verify each code, forget dead ones, feed blobs as sealed entries, reconnect rooms via registerAndJoinRoom + keyrequest + polling); revealRestoredHistory() re-decrypts restored blobs in place once a member re-wraps the key (one-shot, restoredIds-scoped so zero-knowledge joins stay sealed); mine-attribution across reloads via persisted fingerprint set; delete/close/terminated wipe vault rows.
+- openSession now self-heals: unregistered (restored) sessions rejoin the relay + request key before fetching history.
+- globals.css: transparent scrollbars globally (webkit 6px rgba thumbs + transparent track/corner, Firefox scrollbar-color), .no-scrollbar utility, appearance:none on button/input/textarea, global focus-visible ring, removed all legacy CSS keyframes except fast-pulse.
+- Bug found & fixed during browser verification: restored messages rendered as "not mine" (fresh identity per boot) — persisted the device's past fingerprints (public data) in a meta store; mine = fp ∈ known-set. Verified white/right attribution after reload.
+
+Verification (agent-browser, gateway :81, 390x844 + 1440x900, two isolated sessions):
+- Splash: larger centered logo + hairline progress (20-splash-new.png); gate cells + shake/toast on 999 (21, 40); hub staggered (22); bottom-sheet created dialog (23).
+- E2EE two-client flow: create SBVRNF -> msg -> c2 join -> live reply (24-27); delete-for-everyone ejects both (33); re-create FUHCUH -> probe msg -> c2 join + reply (34, 35).
+- Data-saving: reload c1 -> gate -> hub restores FUHCUH w/ presence (29) -> open -> key re-wrap reveals history with correct mine attribution (36); draft "draft survives reload" restored in composer after full reload (37); deleted session wiped from vault (rows=[]) and does NOT resurrect (38+).
+- Desktop 1440x900 hub + chat clean, sticky footer bottom (38, 39). Console: HMR logs only; no page errors. ESLint 0 problems. dev.log: no runtime errors (only stale EADDRINUSE from earlier restart).
+
+Stage Summary:
+- Every visible element is bespoke (no stock component look); all motion is GSAP; scrollbars transparent.
+- Data-saving layer gives full session continuity across reloads while preserving the zero-knowledge model: ciphertext at rest, keys RAM-only, sealed until a member re-wraps.
+- Artifacts: src/lib/fast/vault-db.ts, src/components/fast/{toast,motion,primitives}.tsx, rebuilt fast/{splash,gate,hub,chat}-screen.tsx, session-manager vault wiring, globals.css/layout.tsx updates.

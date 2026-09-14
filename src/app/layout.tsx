@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Toaster } from "@/components/ui/sonner";
+import { FastToaster } from "@/components/fast/toast";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -38,17 +38,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning className="dark">
       <body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased bg-background text-foreground`}>
         {children}
-        <Toaster
-          theme="dark"
-          position="top-center"
-          toastOptions={{
-            style: {
-              background: "#0d0d0d",
-              border: "1px solid #262626",
-              color: "#fafafa",
-            },
-          }}
-        />
+        <FastToaster />
       </body>
     </html>
   );
