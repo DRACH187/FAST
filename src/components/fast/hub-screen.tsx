@@ -15,7 +15,6 @@ import {
   Plus,
   Radio,
   ShieldCheck,
-  Swords,
   Trash2,
   Users,
   X,
@@ -27,6 +26,13 @@ import { ProfileSheet } from "@/components/fast/profile-sheet";
 import { useLivePresence } from "@/lib/fast/live";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import {
+  ROSTER_EMPTY,
+  ROSTER_NOTE,
+  ROSTER_OFFLINE,
+  ROSTER_ONLINE,
+  ROSTER_SUB,
+  ROSTER_TITLE,
+  ROSTER_TOTAL,
   HUB_CODE_LABEL,
   HUB_CONFIRM_DELETE,
   HUB_DELETE,
@@ -49,6 +55,13 @@ const CODE_RE = /^[A-Z]{6}$/;
 
 const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const dayFmt = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short" });
+const rosterFmt = new Intl.DateTimeFormat(undefined, {
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
 /** "14:32" today, "12 JUN" earlier, "NEW" when nothing has landed yet. */
 function lastActivityLabel(s: SessionView): string {
@@ -78,10 +91,10 @@ type HubProps = {
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
-  onOpenIntel: () => void;
 };
 
 export function HubScreen({
+  identityFp,
   callsign,
   sessions,
   busy,
@@ -94,7 +107,6 @@ export function HubScreen({
   onOpenMap,
   onOpenWanted,
   onOpenLive,
-  onOpenIntel,
 }: HubProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const [joinCode, setJoinCode] = useState("");
@@ -103,6 +115,12 @@ export function HubScreen({
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  // boss-only roll of every callsign that ever stepped in
+  const [rosterOpen, setRosterOpen] = useState(false);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  type RosterRow = { nickname: string; role: "member" | "boss"; online: boolean; firstSeen: string; lastSeen: string | null };
+  const [rosterRows, setRosterRows] = useState<RosterRow[] | null>(null);
   // one war cry per visit — fresh from the house voice
   const warCry = useHouseLine(HUB_TAGLINES);
   const startLabel = useHouseLine(HUB_START);
@@ -173,6 +191,37 @@ export function HubScreen({
     void navigator.clipboard.writeText(code);
     toast.success("Gekopieer. Stuur dit.");
   }, []);
+
+  const openRoster = useCallback(async () => {
+    if (!callsign || callsign.role !== "boss") return;
+    setRosterOpen(true);
+    setRosterLoading(true);
+    setRosterError(null);
+    try {
+      const res = await fetch("/api/roster", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fingerprint: identityFp, token: callsign.token }),
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        roll?: RosterRow[];
+        error?: string;
+      };
+      if (!res.ok || data.ok !== true || !Array.isArray(data.roll)) {
+        setRosterError(typeof data.error === "string" ? data.error : "Die rol is weg — probeer weer");
+        setRosterRows(null);
+      } else {
+        setRosterRows(data.roll);
+      }
+    } catch {
+      setRosterError("Netwerk onbereikbaar");
+      setRosterRows(null);
+    } finally {
+      setRosterLoading(false);
+    }
+  }, [callsign, identityFp]);
 
   return (
     <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col">
@@ -325,6 +374,14 @@ export function HubScreen({
 
           {/* quieter utilities */}
           <section data-anim aria-label="More" className="flex flex-col gap-2">
+            {callsign?.role === "boss" && (
+              <ActionRow
+                icon={Users}
+                label={ROSTER_TITLE}
+                hint="Elke callsign wat ooit ingestap het — net joune"
+                onClick={() => void openRoster()}
+              />
+            )}
             <ActionRow
               icon={Trash2}
               label="MOER ’N WERF UIT"
@@ -353,9 +410,8 @@ export function HubScreen({
         aria-label="Primary"
         className="fixed inset-x-0 bottom-0 z-30 border-t border-neutral-900 bg-black/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
       >
-        <div className="mx-auto grid max-w-md grid-cols-5 sm:max-w-2xl lg:max-w-3xl">
+        <div className="mx-auto grid max-w-md grid-cols-4 sm:max-w-2xl lg:max-w-3xl">
           <TabButton icon={MessagesSquare} label="Werwe" active onClick={() => undefined} />
-          <TabButton icon={Swords} label="War Room" onClick={onOpenIntel} />
           <TabButton icon={Crosshair} label="Wanted" onClick={onOpenWanted} />
           <TabButton icon={MapIcon} label="Kaart" onClick={onOpenMap} />
           <TabButton icon={Radio} label="Live" onClick={onOpenLive} />
@@ -458,6 +514,72 @@ export function HubScreen({
         </div>
       </FastModal>
 
+      {/* boss-only roll */}
+      <FastModal open={rosterOpen} onClose={() => setRosterOpen(false)} label="Boss roll" wide>
+        <div className="flex max-h-[80dvh] flex-col gap-4 overflow-y-auto">
+          <div className="text-center">
+            <h2 className="gang-font text-3xl text-white">{ROSTER_TITLE}</h2>
+            <p className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              {ROSTER_SUB}
+            </p>
+          </div>
+
+          {rosterLoading && (
+            <p className="py-8 text-center font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-500">
+              Haal die rol…
+            </p>
+          )}
+
+          {rosterError && !rosterLoading && (
+            <p className="rounded-xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-center text-sm font-bold text-neutral-300">
+              {rosterError}
+            </p>
+          )}
+
+          {rosterRows !== null && !rosterLoading && (
+            rosterRows.length === 0 ? (
+              <p className="py-8 text-center text-sm font-semibold text-neutral-500">{ROSTER_EMPTY}</p>
+            ) : (
+              <>
+                <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
+                  {ROSTER_TOTAL(rosterRows.length)} · {rosterRows.filter((r) => r.online).length} {ROSTER_ONLINE}
+                </p>
+                <ul className="flex flex-col gap-2">
+                  {rosterRows.map((r) => (
+                    <li
+                      key={r.nickname}
+                      className="flex items-center gap-3 rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5"
+                    >
+                      <span
+                        aria-hidden
+                        className={`size-2 shrink-0 rounded-full ${r.online ? "animate-fast-pulse bg-white" : "bg-neutral-700"}`}
+                      />
+                      <span
+                        className={`min-w-0 flex-1 truncate text-neutral-100 ${
+                          r.role === "boss" ? "drach-font text-lg leading-none text-white" : "font-mono text-sm font-bold uppercase tracking-[0.14em]"
+                        }`}
+                      >
+                        {r.nickname}
+                      </span>
+                      <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">
+                        {r.online ? ROSTER_ONLINE : ROSTER_OFFLINE}
+                      </span>
+                      <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600">
+                        {rosterFmt.format(new Date(r.firstSeen))}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          )}
+
+          <p className="border-t border-neutral-900 pt-3 text-center text-[11px] font-semibold leading-relaxed text-neutral-500">
+            {ROSTER_NOTE}
+          </p>
+        </div>
+      </FastModal>
+
       {/* leave (local close) */}
       <FastModal
         open={leaveCode !== null}
@@ -544,8 +666,8 @@ function TabButton({
       }`}
     >
       <Icon className="size-5" aria-hidden />
-      {/* 320px worst case: 64px-wide tab — tighter tracking + nowrap keeps
-          "WAR ROOM" on one line with ~10px slack, never clipped */}
+      {/* 320px worst case: ~80px-wide tab — tighter tracking + nowrap keeps
+          the longest label on one line, never clipped */}
       <span className="whitespace-nowrap font-mono text-[9px] font-bold uppercase tracking-[0.16em]">{label}</span>
       <span
         aria-hidden

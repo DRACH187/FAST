@@ -33,7 +33,7 @@ import {
  *
  * TONE LAW: real, publicly documented gangs are described in a neutral,
  * encyclopedic, public-safety tone. Crew banter lives ONLY in the fictional
- * crew fields (FAST GUNS = home, AMERICANS = ally, VARADOS + BRITISH =
+ * crew fields (FAST GUNS = home, AMERICANS = ally, VARADOS =
  * rival) and is strictly crew-name trash talk: no people, no operations,
  * no instructions — turf branding and scoreboards only.
  */
@@ -125,19 +125,19 @@ const SYSTEM = `You are the data desk of a South African community-safety awaren
 
 TONE LAW (absolute):
 - Real, publicly documented gangs (Americans, Hard Live Kids, Junky Funky Kids, 26s, 27s, 28s, Clever Kids, Numbers gangs) are described in a NEUTRAL, encyclopedic, public-safety tone. Facts only, no glorification.
-- FAST GUNS, AMERICANS, VARADOS and BRITISH are FICTIONAL street crews in the app's turf-branding game. Light trash talk about the rival crew NAMES (VARADOS, BRITISH) is allowed in block "note" fields ONLY, in Afrikaans/English banter style. Nothing about hurting anyone: no people, no operations, no weapons, no instructions — scoreboards and brand banter only.
+- FAST GUNS, AMERICANS and VARADOS are FICTIONAL street crews in the app's turf-branding game. Light trash talk about the rival crew NAME (VARADOS) is allowed in block "note" fields ONLY, in Afrikaans/English banter style. Nothing about hurting anyone: no people, no operations, no weapons, no instructions — scoreboards and brand banter only.
 - Never name or describe real individuals. Never include anything operational.`;
 
 const PROMPT = `Build a South Africa community-safety awareness feed: 16 documented areas (townships, suburbs, hotspots) spread across ALL 9 provinces.
 
 JSON shape (exactly):
-{"hotspots":[{"area":"Manenberg","province":"Western Cape","lat":-33.976,"lng":18.569,"intensity":4,"summary":"One or two neutral sentences on documented public-safety context.","gangs":[{"name":"Hard Live Kids","threat":"HIGH","notes":"Neutral public-safety note."}],"blocks":[{"name":"Gamka Street flats","gang":"FAST GUNS","note":"Hype for FAST GUNS blocks, light crew-name banter for VARADOS/BRITISH blocks, neutral for documented gangs."}]}]}
+{"hotspots":[{"area":"Manenberg","province":"Western Cape","lat":-33.976,"lng":18.569,"intensity":4,"summary":"One or two neutral sentences on documented public-safety context.","gangs":[{"name":"Hard Live Kids","threat":"HIGH","notes":"Neutral public-safety note."}],"blocks":[{"name":"Gamka Street flats","gang":"FAST GUNS","note":"Hype for FAST GUNS blocks, light crew-name banter for VARADOS blocks, neutral for documented gangs."}]}]}
 
 Rules:
 - Use REAL documented area names and REAL approximate coordinates inside South Africa. Provinces exactly: Eastern Cape, Free State, Gauteng, KwaZulu-Natal, Limpopo, Mpumalanga, North West, Northern Cape, Western Cape. Weight toward the Western Cape (Cape Flats, Elsies River) where documented gang activity is best known.
 - intensity: 1 (quiet) to 5 (severe), integer.
 - gangs: 0-3 real publicly documented groups per area, neutral tone. threat: MODERATE | HIGH | SEVERE.
-- blocks: 0-4 real sub-neighbourhoods (sections, sites, streets, flats) per area for at least 10 areas. gang = the crew/group associated with that block: FAST GUNS (home turf hype, Cape Flats/Elsies River areas), AMERICANS (friendly), VARADOS or BRITISH (rival crews — mock the CREW NAME in the note), or a real documented gang name (neutral note).
+- blocks: 0-4 real sub-neighbourhoods (sections, sites, streets, flats) per area for at least 10 areas. gang = the crew/group associated with that block: FAST GUNS (home turf hype, Cape Flats/Elsies River areas), AMERICANS (friendly), VARADOS (rival crew — mock the CREW NAME in the note), or a real documented gang name (neutral note).
 - Summaries and notes: max 2 sentences each. No markdown. JSON only.`;
 
 // -------------------------------------------------------------- sanitiser
@@ -236,7 +236,7 @@ type FallbackArea = {
 /**
  * Curated HUIS INTEL (offline) dataset: ~28 documented South African areas,
  * all 9 provinces. Real gangs stay neutral/encyclopedic; the fictional crews
- * (FAST GUNS home, AMERICANS ally, VARADOS + BRITISH rival) live in the
+ * (FAST GUNS home, AMERICANS ally, VARADOS rival) live in the
  * blocks with crew-name banter only. Block names are editorially curated
  * from public reporting where available.
  */
@@ -439,7 +439,7 @@ const FALLBACK: FallbackArea[] = [
     ],
     blocks: [
       { name: "Dark City", gang: "28s", note: "Publicly documented Alexandra section — neutral note." },
-      { name: "Beirut", gang: "BRITISH", note: "Die BRITISH sê hulle regeer hier. Niemand het hulle al gesien nie." },
+      { name: "Beirut", gang: "VARADOS", note: "VARADOS sê hulle regeer hier. Niemand het hulle al gesien nie." },
     ],
   },
   {
@@ -471,7 +471,7 @@ const FALLBACK: FallbackArea[] = [
       { name: "28s", threat: "HIGH", notes: "Numbers-gang network documented on the East Rand." },
     ],
     blocks: [
-      { name: "Moleleki", gang: "BRITISH", note: "BRITISH claims Moleleki van die UK af. Ver weg, soos hul gevaar." },
+      { name: "Moleleki", gang: "VARADOS", note: "VARADOS claims Moleleki. Al ver weg, soos hul gevaar." },
       { name: "Zonkezizwe", gang: "28s", note: "Documented East Rand section in public safety records." },
     ],
   },
@@ -487,7 +487,7 @@ const FALLBACK: FallbackArea[] = [
       { name: "26s", threat: "MODERATE", notes: "Numbers-gang presence documented in public reporting." },
     ],
     blocks: [
-      { name: "Phola Park", gang: "BRITISH", note: "Die BRITISH se blokke is so hul teetime — koud en ver van hier." },
+      { name: "Phola Park", gang: "VARADOS", note: "VARADOS se blokke is so hul teetime — koud en leeg." },
       { name: "Umthambeka", gang: "26s", note: "Publicly documented section — neutral note." },
     ],
   },

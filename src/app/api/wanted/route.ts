@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { clientIp, json, rateLimit } from "@/lib/server-guard";
+import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
 
 /**
  * WANTED board — zero-knowledge encrypted CASE FILES.
@@ -91,6 +91,8 @@ const deleteSchema = z.object({
   action: z.literal("delete"),
   fingerprint: fpSchema,
   id: z.string().min(8).max(64),
+  // optional boss attestation: the DRACH callsign may burn ANY case
+  token: z.string().min(8).max(1024).optional(),
 });
 
 const reseedPostSchema = z.object({
@@ -396,13 +398,17 @@ export async function POST(req: Request) {
     return json({ ok: true, restored });
   }
 
-  // delete — the creator's fingerprint must match (public material compare)
+  // delete — the creator's fingerprint must match, OR the requester carries
+  // a valid BOSS attestation (DRACH moderation). Public material compare only.
   const rec = memory.get(body.id);
   if (!rec) {
     return json({ ok: true, deleted: true }); // already gone — idempotent burn
   }
   if (rec.creatorFp !== body.fingerprint) {
-    return json({ ok: false, error: "Only the poster can burn this." }, 403);
+    const attested = body.token ? verifyAttestation(body.token, body.fingerprint) : null;
+    if (!attested || attested.role !== "boss") {
+      return json({ ok: false, error: "Only the poster or the boss can burn this." }, 403);
+    }
   }
   for (const m of rec.media) {
     if (m) memory.__bytes = (memory.__bytes ?? 0) - (m.iv.length + m.ciphertext.length);

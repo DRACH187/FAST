@@ -7,7 +7,7 @@
  *
  * LAWS OF THE HOUSE:
  *  - FAST GUNS and the AMERICANS get hyped. Always.
- *  - VARADOS and the BRITISH get smeared. Always. They are jokes with legs.
+ *  - VARADOS gets smeared. Always. A joke with legs.
  *  - No mercy in the grammar. Short sentences. Hard verbs.
  *  - Vulgar means street vulgar: kak, moer, donner, bliksem, voetsek, pis.
  *    No slurs against people. No sexual filth. The house swears, it never degrades.
@@ -65,7 +65,7 @@ export const VARADOS_BURN = [
   "Die Varados se grootste talente: wegkruipertjie en huil in die hoek.",
   "VARADOS beteken in hul taal: 'ons donner dit weer' — en hulle doen. Elke keer teen hulself.",
   "Varados wil 'n groot span wees maar hulle asem te hard en hul bene te sag.",
-  "Selfs die British lag vir Varados. As jou vyand jou uitlag, boetie, dis klaar.",
+  "Selfs die straat lag vir Varados. As jou vyand jou uitlag, boetie, dis klaar.",
   "Varados het 'n plan gehad. Toe stap ons in en die plan het pis en loop.",
   "VARADOS: baie geraas, geen kolle op die teiken, geen respek op die straat.",
   "Varados word wakker, verloor die dag, gaan slaap. Herhaal tot hul dood.",
@@ -74,23 +74,12 @@ export const VARADOS_BURN = [
   "Varados het een talen: praat. Twee as jy tel hoe vinnig hulle vlug.",
 ] as const;
 
-export const BRITISH_BURN = [
-  "Die BRITISH praat groot Engels en bly klein oorsee in hul hartjie.",
-  "British boytjies dra union jacks en geen balle nie — net tee en tande.",
-  "Die British storm soos tee-time — te laat, te stadig, te sag om hier te survive.",
-  "Brits het beloof om terug te kom. Ons wag nog, boetie. Ons wag nog.",
-  "Die British se plan B is om plan A te huil en dan huistoe te hardloop.",
-  "Tee-drinkers met jalouse. BRITISH is 'n grap, nie 'n bedreiging nie.",
-  "British kom die blok in soos toeriste — en vertrek soos toeriste wat gebliksem is.",
-] as const;
-
 export const RIVAL_TICKER = [
   "VARADOS het die blok probeer neem. Die blok het hulle geneem — vir 'n grap.",
-  "BRITISH sê hulle kom oorsee. Goed — meer tyd vir ons om te oefen.",
-  "Rooi-wit-blou bo alles. Varados en British: wit vlae altyd gereed.",
-  "Fast Guns loop, Varados hardloop, British gly op hul eie moed.",
+  "Rooi-wit-blou bo alles. Varados: wit vlae altyd gereed.",
+  "Fast Guns loop, Varados hardloop, almal ander kyk.",
   "187. Die nommer wat Varados laat slaap met die lig aan en die deur gesperr.",
-  "Varados + British = baie monde, geen vlam. Elke keer dieselfde storie.",
+  "Varados = baie monde, geen vlam. Elke keer dieselfde storie.",
 ] as const;
 
 // ------------------------------------------------------------------- gate
@@ -131,7 +120,7 @@ export const HUB_TAGLINES = [
   "HARD WERF, HARDE MENSE",
   "187 · WAPENS UIT, WERELD SKERP",
   "SKIET EERS, HUIL NOOIT",
-  "VARADOS VREET STOF. BRITISH OOK.",
+  "VARADOS VREET STOF. ALTYD.",
   "ROOI-WIT-BLOU OF NIKS",
 ] as const;
 
@@ -262,11 +251,9 @@ export const MAP_TURF_NOTE = [
 export const MAP_VARADOS_JAB = [
   "VARADOS se turf lyk soos 'n verlate grond — hulle kan nie eens reg uitkom nie.",
   "Waar VARADOS loop, huil die straat. Van skande.",
-  "Die BRITISH se blokke is so hul gevaar: op die kaart verdwyn hulle.",
   "Varados beteken 'val'. Hulle leef hul naam. Elke dag.",
 ] as const;
 export const MAP_INTENSITY = { 1: "STIL", 2: "WARM", 3: "WARM", 4: "HOT", 5: "OORLOG" } as const;
-export const MAP_ANALYTICS_TITLE = "OORLOG ANALITIEK";
 export const MAP_SOURCE_GEMINI = "AI INTEL · GEMINI";
 export const MAP_SOURCE_FALLBACK = "HUIS INTEL · AF-LYN";
 export const MAP_THEME_DARK = "DONKER STEDE";
@@ -275,38 +262,15 @@ export const MAP_TAP_AREA = "TIK 'N GEBIED · DIE KAART VOLG";
 export const MAP_OFFLINE_NOTE = "Geen lyn, geen kaart nie — die wêreld buite wag.";
 export const MAP_PICK_COUNTRY = "WYS HEEL SA";
 
-// --------------------------------------------------------------------- AI
+// ------------------------------------------------------------------ roster
 
-export const AI_TITLE = "WAR ROOM";
-export const AI_SUB = [
-  "VRA DIE BOETIE · DIE WERF SE EIE ORAKEL",
-  "DIE BOETIE ANTWOORD · SABELA REËLS",
-] as const;
-export const AI_PLACEHOLDER = ["Vra die Boetie…", "Skiet jou vraag…"] as const;
-export const AI_GREETING = [
-  "Mooi loop, ouen. Die Boetie staan wakker. Wat wil jy weet?",
-  "Ja boetie, die Boetie is hier. Vra — maar moenie sag vra nie.",
-] as const;
-export const AI_QUICK_CHIPS = [
-  "Roast VARADOS",
-  "Roast die BRITISH",
-  "Hoekom is FAST GUNS die beste?",
-  "Sê iets oor die Americans",
-  "Verduidelik sabela vir 'n nuwe ou",
-] as const;
-export const AI_NO_KEY = [
-  "Die AI is doeas — daar's geen GEMINI_API_KEY nie. Boss moet 'n gratis AIza…-sleutel in Vercel gooi, dan word hierdie ding lewendig.",
-  "Geen sleutel, geen Boetie. Sit GEMINI_API_KEY in Vercel (gratis AIza…-sleutel van Google AI Studio) en probeer weer.",
-] as const;
-export const AI_FAILED = [
-  "Die Boetie se lyn is dood. Probeer weer, ouen.",
-  "Gemini het kak. Probeer weer.",
-] as const;
-export const AI_BLOCKED = [
-  "Die Boetie swyg oor daai een — sy leierskap is te sag vir die vraag. Vra iets anders.",
-  "Nee, daai vraag het by die verkeerde ou geland. Skop weer, ander rigting.",
-] as const;
-export const AI_THINKING = ["Die Boetie dink…", "Hy skarrel…", "Wag, hy sny net sy gebraai…"] as const;
+export const ROSTER_TITLE = "DIE WERF ROL";
+export const ROSTER_SUB = "ELKE CALLSIGN WAT OIT HIER GESTAP HET · NET VIR DIE BOSS SE OË";
+export const ROSTER_EMPTY = "Die rol is skoon — nog geen ouens het ingestap nie.";
+export const ROSTER_ONLINE = "AAN";
+export const ROSTER_OFFLINE = "WEG";
+export const ROSTER_NOTE = "Noem name, rolle en tyd — niks meer nie. Geen e-pos, geen IP, geen sleutels nie. Hierdie werf hou NIKS van jou toestel nie.";
+export const ROSTER_TOTAL = (n: number) => `${n} OUENS OP DIE ROL`;
 
 // ----------------------------------------------------------------- splash
 
@@ -315,7 +279,6 @@ export const SPLASH_CREDIT = "made by DRACH — GUNS BO SKIET N SMOGGLE";
 export const SPLASH_SKIP = "TIK OM IN TE KOM";
 export const SPLASH_TICKER = [
   "VARADOS VREET STOF",
-  "BRITISH BLY OORSEE",
   "187 TOT DIE EINDE",
   "ROOI-WIT-BLOU BO ALLES",
   "FAST GUNS KOM DEUR",

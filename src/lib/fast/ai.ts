@@ -183,33 +183,3 @@ export async function geminiGenerate(
 
   return callWithFallback(body, apiKey, timeoutMs);
 }
-
-/**
- * Multi-turn chat variant for the WAR ROOM. `history` is the visible
- * conversation (already trimmed by the caller); the persona rides in as
- * system_instruction so it can never be drowned out by long turns.
- */
-export async function geminiChat(
-  history: Array<{ role: "user" | "assistant"; content: string }>,
-  system: string,
-  timeoutMs = 30_000
-): Promise<GeminiResult> {
-  const apiKey = geminiApiKey();
-  if (!apiKey) return { text: null, reason: "no-key" };
-
-  const contents = history.map((turn) => ({
-    role: turn.role === "assistant" ? "model" : "user",
-    parts: [{ text: turn.content }],
-  }));
-
-  return callWithFallback(
-    {
-      contents,
-      systemInstruction: { parts: [{ text: system }] },
-      generationConfig: { temperature: 1.0, maxOutputTokens: 1024 },
-      safetySettings: SAFETY_SETTINGS,
-    },
-    apiKey,
-    timeoutMs
-  );
-}

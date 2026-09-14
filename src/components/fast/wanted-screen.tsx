@@ -206,11 +206,13 @@ type WantedScreenProps = {
   myFp: string;
   myNickname: string;
   myRole: Role;
+  /** Signed callsign attestation — lets the BOSS burn any case. */
+  myToken: string;
 };
 
 // --------------------------------------------------------------- component
 
-export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: WantedScreenProps) {
+export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken }: WantedScreenProps) {
   const [mounted, setMounted] = useState(false);
   const [shownOpen, setShownOpen] = useState(open);
   const [entries, setEntries] = useState<BoardEntry[]>([]);
@@ -545,7 +547,12 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         const res = await fetch(LIST_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "delete", fingerprint: myFp, id: entry.wire.id }),
+            body: JSON.stringify({
+              action: "delete",
+              fingerprint: myFp,
+              id: entry.wire.id,
+              token: myToken || undefined,
+            }),
           cache: "no-store",
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -617,7 +624,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         toast.error("Netwerk onbereikbaar");
       }
     },
-    [fetchBoard, myFp]
+    [fetchBoard, myFp, myToken]
   );
 
   // ------------------------------------------------------------- derived
@@ -982,6 +989,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole }: Wanted
         <CaseFile
           entry={detail}
           myFp={myFp}
+          isBoss={myRole === "boss"}
           exhibitUrls={exhibitUrls.current}
           fetchExhibit={fetchExhibit}
           onBurn={() => void burn(detail)}
@@ -1218,6 +1226,8 @@ function WantedCard({
 type CaseFileProps = {
   entry: BoardEntry;
   myFp: string;
+  /** The DRACH callsign may burn any case on the board. */
+  isBoss: boolean;
   exhibitUrls: Map<string, string>;
   fetchExhibit: (postId: string, index: number) => Promise<{ iv: string; ciphertext: string; mime: string } | null>;
   onBurn: () => void;
@@ -1233,6 +1243,7 @@ type CaseFileProps = {
 function CaseFile({
   entry,
   myFp,
+  isBoss,
   exhibitUrls,
   fetchExhibit,
   onBurn,
@@ -1309,7 +1320,7 @@ function CaseFile({
             </span>
           </div>
           <span className="flex-1" />
-          {mine && (
+          {(mine || isBoss) && (
             <FastButton
               variant="danger"
               size="sm"
@@ -1317,7 +1328,7 @@ function CaseFile({
               className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em]"
             >
               <Trash2 className="size-3.5" aria-hidden />
-              BRAND
+              {mine ? "BRAND" : "BOSS BRAND"}
             </FastButton>
           )}
         </div>

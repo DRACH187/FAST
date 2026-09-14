@@ -19,7 +19,7 @@ gsap.registerPlugin(useGSAP);
  * Click / tap / Enter to skip.
  */
 
-const LOGO_CLAMP = "clamp(190px, 58vw, 330px)";
+const LOGO_CLAMP = "clamp(190px, min(58vw, 40vh), 360px)";
 
 const CREDIT_LINE_1 = "MADE BY";
 const WORDMARK = "FAST GUNS";
@@ -258,7 +258,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
             />
           </div>
           <div ref={wordmark} className="mt-5 flex flex-col items-center gap-2.5 px-6 text-center opacity-0">
-            <h1 className="gang-font text-5xl leading-none text-white sm:text-6xl [text-shadow:0_0_30px_rgba(255,255,255,0.28)]">
+            <h1 className="gang-font text-5xl leading-none text-white sm:text-6xl lg:text-7xl [text-shadow:0_0_30px_rgba(255,255,255,0.28)]">
               {WORDMARK}
             </h1>
             <span className="flex items-center gap-2.5 text-neutral-400" aria-label="187">

@@ -1,12 +1,12 @@
 /**
- * FAST GUNS — TURF / WAR BOARD data layer.
- * ========================================
+ * FAST GUNS — TURF data layer.
+ * ============================
  * Block-and-neighbourhood granularity for the SURROUNDINGS map: every
  * documented area can carry sub-places ("blocks") and every block carries
  * an allegiance from the house's point of view.
  *
  * LAWS OF THE HOUSE (same as copy.ts):
- *  - FAST GUNS = "home". AMERICANS = "ally". VARADOS + BRITISH = "rival".
+ *  - FAST GUNS = "home". AMERICANS = "ally". VARADOS = "rival".
  *  - Every REAL, publicly documented gang stays "documented" and neutral —
  *    no crew branding on encyclopedic public-safety data.
  *  - Crew allegiance is decided HERE, deterministically from the gang
@@ -16,11 +16,6 @@
  * Shared by the server (hotspots route sanitiser) and the client
  * (map screen) — pure data, zero framework imports.
  */
-
-import { MAP_VARADOS_JAB } from "@/lib/fast/copy";
-
-/* copy.ts is a pure-data module (no framework imports) so it is safe to
- * import from both the server route and this client-shared data layer. */
 
 // -------------------------------------------------------------- allegiance
 
@@ -40,7 +35,7 @@ export type TurfBlock = {
 
 /**
  * Deterministic allegiance mapping: FAST GUNS = home, AMERICANS = ally,
- * VARADOS + BRITISH = rival, every real documented gang = documented.
+ * VARADOS = rival, every real documented gang = documented.
  * Matching is normalised (punctuation/case/"the"-less variants) so the AI
  * feed can never drift the mapping by writing "FAST GUNS 187" or
  * "fast guns crew" — the house crews always classify correctly.
@@ -51,24 +46,24 @@ export function classifyGang(gang: string): BlockAllegiance {
   if (norm.includes("fastgun")) return "home";
   if (norm.includes("american")) return "ally";
   if (norm.includes("varados")) return "rival";
-  if (norm.includes("british") || norm.includes("brits")) return "rival";
   return "documented";
 }
 
-/** Which named rival crew a rival block belongs to (for split scoreboard). */
-export function rivalCrew(gang: string): "varados" | "british" {
-  return (gang ?? "").trim().toLowerCase().includes("brit") ? "british" : "varados";
+/** True when a block's gang names a crew the house refuses to platform. */
+export function isBannedCrew(gang: string): boolean {
+  const norm = (gang ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return norm.includes("brit") || norm.includes("british");
 }
 
 // ------------------------------------------------------------ sanitisation
 // Shared, framework-free scrubbers for the hotspots route: the AI feed is
 // never trusted as-is — every string is cleaned, coordinates clamped to SA,
-// allegiance re-derived HERE, and blocks deduped + capped.
+// allegiance re-derived HERE, banned crews dropped, blocks deduped + capped.
 
 /** Hard cap: no area carries more than 6 blocks on the wire. */
 export const MAX_BLOCKS_PER_AREA = 6;
 
-/** SA bounding box (mirrors SA_LIMITS on the map screen). */
+/** SA bounding box (mirrors the map viewport clamp). */
 export const SA_LAT_RANGE = [-34.95, -21.9] as const;
 export const SA_LNG_RANGE = [16.3, 33.3] as const;
 
@@ -121,9 +116,10 @@ export function canonicalProvince(raw: unknown): string | null {
 }
 
 /**
- * Scrub a raw blocks array into wire-safe TurfBlocks: cleaned text, deduped
- * by (case-insensitive) name, capped at 6, and allegiance ALWAYS re-derived
- * from the gang name — the AI's own allegiance field is never trusted.
+ * Scrub a raw blocks array into wire-safe TurfBlocks: cleaned text, banned
+ * crews dropped outright, deduped by (case-insensitive) name, capped at 6,
+ * and allegiance ALWAYS re-derived from the gang name — the AI's own
+ * allegiance field is never trusted.
  */
 export function sanitizeTurfBlocks(raw: ReadonlyArray<unknown> | undefined | null): TurfBlock[] {
   if (!Array.isArray(raw)) return [];
@@ -135,6 +131,7 @@ export function sanitizeTurfBlocks(raw: ReadonlyArray<unknown> | undefined | nul
     const name = cleanText(rec.name, 48);
     const gang = cleanText(rec.gang, 40);
     if (!name || !gang) continue;
+    if (isBannedCrew(gang)) continue; // refused crews never reach the wire
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -149,29 +146,39 @@ export function sanitizeTurfBlocks(raw: ReadonlyArray<unknown> | undefined | nul
   return out;
 }
 
-// -------------------------------------------------------------- scoreboard
+// ------------------------------------------------------------------- chips
+
+/** Monochrome chip styling per allegiance (home solid white, rival struck). */
+export const BLOCK_CHIP_CLASS: Record<BlockAllegiance, string> = {
+  home: "border-white bg-white text-black",
+  ally: "border-neutral-300 text-neutral-100",
+  rival: "border-neutral-600 text-neutral-400 line-through",
+  documented: "border-neutral-700 text-neutral-500",
+};
+
+// ---------------------------------------------------------------- taglines
+
+/** Rotating disrespect ticker: VARADOS jabs from the house voice. */
+export const WAR_BOARD_TAGLINES: readonly string[] = [
+  "VARADOS se turf lyk soos 'n verlate grond — hulle kan nie eens reg uitkom nie.",
+  "Waar VARADOS loop, huil die straat. Van skande.",
+  "Varados beteken 'val'. Hulle leef hul naam. Elke dag.",
+  "Fast Guns loop, Varados hardloop, almal ander kyk.",
+] as const;
+
+// ---------------------------------------------------------------- tally
 
 export type TurfCount = {
   home: number;
   ally: number;
   rival: number;
   documented: number;
-  varados: number;
-  british: number;
   totalBlocks: number;
 };
 
-/** Count blocks per allegiance (and per rival crew) across a whole feed. */
+/** Count blocks per allegiance across a feed (or a single area). */
 export function countTurf(hotspots: ReadonlyArray<{ blocks?: TurfBlock[] }>): TurfCount {
-  const tally: TurfCount = {
-    home: 0,
-    ally: 0,
-    rival: 0,
-    documented: 0,
-    varados: 0,
-    british: 0,
-    totalBlocks: 0,
-  };
+  const tally: TurfCount = { home: 0, ally: 0, rival: 0, documented: 0, totalBlocks: 0 };
   for (const h of hotspots) {
     const blocks = Array.isArray(h?.blocks) ? h.blocks : [];
     for (const b of blocks) {
@@ -185,8 +192,6 @@ export function countTurf(hotspots: ReadonlyArray<{ blocks?: TurfBlock[] }>): Tu
           break;
         case "rival":
           tally.rival += 1;
-          if (rivalCrew(b.gang) === "british") tally.british += 1;
-          else tally.varados += 1;
           break;
         default:
           tally.documented += 1;
@@ -195,28 +200,3 @@ export function countTurf(hotspots: ReadonlyArray<{ blocks?: TurfBlock[] }>): Tu
   }
   return tally;
 }
-
-// ------------------------------------------------------------------- chips
-
-/** Monochrome chip styling per allegiance (home solid white, rival struck). */
-export const BLOCK_CHIP_CLASS: Record<BlockAllegiance, string> = {
-  home: "border-white bg-white text-black",
-  ally: "border-neutral-300 text-neutral-100",
-  rival: "border-neutral-600 text-neutral-400 line-through",
-  documented: "border-neutral-700 text-neutral-500",
-};
-
-// ---------------------------------------------------------------- taglines
-
-/** Extra house jabs for the war board rotation (BRITISH edition). */
-export const WAR_BOARD_BRITISH_JABS = [
-  "Die BRITISH se blokke is so hul teetime: koud, leeg en ver van hier.",
-  "BRITISH sê hulle val in. Die kaart sê hulle val uit.",
-  "Union Jack waai nêrens hier nie — hier hang net 187 vlae.",
-] as const;
-
-/** Rotating disrespect ticker: VARADOS jabs from the house voice + BRITISH. */
-export const WAR_BOARD_TAGLINES: readonly string[] = [
-  ...MAP_VARADOS_JAB,
-  ...WAR_BOARD_BRITISH_JABS,
-];

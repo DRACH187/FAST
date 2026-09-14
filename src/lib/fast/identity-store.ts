@@ -4,7 +4,7 @@
  * Three process-wide tables, all strictly operational:
  *
  *  1. CALLSIGNS  fingerprint -> { nickname, role }
- *  2. OWNERS     lowercased nickname -> { fp, passHash, role }
+ *  2. OWNERS     lowercased nickname -> { fp, passHash, role, firstSeen }
  *     Devices rotate fingerprints on every reload (ephemeral keys are
  *     RAM-only by design), so ownership is NOT bound to a fingerprint: the
  *     first registration mints a random NICK PASS (returned once, stored by
@@ -14,6 +14,11 @@
  *     requires the boss key on first claim (verified constant-time server
  *     side).
  *  3. LIVE       fingerprint -> { nickname, role, since, lastSeen }
+ *
+ *  4. ROSTER — the boss-only roll (see listRoster): pseudonymous callsigns
+ *     only. The app collects NO emails, NO phone numbers, NO IPs-at-rest
+ *     and NO real names — there is nothing else to show. Everything here
+ *     dies with the process.
  *
  * Serverless reality: per-warm-instance state exactly like the chat memory
  * store. Clients re-assert their callsign on every app entry and heartbeat
@@ -28,7 +33,7 @@ export type Role = "member" | "boss";
 
 export type CallsignRec = { nickname: string; role: Role; updatedAt: number };
 export type LiveRec = { nickname: string; role: Role; since: number; lastSeen: number };
-type Owner = { fp: string; passHash: string; role: Role };
+type Owner = { fp: string; passHash: string; role: Role; firstSeen: number };
 
 const callsigns = new Map<string, CallsignRec>(); // fp -> record
 const nicknameOwner = new Map<string, Owner>(); // lowercased nickname -> owner
@@ -112,7 +117,7 @@ export function registerCallsign(
       return { ok: false, error: "This callsign is protected. Boss key required.", status: 403 };
     }
     const pass = mintNickPass();
-    nicknameOwner.set(key, { fp: fingerprint, passHash: hashPass(pass), role });
+    nicknameOwner.set(key, { fp: fingerprint, passHash: hashPass(pass), role, firstSeen: now });
     callsigns.set(fingerprint, { nickname, role, updatedAt: now });
     mirrorLive(fingerprint, nickname, role);
     return { ok: true, nickname, role, nickPass: pass };
@@ -195,4 +200,48 @@ export function listLive(): LiveEntry[] {
 
 export function dropLive(fingerprint: string): void {
   live.delete(fingerprint);
+}
+
+// ------------------------------------------------------------------- roster
+
+export type RosterEntry = {
+  nickname: string;
+  role: Role;
+  firstSeen: number;
+  lastSeen: number | null;
+  online: boolean;
+};
+
+/**
+ * The boss-only roll: every callsign this warm instance has seen claim or
+ * re-assert, with role + first-seen + live status. STRICTLY pseudonymous —
+ * the system holds no emails, no real names, no contact details and no raw
+ * IPs at rest, so none can be returned. RAM only; dies with the process.
+ */
+export function listRoster(): RosterEntry[] {
+  const now = Date.now();
+  const out: RosterEntry[] = [];
+  for (const [key, owner] of nicknameOwner) {
+    const liveRec = live.get(owner.fp);
+    const online = liveRec ? now - liveRec.lastSeen <= LIVE_TTL_MS : false;
+    out.push({
+      nickname: key === "drach" ? "DRACH" : owner.fp ? capitalizeRoll(key) : key,
+      role: owner.role,
+      firstSeen: owner.firstSeen,
+      lastSeen: liveRec ? liveRec.lastSeen : null,
+      online,
+    });
+  }
+  return out.sort((a, b) => {
+    if (a.role !== b.role) return a.role === "boss" ? -1 : 1;
+    return a.firstSeen - b.firstSeen;
+  });
+}
+
+/** Stored keys are lowercased — restore the display case for known names. */
+function capitalizeRoll(key: string): string {
+  return key
+    .split(" ")
+    .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
 }

@@ -5,7 +5,6 @@ import { CallsignScreen } from "@/components/fast/callsign-screen";
 import { ChatScreen } from "@/components/fast/chat-screen";
 import { GateScreen } from "@/components/fast/gate-screen";
 import { HubScreen } from "@/components/fast/hub-screen";
-import { IntelScreen } from "@/components/fast/intel-screen";
 import { LiveScreen } from "@/components/fast/live-screen";
 import { MapScreen } from "@/components/fast/map-screen";
 import { SplashScreen } from "@/components/fast/splash-screen";
@@ -26,7 +25,6 @@ export default function Page() {
   const [mapOpen, setMapOpen] = useState(false);
   const [wantedOpen, setWantedOpen] = useState(false);
   const [liveOpen, setLiveOpen] = useState(false);
-  const [intelOpen, setIntelOpen] = useState(false);
   const openMap = () => setMapOpen(true);
   const active = mgr.activeSession;
 
@@ -52,7 +50,6 @@ export default function Page() {
             onOpenMap={openMap}
             onOpenWanted={() => setWantedOpen(true)}
             onOpenLive={() => setLiveOpen(true)}
-            onOpenIntel={() => setIntelOpen(true)}
             onDelete={(code) => mgr.deleteSession(code)}
           />
         ) : (
@@ -72,7 +69,6 @@ export default function Page() {
             onOpenMap={openMap}
             onOpenWanted={() => setWantedOpen(true)}
             onOpenLive={() => setLiveOpen(true)}
-            onOpenIntel={() => setIntelOpen(true)}
           />
         ))}
 
@@ -83,13 +79,13 @@ export default function Page() {
         myFp={mgr.identityFp}
         myNickname={mgr.callsign?.nickname ?? "GHOST"}
         myRole={mgr.callsign?.role ?? "member"}
+        myToken={mgr.callsign?.token ?? ""}
       />
       <LiveScreen
         open={liveOpen}
         onClose={() => setLiveOpen(false)}
         myFp={mgr.identityFp}
       />
-      <IntelScreen open={intelOpen} onClose={() => setIntelOpen(false)} />
     </div>
   );
 }

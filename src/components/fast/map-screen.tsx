@@ -13,9 +13,8 @@
  * Intel: Gemini free flash via /api/map/hotspots (curated offline fallback
  * built in). Auto-sync every 10 minutes while open; a NEXT SYNC chip ticks
  * down in the header. Areas carry real sub-neighbourhood BLOCK rows with
- * allegiance chips (FAST GUNS = home solid white, AMERICANS = ally, VARADOS
- * + BRITISH = rival struck through, documented gangs = grey) and the WAR
- * BOARD counts turf per crew with a rotating disrespect ticker.
+ * allegiance chips (FAST GUNS = home solid white, AMERICANS = ally,
+ * VARADOS = rival struck through, documented gangs = grey).
  *
  * Layout: phone = map up top, intel feed scrolling under it. Desktop =
  * map parked left (full height), intel rail on the right. GSAP entrances,
@@ -28,18 +27,15 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
   ArrowLeft,
-  BarChart3,
   ChevronDown,
   Globe2,
   MapPin,
-  RadioTower,
   RefreshCw,
   Satellite,
   WifiOff,
 } from "lucide-react";
 import { REDUCED_MOTION, ScreenShell } from "@/components/fast/motion";
 import {
-  MAP_ANALYTICS_TITLE,
   MAP_INTENSITY,
   MAP_OFFLINE_NOTE,
   MAP_PICK_COUNTRY,
@@ -51,13 +47,11 @@ import {
   MAP_THEME_DARK,
   MAP_THEME_SAT,
   MAP_TITLE,
-  MAP_TURF_NOTE,
   pick,
 } from "@/lib/fast/copy";
 import {
   BLOCK_CHIP_CLASS,
   countTurf,
-  WAR_BOARD_TAGLINES,
   type BlockAllegiance,
   type TurfBlock,
 } from "@/lib/fast/gang-turf";
@@ -109,8 +103,6 @@ const SOURCE_BADGE: Record<FeedSource, string> = {
   fallback: MAP_SOURCE_FALLBACK,
 };
 
-const ALLEGIANCES: readonly BlockAllegiance[] = ["home", "ally", "rival", "documented"];
-
 /** Custom Google Maps themes — the house palette, two moods. */
 const MAP_FILTERS: Record<"dark" | "sat", string> = {
   // roads theme pressed into black/white/grey (classic embed dark-inversion)
@@ -149,12 +141,9 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   const [feedError, setFeedError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [theme, setTheme] = useState<"dark" | "sat">("dark");
-  const [showAnalytics, setShowAnalytics] = useState(false);
   const [online, setOnline] = useState(true);
   const [now, setNow] = useState(() => Date.now());
-  const [tagline, setTagline] = useState(() => pick(WAR_BOARD_TAGLINES));
   const [sub] = useState(() => pick(MAP_SUB));
-  const [turfNote] = useState(() => pick(MAP_TURF_NOTE));
 
   const listRef = useRef<HTMLDivElement>(null);
   const inflight = useRef(false);
@@ -211,21 +200,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     };
   }, [open, mounted, sync]);
 
-  // war-board ticker — fresh disrespect every 10s
-  useEffect(() => {
-    if (!open || !mounted) return;
-    const t = setInterval(() => setTagline((prev) => {
-      let next = pick(WAR_BOARD_TAGLINES);
-      let guard = 0;
-      while (next === prev && guard < 5) {
-        next = pick(WAR_BOARD_TAGLINES);
-        guard += 1;
-      }
-      return next;
-    }), 10_000);
-    return () => clearInterval(t);
-  }, [open, mounted]);
-
   // ------------------------------------------------------------- derived
 
   const hotspots = feed?.hotspots ?? [];
@@ -248,23 +222,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
   }, [feed]);
 
   const countdown = nextSyncAt ? fmtCountdown(nextSyncAt - now) : "—";
-
-  const turf = useMemo(() => countTurf(hotspots), [hotspots]);
-
-  const analytics = useMemo(() => {
-    const provinces = new Set(hotspots.map((h) => h.province)).size;
-    const perProvince = PROVINCE_ORDER.map((p) => ({
-      province: p,
-      count: hotspots.filter((h) => h.province === p).length,
-    })).filter((r) => r.count > 0);
-    const hottest = hotspots.reduce<Hotspot | null>(
-      (best, h) => (best === null || h.intensity > best.intensity ? h : best),
-      null
-    );
-    const threatTally = { MODERATE: 0, HIGH: 0, SEVERE: 0 } as Record<Threat, number>;
-    for (const h of hotspots) for (const g of h.gangs ?? []) threatTally[g.threat] += 1;
-    return { provinces, perProvince, hottest, threatTally };
-  }, [hotspots]);
 
   /** The actual Google Map — a normal embed, themed by CSS filter. */
   const mapSrc = useMemo(() => {
@@ -315,22 +272,10 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             <div className="flex min-w-0 flex-col">
               <span className="gang-font text-2xl leading-none text-white">{MAP_TITLE}</span>
               <span className="truncate font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-500">
-                {sub} · {hotspots.length} GEBIEDE · {turf.totalBlocks} BLOKKE
+                {sub} · {hotspots.length} GEBIEDE · {hotspots.reduce((n, h) => n + (h.blocks?.length ?? 0), 0)} BLOKKE
               </span>
             </div>
             <div className="flex-1" />
-            <button
-              onClick={() => setShowAnalytics((v) => !v)}
-              aria-pressed={showAnalytics}
-              aria-label="Toggle war analytics"
-              className={`flex size-11 shrink-0 items-center justify-center rounded-xl border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
-                showAnalytics
-                  ? "border-white bg-white text-black"
-                  : "border-neutral-800 text-neutral-400 hover:border-neutral-500 hover:text-white"
-              }`}
-            >
-              <BarChart3 className="size-5" aria-hidden />
-            </button>
             <button
               onClick={() => void sync()}
               disabled={syncing}
@@ -435,65 +380,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
               </div>
             )}
 
-            {/* war board */}
-            <section aria-label="War board" className="mb-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-              <div className="flex items-center gap-2">
-                <RadioTower className="size-4 text-neutral-400" aria-hidden />
-                <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
-                  WAR BOARD
-                </span>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <ScoreCell label="FAST GUNS" value={turf.home} solid />
-                <ScoreCell label="AMERICANS" value={turf.ally} />
-                <ScoreCell label="VARADOS" value={turf.varados} struck />
-                <ScoreCell label="BRITISH" value={turf.british} struck />
-              </div>
-              <p className="mt-3 border-t border-neutral-900 pt-3 text-[13px] font-semibold leading-relaxed text-neutral-300">
-                {tagline}
-              </p>
-              <p className="mt-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-600">
-                {turfNote}
-              </p>
-            </section>
-
-            {/* analytics */}
-            {showAnalytics && (
-              <section aria-label="War analytics" className="mb-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="size-4 text-neutral-400" aria-hidden />
-                  <span className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-300">
-                    {MAP_ANALYTICS_TITLE}
-                  </span>
-                </div>
-                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                  <Kpi label="GEBIEDE" value={hotspots.length} />
-                  <Kpi label="BLOKKE" value={turf.totalBlocks} />
-                  <Kpi label="PROVINCES" value={analytics.provinces} />
-                </div>
-                <div className="mt-4 flex flex-col gap-2">
-                  {(["SEVERE", "HIGH", "MODERATE"] as Threat[]).map((t) => {
-                    const total = Math.max(1, analytics.threatTally.SEVERE + analytics.threatTally.HIGH + analytics.threatTally.MODERATE);
-                    const pct = Math.round((analytics.threatTally[t] / total) * 100);
-                    return (
-                      <div key={t} className="flex items-center gap-2">
-                        <span className="w-20 font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-neutral-500">{t}</span>
-                        <span className="h-2 flex-1 overflow-hidden rounded-full bg-neutral-900">
-                          <span className="block h-full rounded-full bg-neutral-300" style={{ width: `${pct}%` }} />
-                        </span>
-                        <span className="w-8 text-right font-mono text-[9px] tabular-nums text-neutral-400">{pct}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {analytics.hottest && (
-                  <p className="mt-4 border-t border-neutral-900 pt-3 text-[11px] font-semibold text-neutral-400">
-                    HOTSTE GEBIED · <span className="text-white">{analytics.hottest.area}</span> ({analytics.hottest.province})
-                  </p>
-                )}
-              </section>
-            )}
-
             {/* hint */}
             <p className="mb-3 text-center font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-600">
               {MAP_TAP_AREA}
@@ -544,7 +430,7 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
                         <div className="flex flex-wrap gap-1.5 pt-0.5">
                           {tally.home > 0 && <Chip label={`FAST GUNS · ${tally.home}`} cls={BLOCK_CHIP_CLASS.home} />}
                           {tally.ally > 0 && <Chip label={`AMERICANS · ${tally.ally}`} cls={BLOCK_CHIP_CLASS.ally} />}
-                          {tally.rival > 0 && <Chip label={`VYAND · ${tally.rival}`} cls={BLOCK_CHIP_CLASS.rival} />}
+                          {tally.rival > 0 && <Chip label={`VARADOS · ${tally.rival}`} cls={BLOCK_CHIP_CLASS.rival} />}
                           {tally.documented > 0 && <Chip label={`GEDOKUMENTEERD · ${tally.documented}`} cls={BLOCK_CHIP_CLASS.documented} />}
                         </div>
                       </button>
@@ -601,30 +487,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 }
 
 // ------------------------------------------------------------------ pieces
-
-function ScoreCell({ label, value, solid = false, struck = false }: { label: string; value: number; solid?: boolean; struck?: boolean }) {
-  return (
-    <div
-      className={`flex flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2.5 ${
-        solid ? "border-white bg-white text-black" : struck ? "border-neutral-700 text-neutral-500" : "border-neutral-700 text-neutral-200"
-      }`}
-    >
-      <span className={`text-xl font-black tabular-nums ${struck ? "line-through" : ""}`}>{value}</span>
-      <span className={`text-center font-mono text-[8px] font-bold uppercase tracking-[0.16em] ${solid ? "text-black" : struck ? "text-neutral-600" : "text-neutral-500"}`}>
-        {label}
-      </span>
-    </div>
-  );
-}
-
-function Kpi({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="flex flex-col items-center gap-0.5 rounded-xl border border-neutral-900 px-2 py-2.5">
-      <span className="text-lg font-black tabular-nums text-white">{value}</span>
-      <span className="font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-neutral-500">{label}</span>
-    </div>
-  );
-}
 
 function Chip({ label, cls }: { label: string; cls: string }) {
   return (

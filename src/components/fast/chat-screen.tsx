@@ -20,7 +20,6 @@ import {
   Radio,
   SendHorizontal,
   ShieldAlert,
-  Swords,
   Trash2,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
@@ -65,7 +64,6 @@ type ChatProps = {
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
-  onOpenIntel: () => void;
   onDelete: (code: string) => Promise<void>;
 };
 
@@ -79,7 +77,6 @@ export function ChatScreen({
   onOpenMap,
   onOpenWanted,
   onOpenLive,
-  onOpenIntel,
   onDelete,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
@@ -327,14 +324,6 @@ export function ChatScreen({
                   onSelect={() => {
                     close();
                     onOpenWanted();
-                  }}
-                />
-                <FastMenuItem
-                  icon={Swords}
-                  label="War Room — vra die Boetie"
-                  onSelect={() => {
-                    close();
-                    onOpenIntel();
                   }}
                 />
                 <FastMenuItem

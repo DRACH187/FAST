@@ -11,6 +11,14 @@ const securityHeaders = [
   { key: "Referrer-Policy", value: "no-referrer" },
   { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=(), interest-cohort=(), payment=(), usb=()" },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  // resource isolation: our own subresources never load cross-origin paper
+  { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+  // HSTS: Vercel terminates TLS; browsers then refuse any plain-HTTP path to
+  // the deployment (ignored on plain http/localhost, so dev is unaffected)
+  {
+    key: "Strict-Transport-Security",
+    value: "max-age=63072000; includeSubDomains; preload",
+  },
   { key: "X-DNS-Prefetch-Control", value: "off" },
   { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
   {
