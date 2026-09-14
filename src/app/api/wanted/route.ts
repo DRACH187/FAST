@@ -19,6 +19,9 @@ import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard
  *                                     body limits: one per request)
  *   POST comment | uncomment        -> sakboek notes on a case
  *   POST delete                     -> creator (fingerprint match) burns a case
+ *   POST wipe                       -> BOSS ONLY: burn the WHOLE board; wiped
+ *                                      ids are tombstoned so client vault
+ *                                      reseed can never resurrect them
  *   POST reseed                     -> clients re-upload cached ciphertext
  *                                     after a cold restart (self-heal)
  *
@@ -95,6 +98,13 @@ const deleteSchema = z.object({
   token: z.string().min(8).max(1024).optional(),
 });
 
+const wipeSchema = z.object({
+  action: z.literal("wipe"),
+  fingerprint: fpSchema,
+  // boss attestation REQUIRED — nobody else may purge the whole board
+  token: z.string().min(8).max(1024),
+});
+
 const reseedPostSchema = z.object({
   id: z.string().min(8).max(64),
   iv: z.string().max(512),
@@ -130,6 +140,7 @@ const bodySchema = z.discriminatedUnion("action", [
   commentSchema,
   uncommentSchema,
   deleteSchema,
+  wipeSchema,
   reseedSchema,
 ]);
 
@@ -155,7 +166,7 @@ type WantedRec = {
   expiresAt: number;
 };
 
-type BoardStore = Map<string, WantedRec> & { __bytes?: number };
+type BoardStore = Map<string, WantedRec> & { __bytes?: number; __tombstones?: Set<string> };
 
 /* globalThis pinning: survives dev-server module reloads and keeps exactly
    one board per process. ZERO DATABASE — process RAM only, dies with the
@@ -165,6 +176,7 @@ const memory: BoardStore =
   g.__fastWantedBoard ?? new Map<string, WantedRec>() as BoardStore;
 g.__fastWantedBoard = memory;
 memory.__bytes ??= 0;
+memory.__tombstones ??= new Set<string>();
 
 function isB64(v: string): boolean {
   return v.length > 0 && B64_RE.test(v);
@@ -199,6 +211,21 @@ function sweep(): void {
 
 function validSealed(v: string, max: number): boolean {
   return v.length > 0 && v.length <= max && isB64(v);
+}
+
+/** Wiped ids can never come back via reseed — the boss's burn is final. */
+function tombstone(id: string): void {
+  const t = memory.__tombstones;
+  if (!t) return;
+  t.add(id);
+  if (t.size > 2000) {
+    // bounded: drop the oldest quarter when the ledger fills
+    let n = Math.floor(t.size / 4);
+    for (const v of t) {
+      if (n-- <= 0) break;
+      t.delete(v);
+    }
+  }
 }
 
 function makeRec(
@@ -371,6 +398,7 @@ export async function POST(req: Request) {
     let restored = 0;
     for (const p of body.posts) {
       if (memory.has(p.id)) continue;
+      if (memory.__tombstones?.has(p.id)) continue; // boss-burned stays dead
       if (!validSealed(p.iv, 512) || !validSealed(p.ciphertext, 12_000)) continue;
       const at = Date.parse(p.createdAt);
       if (!Number.isFinite(at) || at > Date.now() || Date.now() - at > POST_TTL_MS) continue;
@@ -398,6 +426,25 @@ export async function POST(req: Request) {
     return json({ ok: true, restored });
   }
 
+  if (body.action === "wipe") {
+    // BOSS ONLY — the whole board burns and every wiped id is tombstoned so
+    // client-vault reseeds cannot resurrect the garbage
+    const attested = verifyAttestation(body.token, body.fingerprint);
+    if (!attested || attested.role !== "boss") {
+      return json({ ok: false, error: "Boss ground only." }, 403);
+    }
+    sweep();
+    const wiped = memory.size;
+    for (const [id, rec] of memory) {
+      tombstone(id);
+      for (const m of rec.media) {
+        if (m) memory.__bytes = (memory.__bytes ?? 0) - (m.iv.length + m.ciphertext.length);
+      }
+      memory.delete(id);
+    }
+    return json({ ok: true, wiped });
+  }
+
   // delete — the creator's fingerprint must match, OR the requester carries
   // a valid BOSS attestation (DRACH moderation). Public material compare only.
   const rec = memory.get(body.id);
@@ -410,6 +457,7 @@ export async function POST(req: Request) {
       return json({ ok: false, error: "Only the poster or the boss can burn this." }, 403);
     }
   }
+  tombstone(body.id);
   for (const m of rec.media) {
     if (m) memory.__bytes = (memory.__bytes ?? 0) - (m.iv.length + m.ciphertext.length);
   }

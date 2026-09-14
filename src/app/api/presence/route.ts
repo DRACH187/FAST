@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
 import * as ids from "@/lib/fast/identity-store";
+import { takeSummons } from "@/lib/fast/summons";
 
 /**
  * Presence — site-wide "who is on right now" heartbeat.
@@ -15,6 +16,10 @@ import * as ids from "@/lib/fast/identity-store";
  *
  * The client polls every ~8s while the app is open, which doubles as the
  * data source for the LIVE board and the hub's online counter.
+ *
+ * The heartbeat ALSO drains the boss-summons doorbell: any session the boss
+ * summoned this device into rides back on this response (code + timestamp
+ * only — a doorbell, not a letter) and the client auto-joins.
  */
 export const dynamic = "force-dynamic";
 
@@ -49,9 +54,13 @@ export async function POST(req: Request) {
   ids.heartbeat(fingerprint, nickname, role);
   const online = ids.listLive();
 
+  // drain the boss-summons doorbell for THIS device only
+  const summons = takeSummons(fingerprint);
+
   return json({
     ok: true,
     count: online.length,
     online: online.map((e) => ({ fp: e.fp, nickname: e.nickname, role: e.role, since: e.since })),
+    summons: summons.map((s) => ({ code: s.code, at: s.at })),
   });
 }

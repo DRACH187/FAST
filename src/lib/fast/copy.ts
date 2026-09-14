@@ -183,6 +183,19 @@ export const WANTED_EMPTY = [
   "Die lykswa is leeg, ouen. Sit iemand op die blad.",
   "Nog geen name nie. Wie moet die werf vry vee?",
 ] as const;
+export const WANTED_ZERO_PREMADE = "NET JOU INSETTE HANG HIER — geen voorgemaakte kak, geen demos, niks";
+
+// WANTED — advanced board chrome (sort, case numbers, TTL, boss purge)
+export const WANTED_SORT_NEWEST = "NUUT";
+export const WANTED_SORT_THREAT = "GEVAAR";
+export const WANTED_SORT_EVIDENCE = "STUKKE";
+export const WANTED_TTL_LEFT = (h: number, m: number) => `VERBRAND OOR ${h}U ${String(m).padStart(2, "0")}M`;
+export const WANTED_CASE_NO = (s: string) => `SAAK #187-${s}`;
+export const WANTED_SEALED_META = "TOEGEPIN · AES-256-GCM · SLEUTEL OP JOU TOESTEL";
+export const WANTED_WIPE_CTA = "VERBRAND ALLES";
+export const WANTED_WIPE_CONFIRM = "Die HELE blad brand af — elke saak, elke stuk, elke note. Seker, baas?";
+export const WANTED_WIPE_GO = "BRAND DIE BLAD";
+export const WANTED_WIPED = "Die blad is as. Niks kan opstaan nie.";
 export const WANTED_POST_CTA = ["PLAAS DIE MERK", "SKREE DIT UIT"] as const;
 export const WANTED_TITLE_LABEL = "NAAM / TITEL";
 export const WANTED_DESC_LABEL = "DIE SAAK · HOE EN WAT";
@@ -236,29 +249,9 @@ export const LIVE_NO_GPS = "geen GPS, geen spoor — nooit nie";
 // -------------------------------------------------------------------- map
 
 export const MAP_TITLE = "SURROUNDINGS";
-export const MAP_SUB = [
-  "SUID-AFRIKA · WIE LOOP WAT · BLOK VIR BLOK",
-  "DIE WERF KAART · HOTSPOTS EN TURF",
-] as const;
-export const MAP_REFRESH_NOTE = "VERSEND ELKE 10 MIN · KRY DIE LASTE INTEL";
-export const MAP_LEGEND_HOME = "FAST GUNS GROND";
-export const MAP_LEGEND_ALLY = "AMERICANS GROND";
-export const MAP_LEGEND_RIVAL = "VYAND TURF";
-export const MAP_TURF_NOTE = [
-  "Rooi-wit-blou oor die Flats. Die kaart liegt nie.",
-  "Elke blok het 'n baas. Meeste van hulle is ons.",
-] as const;
-export const MAP_VARADOS_JAB = [
-  "VARADOS se turf lyk soos 'n verlate grond — hulle kan nie eens reg uitkom nie.",
-  "Waar VARADOS loop, huil die straat. Van skande.",
-  "Varados beteken 'val'. Hulle leef hul naam. Elke dag.",
-] as const;
-export const MAP_INTENSITY = { 1: "STIL", 2: "WARM", 3: "WARM", 4: "HOT", 5: "OORLOG" } as const;
-export const MAP_SOURCE_GEMINI = "AI INTEL · GEMINI";
-export const MAP_SOURCE_FALLBACK = "HUIS INTEL · AF-LYN";
+export const MAP_SUB = "NET DIE KAART · NIKS ANDERS NIE";
 export const MAP_THEME_DARK = "DONKER STEDE";
 export const MAP_THEME_SAT = "RAW SAT";
-export const MAP_TAP_AREA = "TIK 'N GEBIED · DIE KAART VOLG";
 export const MAP_OFFLINE_NOTE = "Geen lyn, geen kaart nie — die wêreld buite wag.";
 export const MAP_PICK_COUNTRY = "WYS HEEL SA";
 
@@ -271,6 +264,20 @@ export const ROSTER_ONLINE = "AAN";
 export const ROSTER_OFFLINE = "WEG";
 export const ROSTER_NOTE = "Noem name, rolle en tyd — niks meer nie. Geen e-pos, geen IP, geen sleutels nie. Hierdie werf hou NIKS van jou toestel nie.";
 export const ROSTER_TOTAL = (n: number) => `${n} OUENS OP DIE ROL`;
+export const ROSTER_ONLINE_HEAD = "NOU AANLYN";
+export const ROSTER_OFFLINE_HEAD = "WEG";
+export const ROSTER_SEARCH_PLACE = "SOEK DIE ROL";
+
+// boss summons — DRACH's doorbell into a live session
+export const SUMMON_CTA = "ONTBIE";
+export const SUMMON_ALL_CTA = "SKREE ALMAL AANLYN";
+export const SUMMON_CONFIRM = (n: string) => `Ontbied ${n} in 'n nuwe werf?`;
+export const SUMMON_CONFIRM_ALL = (n: number) => `Ontbied almal — ${n} ouen${n === 1 ? "" : "e"} — in 'n nuwe werf?`;
+export const SUMMON_GO = "ONTBIE NOU";
+export const SUMMON_CANCEL = "Uit";
+export const SUMMON_BUSY = "Ontbied…";
+export const SUMMON_DONE = (c: string) => `Die werf ${c} staan. Hou hom oop — sleutels kom van jou af.`;
+export const SUMMON_NOTE = "Elke ontbieding maak 'n NUWE ge-enkripte werf oop en lui die ouens se selfone. Hulle trap outomaties in — die sleutel kom net van jou toestel af, so bly in die werf.";
 
 // ----------------------------------------------------------------- splash
 

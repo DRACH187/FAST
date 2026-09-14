@@ -23,7 +23,7 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
               └─> SESSION HUB         start / join / delete sessions · ALL-TIME ROLL
                     ├─> CHAT (E2EE, multiple sessions at once, 5h auto-wipe)
                     ├─> WANTED BOARD  two categories only: WANTED / ELIMINATED
-                    ├─> SURROUNDINGS MAP  Google Maps + SA gang hotspots (Gemini intel)
+                    ├─> SURROUNDINGS MAP  just a themed Google Map — nothing else
                     └─> LIVE BOARD    everyone on the site right now + total ever
 ```
 
@@ -43,7 +43,17 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
 - **All-time member ledger** — the hub, live board and profile show the
   total number of members that have EVER entered. Fully zero-knowledge: the
   client sends only `SHA-256(salt | persistent-device-id | callsign)`; the
-  server counts digests in SQLite and can never reverse them.
+  server counts irreversibly-salted digests in RAM and can never reverse
+  them.
+- **Boss summons (DRACH only)** — from DIE WERF ROL the boss opens a fresh
+  E2EE session and doorbells any online operative: their device auto-joins
+  the room within one heartbeat and the session key is wrapped to them
+  straight from the boss's device. Summons are one-line doorbells (code +
+  timestamp), RAM-only, 3-minute TTL.
+- **Inspect-element lockdown** — right-click, devtools shortcuts and
+  view-source routes are blocked; an overlay slams the page if docked
+  devtools are detected. (A deterrent — no client-side trick can defeat a
+  determined analyst; the real defence stays ciphertext-first.)
 - **Offline vault (PWA)** — installable (“Download app” in Profile):
   service-worker app shell, offline boot, home-screen launch, near-zero data
   usage after first load. Chats auto-wipe **5 hours** after session creation.
@@ -55,9 +65,10 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
 | 1 · Crypto | Web Crypto only: ephemeral **X25519** identity per tab (ECDH P-256 fallback), **AES-256-GCM** payloads, **HKDF-SHA256** per-message keys `HKDF(sessionKey, salt=code, info=msg|counter|senderFp)`. AEAD additional-data binds `code\|senderFp\|counter` (tamper ⇒ bubble marked *undecryptable*). |
 | 2 · Transport | **Blind HTTP sync endpoint** (`POST /api/sessions/[code]/sync`) — one serverless function carries presence, message/key/photo deltas, key requests and termination. Validates shapes and size caps; stores **only ciphertext and public material**. Works on any host: no WebSocket servers, no sticky sessions, no database. Ephemeral photos ride the same endpoint in RAM with a hard 60s TTL — forwarded and forgotten. |
 | 3 · Gate | Shared passcode (`187`) verified with `timingSafeEqual` + constant delay + sliding-window rate limit + escalating lockout. |
-| 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts); the member ledger stores **irreversible salted digests only**. Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere.** |
+| 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts); the all-time roll stores **irreversible salted digests only**, also in RAM. Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere. Zero databases exist.** |
 | 5 · Identity | Nicknames are attested: `HMAC(fp|nickname|role|exp, server secret)` tokens ride every join/heartbeat. The reserved DRACH callsign requires the boss key, verified constant-time and never persisted. |
 | 6 · Perimeter | Security headers + strict CSP on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP, `frame-ancestors 'none'`, noindex at header + meta). TLS terminates at the edge in production. |
+| 7 · Metadata | **Traffic-analysis padding** — every sealed chat message and WANTED text envelope is padded into coarse size buckets (256B/1K/4K/16K/64K) with random jitter, so ciphertext lengths leak nothing about content. The only third-party endpoint in the entire app is the Google Maps frame; chat, board and presence traffic are all same-origin. No referrer, no analytics, no fonts/CDNs, `X-DNS-Prefetch-Control: off`. |
 
 ### Photo guarantee — "taken, never stored"
 
@@ -83,21 +94,16 @@ design, that history no longer exists in any readable form.
 
 ## The map
 
-`SURROUNDINGS — SOUTH AFRICA` is a community-safety awareness overlay:
+`SURROUNDINGS` is **just a map** — nothing else:
 
-- **Real Google Maps tiles** (roadmap + satellite) rendered through Leaflet
-  and pushed through a grayscale CSS filter so the map stays strictly
-  monochrome — no API key required. Locked to South Africa bounds.
-- Hotspots (area-level) with intensity ratings and the gangs publicly
-  documented to run them (threat-graded). Generated by **Gemini
-  `gemini-flash-latest`** (free tier, server-side only, 24h cache) — the
-  refresh button forces a fresh AI generation. A curated offline dataset
-  guarantees the feature works with no key or in unsupported regions.
-- *Geolocation is disabled by design — the map shows surroundings, never your
-  location.*
-
-> Intel is area-level information from public reporting/research, for
-> awareness only. It is not law-enforcement guidance.
+- **A real, normal Google Map** (roadmap + satellite, pan/pinch/zoom exactly
+  like google.com/maps) wearing the house colours through a monochrome theme
+  filter. One tap flips to RAW SAT; one tap pulls back to the whole country.
+  No hotspots, no feeds, no intel, no API key, no geolocation — the user
+  drives everything with their own fingers.
+- Full-screen on every device: phone, tablet and desktop all give the map
+  the entire viewport.
+- *Geolocation is disabled by design — the map shows a place, never you.*
 
 ## Data-saving tech
 
@@ -114,7 +120,6 @@ design, that history no longer exists in any readable form.
 
 ```bash
 bun install
-cp .env.example .env.local        # optional: GEMINI_API_KEY, GATE_PASSCODE
 bun run dev                       # Next.js on :3000 — nothing else to run
 ```
 
@@ -124,9 +129,7 @@ Open the app, wait out the boot ritual, enter `187`.
 
 Push this repo to GitHub and import it in Vercel — zero configuration. Chat
 state lives in the sync function's memory (rooms self-heal across cold
-starts) and each device keeps its own encrypted history vault. For the
-strongest setup set `GEMINI_API_KEY` in Vercel → Settings → Environment
-Variables.
+starts) and each device keeps its own encrypted history vault.
 
 Production standalone (any Node host): `bun run build && bun run start`.
 
@@ -134,31 +137,29 @@ Production standalone (any Node host): `bun run build && bun run start`.
 
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` | Optional — enables live Gemini map intel (free tier); a built-in fallback key and the curated dataset cover deployments without it |
 | `GATE_PASSCODE` | Optional — overrides the default `187` |
-| `DRACH_KEY` | Optional — boss key for the reserved DRACH callsign (default `BIGBOSS27`; set a secret in production) |
+| `DRACH_KEY` | Optional — boss key for the reserved DRACH callsign (set a secret in production) |
 | `FAST_ATTEST_SECRET` | Optional — HMAC secret for nickname attestation tokens (set a secret in production) |
-| `GEMINI_MODEL` | Optional — must stay a FREE flash-class model (default `gemini-flash-latest`) |
-| `DATABASE_URL` | Optional — SQLite file for Prisma (map-intel cache + the all-time member ledger) |
 
 ## Stack
 
-Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · GSAP · Leaflet ·
-Google Maps tiles · Web Crypto. No crypto libraries — native primitives only.
+Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · GSAP ·
+Google Maps embed · Web Crypto. No crypto libraries — native primitives only.
 
 ## Layout
 
 ```
-src/lib/crypto/       e2ee.ts (X25519 + HKDF + AES-GCM ratchet), keyvault.ts (RAM-only),
-                      wanted-crypto.ts (gate-derived AES-GCM for the WANTED board)
+src/lib/crypto/       e2ee.ts (X25519 + HKDF + AES-GCM ratchet + size-bucket padding),
+                      keyvault.ts (RAM-only), wanted-crypto.ts (gate-derived AES-GCM)
 src/lib/fast/         session-manager, transport (HTTP sync client), memory-store,
-                      vault-db (IndexedDB, ct-only), ai.ts (Gemini, server-side),
-                      identity + identity-store (callsigns, attestation),
-                      live.ts + member-ledger.ts (presence + all-time roll), sa-geo.ts
-src/app/api/          gate · identity · presence · members · wanted ·
-                      sessions/[code]/sync (the whole chat backend) · map/hotspots
+                      vault-db (IndexedDB, ct-only), summons (boss doorbell table),
+                      identity + identity-store (callsigns, attestation, roster),
+                      live.ts + member-ledger.ts (presence + all-time roll),
+                      server-roll.ts (digest-only member counter), copy.ts (house voice)
+src/app/api/          gate · identity · presence · members · wanted · roster · summons ·
+                      sessions/[code]/sync (the whole chat backend)
 src/components/fast/  splash, gate, callsign, hub, chat, camera, map, wanted, live,
-                      profile-sheet, offline-vault (PWA register + install), primitives
+                      lockdown (inspect deterrent), profile-sheet,
+                      offline-vault (PWA register + install), primitives
 public/               sw.js (offline vault service worker), manifest.webmanifest, icons
-prisma/               MapCache (intel cache) + MemberLedger (all-time member roll)
 ```

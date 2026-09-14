@@ -248,3 +248,40 @@
 }
 
 /* drach v2 */
+
+/* ------- case-file authenticity: stamps, paper, evidence tape -------------
+   Hand-filed details so the board reads like a real docket on a cell wall,
+   not a generated dashboard. Strictly monochrome, pure CSS. */
+
+/* The rubber stamp: dashed ring, slight rotation, inked-uneven edges.
+   Used for case numbers (SAAK #187-XXXX) and authority marks. */
+.fast-stamp {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border: 1.5px dashed rgba(255, 255, 255, 0.55);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  transform: rotate(-2.2deg);
+  background:
+    radial-gradient(120% 120% at 30% 40%, rgba(255, 255, 255, 0.05), transparent 60%);
+  clip-path: polygon(1% 4%, 99% 0%, 100% 92%, 0% 100%);
+  user-select: none;
+}
+
+/* Evidence tape: torn-paper divider between the paper work and the sakboek. */
+.fast-tape {
+  position: relative;
+  height: 10px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.09) 0 7px,
+    transparent 7px 14px
+  );
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.14);
+}

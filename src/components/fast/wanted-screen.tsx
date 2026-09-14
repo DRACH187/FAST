@@ -29,6 +29,7 @@ import {
   Camera,
   Check,
   Crosshair,
+  Eraser,
   FileWarning,
   Film,
   Flame,
@@ -59,12 +60,13 @@ import {
   type WantedStatus,
   type WantedWire,
 } from "@/lib/crypto/wanted-crypto";
-import { loadVault, saveVault, upsertWire } from "@/lib/crypto/wanted-vault";
+import { clearVault, loadVault, saveVault, upsertWire } from "@/lib/crypto/wanted-vault";
 import { getGatePasscode } from "@/lib/crypto/keyvault";
 import {
   WANTED_ADD_MEDIA,
-  WANTED_CASE_EMPTY,
   WANTED_CASE_COUNT,
+  WANTED_CASE_EMPTY,
+  WANTED_CASE_NO,
   WANTED_COMMENTS_SUB,
   WANTED_COMMENTS_TITLE,
   WANTED_COMMENT_EMPTY,
@@ -79,8 +81,18 @@ import {
   WANTED_MEDIA_TOO_BIG,
   WANTED_MEDIA_TOO_MANY,
   WANTED_MEDIA_UNREADABLE,
+  WANTED_SEALED_META,
+  WANTED_SORT_EVIDENCE,
+  WANTED_SORT_NEWEST,
+  WANTED_SORT_THREAT,
   WANTED_SUB,
+  WANTED_TTL_LEFT,
   WANTED_VARADOS_JAB,
+  WANTED_WIPE_CTA,
+  WANTED_WIPE_CONFIRM,
+  WANTED_WIPE_GO,
+  WANTED_WIPED,
+  WANTED_ZERO_PREMADE,
   pick,
 } from "@/lib/fast/copy";
 import type { Role } from "@/lib/fast/identity-store";
@@ -95,6 +107,28 @@ const MAX_MEDIA = 8;
 const MAX_VIDEO_BYTES = 2_600_000;
 const STATUS_ALL = "ALL";
 type StatusFilter = typeof STATUS_ALL | WantedStatus;
+type SortMode = "newest" | "threat" | "evidence";
+const SORTS: { id: SortMode; label: string }[] = [
+  { id: "newest", label: WANTED_SORT_NEWEST },
+  { id: "threat", label: WANTED_SORT_THREAT },
+  { id: "evidence", label: WANTED_SORT_EVIDENCE },
+];
+
+/** Stable case stamp: first 4 hex of the id — same stamp on every device. */
+function caseNo(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return h.toString(16).toUpperCase().padStart(4, "0").slice(-4);
+}
+
+/** Time left before the board's 24h retention burns this case. */
+function ttlLeft(createdAtIso: string): string {
+  const at = Date.parse(createdAtIso) + 24 * 60 * 60 * 1000;
+  const ms = Math.max(0, at - Date.now());
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return WANTED_TTL_LEFT(h, m);
+}
 
 /** ONLY two categories exist on this board: WANTED and ELIMINATED. */
 const STATUSES: WantedStatus[] = ["WANTED", "ELIMINATED"];
@@ -217,7 +251,10 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
   const [shownOpen, setShownOpen] = useState(open);
   const [entries, setEntries] = useState<BoardEntry[]>([]);
   const [filter, setFilter] = useState<StatusFilter>(STATUS_ALL);
+  const [sort, setSort] = useState<SortMode>("newest");
   const [query, setQuery] = useState("");
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wiping, setWiping] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [netError, setNetError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -627,12 +664,44 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
     [fetchBoard, myFp, myToken]
   );
 
+  /** BOSS purge: burn the WHOLE board server-side (tombstoned) + the local vault. */
+  const wipeBoard = useCallback(async () => {
+    if (wiping || myRole !== "boss") return;
+    setWiping(true);
+    try {
+      const res = await fetch(LIST_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "wipe",
+          fingerprint: myFp,
+          token: myToken,
+        }),
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; wiped?: number };
+      if (!res.ok || data.ok !== true) {
+        toast.error(typeof data.error === "string" ? data.error : "Die blad wou nie brand nie");
+        return;
+      }
+      await clearVault(); // this device's cached ciphertext dies too
+      setDetailId(null);
+      setWipeOpen(false);
+      toast.success(WANTED_WIPED);
+      await fetchBoard();
+    } catch {
+      toast.error("Netwerk onbereikbaar");
+    } finally {
+      setWiping(false);
+    }
+  }, [fetchBoard, myFp, myRole, myToken, wiping]);
+
   // ------------------------------------------------------------- derived
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return entries.filter((e) => {
-      if (e.content === null) return q.length === 0 && filter === STATUS_ALL ? true : false;
+    const list = entries.filter((e) => {
+      if (e.content === null) return q.length === 0 && filter === STATUS_ALL;
       if (filter !== STATUS_ALL && e.content.status !== filter) return false;
       if (q.length === 0) return true;
       return (
@@ -642,7 +711,16 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         e.content.by.toLowerCase().includes(q)
       );
     });
-  }, [entries, filter, query]);
+    if (sort === "threat") {
+      list.sort((a, b) => (b.content?.threat ?? 0) - (a.content?.threat ?? 0));
+    } else if (sort === "evidence") {
+      const weight = (e: BoardEntry) => (e.wire.mediaList?.length ?? 0) + (e.wire.imgIv ? 1 : 0);
+      list.sort((a, b) => weight(b) - weight(a));
+    } else {
+      list.sort((a, b) => Date.parse(b.wire.createdAt) - Date.parse(a.wire.createdAt));
+    }
+    return list;
+  }, [entries, filter, query, sort]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { ALL: entries.length };
@@ -682,6 +760,18 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               </span>
             </div>
             <div className="flex-1" />
+            {myRole === "boss" && counts.ALL > 0 && (
+              <FastButton
+                variant="danger"
+                size="sm"
+                onClick={() => setWipeOpen(true)}
+                className="min-h-[40px] shrink-0 font-mono text-[10px] uppercase tracking-[0.16em]"
+                aria-label={WANTED_WIPE_CTA}
+              >
+                <Eraser className="size-4" aria-hidden />
+                <span className="hidden sm:inline">{WANTED_WIPE_CTA}</span>
+              </FastButton>
+            )}
             <FastButton
               size="sm"
               onClick={() => {
@@ -725,6 +815,27 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
                 </button>
               ))}
             </div>
+            {/* sort — how the dead-list reads */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-neutral-600">SORT</span>
+              <div className="flex gap-1" role="radiogroup" aria-label="Sort cases">
+                {SORTS.map((s) => (
+                  <button
+                    key={s.id}
+                    role="radio"
+                    aria-checked={sort === s.id}
+                    onClick={() => setSort(s.id)}
+                    className={`flex min-h-[36px] items-center rounded-lg border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.16em] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                      sort === s.id
+                        ? "border-neutral-400 bg-neutral-950 text-white"
+                        : "border-neutral-900 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300"
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </header>
 
@@ -742,6 +853,9 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
             <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
               <Lock className="size-8 text-neutral-600" aria-hidden />
               <p className="max-w-sm text-base font-bold text-neutral-200">{emptyLine}</p>
+              <p className="max-w-[320px] font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.16em] text-neutral-500">
+                {WANTED_ZERO_PREMADE}
+              </p>
               <p className="max-w-[300px] text-[13px] font-semibold leading-relaxed text-neutral-500">
                 {varadosJab}
               </p>
@@ -984,6 +1098,35 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         </div>
       </FastModal>
 
+      {/* ------------------------------------------------ boss wipe confirm */}
+      <FastModal open={wipeOpen} onClose={() => setWipeOpen(false)} label="Burn the whole board">
+        <div className="flex flex-col gap-5">
+          <div className="text-center">
+            <h2 className="flex items-center justify-center gap-2 text-base font-bold text-neutral-100">
+              <Eraser className="size-5 text-neutral-300" aria-hidden />
+              {WANTED_WIPE_CTA}
+            </h2>
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">{WANTED_WIPE_CONFIRM}</p>
+            <p className="mt-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              Afgebrande sake kan NIE deur enige toestel se kluis teruglaai word nie.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <FastButton
+              variant="danger"
+              disabled={wiping}
+              onClick={() => void wipeBoard()}
+              className="w-full font-mono text-sm uppercase tracking-[0.22em]"
+            >
+              {wiping ? "DIT BRAND…" : WANTED_WIPE_GO}
+            </FastButton>
+            <FastButton variant="ghost" className="w-full" onClick={() => setWipeOpen(false)}>
+              Bly maar
+            </FastButton>
+          </div>
+        </div>
+      </FastModal>
+
       {/* ---------------------------------------------------- case file view */}
       {detail && (
         <CaseFile
@@ -1144,6 +1287,10 @@ function WantedCard({
           <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-neutral-500">
             Sealed case
           </span>
+          <span className="flex-1" />
+          <span className="fast-stamp" aria-hidden>
+            {WANTED_CASE_NO(caseNo(wire.id))}
+          </span>
         </div>
         <p className="text-[11px] leading-relaxed text-neutral-600">
           Hierdie saak is toegemaak met ‘n sleutel wat hierdie toestel nie kan aflei nie. Die ciphertext bly op die blad, onleesbaar.
@@ -1181,11 +1328,13 @@ function WantedCard({
           <StatusIcon className="size-3" aria-hidden />
           {content.status}
         </span>
-        {mine && (
-          <span className="absolute right-2.5 top-2.5 rounded-full border border-neutral-700 bg-black/70 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.18em] text-neutral-400 backdrop-blur-sm">
-            jou saak
-          </span>
-        )}
+        {/* case stamp — the file number that follows this case everywhere */}
+        <span
+          aria-hidden
+          className="fast-stamp absolute right-2.5 top-2.5 origin-top-right"
+        >
+          {WANTED_CASE_NO(caseNo(wire.id))}
+        </span>
         <span className="absolute bottom-2.5 left-2.5 flex items-center gap-2 rounded-full border border-neutral-800 bg-black/75 px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.16em] text-neutral-300 backdrop-blur-sm">
           <span className="flex items-center gap-1">
             <Images className="size-3" aria-hidden />
@@ -1206,11 +1355,22 @@ function WantedCard({
             {content.description}
           </span>
         )}
-        <ThreatMeter threat={content.threat} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <ThreatMeter threat={content.threat} />
+          <span className="flex items-center gap-1 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-neutral-500">
+            <Flame className="size-3" aria-hidden />
+            {ttlLeft(wire.createdAt)}
+          </span>
+        </div>
         <div className="flex items-center gap-2 border-t border-neutral-900 pt-3">
           <span className={`truncate font-mono text-[10px] tracking-[0.14em] text-neutral-400 ${boss ? "drach-font text-xs tracking-[0.08em] text-white" : "uppercase"}`}>
             {boss ? content.by : `BY ${content.by}`}
           </span>
+          {mine && (
+            <span className="rounded-full border border-neutral-700 px-1.5 py-0.5 font-mono text-[7px] uppercase tracking-[0.14em] text-neutral-400">
+              jou saak
+            </span>
+          )}
           <span className="flex-1" />
           <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-600">
             {timeAgo(wire.createdAt)}
@@ -1318,6 +1478,9 @@ function CaseFile({
               <StatusIcon className="size-3.5" aria-hidden />
               {content.status} · {timeAgo(wire.createdAt)} · {exhibitCount} STUKKE · {notes.length} NOTES
             </span>
+            <span className="fast-stamp mt-1.5 self-start" aria-hidden>
+              {WANTED_CASE_NO(caseNo(wire.id))}
+            </span>
           </div>
           <span className="flex-1" />
           {(mine || isBoss) && (
@@ -1352,6 +1515,18 @@ function CaseFile({
           <section ref={scrollRef} className="flex flex-col gap-4" aria-label="Case info and comments">
             {/* paperwork */}
             <div className="flex flex-col gap-3 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 sm:p-5">
+              {/* sealed-metadata strip — the file's own forensic row */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-dashed border-neutral-800 bg-black px-3 py-2">
+                <span className="flex items-center gap-1.5 font-mono text-[8px] font-bold uppercase tracking-[0.18em] text-neutral-400">
+                  <Lock className="size-3" aria-hidden />
+                  {WANTED_SEALED_META}
+                </span>
+                <span className="flex-1" />
+                <span className="flex items-center gap-1 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-neutral-500">
+                  <Flame className="size-3" aria-hidden />
+                  {ttlLeft(wire.createdAt)}
+                </span>
+              </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
                 {content.alias && (
                   <p className="text-xs font-semibold text-neutral-300">

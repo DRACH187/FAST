@@ -36,6 +36,21 @@ function toBuf(b64: string): Uint8Array<ArrayBuffer> {
 const PBKDF2_ITERATIONS = 310_000;
 const BOARD_SALT = "FAST.WANTED.BOARD.v1.aes256gcm";
 
+/** Ciphertext length buckets for the text envelopes — blunts exact-length
+ *  traffic analysis (the observer sees "≤1KB case", not "213 bytes").
+ *  `p` is pure filler, dropped on decrypt; unpadded blobs still decrypt. */
+const PAD_BUCKETS = [256, 1024, 4096, 16384];
+
+function padJson(obj: Record<string, unknown>): string {
+  const json = JSON.stringify(obj);
+  const size = te.encode(json).length;
+  const bucket = PAD_BUCKETS.find((b) => size <= b);
+  if (bucket === undefined) return json;
+  const jitter = crypto.getRandomValues(new Uint8Array(1))[0] % 48;
+  const filler = Math.max(0, bucket - size - 12 - jitter);
+  return JSON.stringify({ ...obj, p: "x".repeat(filler) });
+}
+
 /** Content payload carried INSIDE the encrypted text envelope. */
 export type WantedStatus = "WANTED" | "ELIMINATED";
 
@@ -157,7 +172,7 @@ export async function encryptWantedCase(
   const ciphertext = await subtle.encrypt(
     { name: "AES-GCM", iv, tagLength: 128 },
     key,
-    te.encode(JSON.stringify(content))
+    te.encode(padJson(content))
   );
 
   const sealed: WantedMediaWire[] = [];
@@ -265,7 +280,7 @@ export async function encryptWantedComment(note: WantedComment): Promise<{
   const ciphertext = await subtle.encrypt(
     { name: "AES-GCM", iv, tagLength: 128 },
     key,
-    te.encode(JSON.stringify(note))
+    te.encode(padJson(note))
   );
   return { iv: bufToB64(iv), ciphertext: bufToB64(ciphertext) };
 }

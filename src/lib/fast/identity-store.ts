@@ -35,9 +35,20 @@ export type CallsignRec = { nickname: string; role: Role; updatedAt: number };
 export type LiveRec = { nickname: string; role: Role; since: number; lastSeen: number };
 type Owner = { fp: string; passHash: string; role: Role; firstSeen: number };
 
-const callsigns = new Map<string, CallsignRec>(); // fp -> record
-const nicknameOwner = new Map<string, Owner>(); // lowercased nickname -> owner
-const live = new Map<string, LiveRec>(); // fp -> heartbeat
+/* All three tables pin on globalThis — in dev each route compiles to its own
+   bundle, and globalThis is the only thing routes share. Same law as the
+   wanted board and the summons table: ONE store per process, RAM only. */
+const g = globalThis as unknown as {
+  __fastCallsigns?: Map<string, CallsignRec>;
+  __fastNickOwners?: Map<string, Owner>;
+  __fastLive?: Map<string, LiveRec>;
+};
+const callsigns: Map<string, CallsignRec> = g.__fastCallsigns ?? new Map();
+g.__fastCallsigns = callsigns;
+const nicknameOwner: Map<string, Owner> = g.__fastNickOwners ?? new Map();
+g.__fastNickOwners = nicknameOwner;
+const live: Map<string, LiveRec> = g.__fastLive ?? new Map();
+g.__fastLive = live;
 
 /** Presence heartbeat freshness window (site-wide "online" definition). */
 export const LIVE_TTL_MS = 25_000;
@@ -207,6 +218,9 @@ export function dropLive(fingerprint: string): void {
 export type RosterEntry = {
   nickname: string;
   role: Role;
+  /** ephemeral device handle (rotates every reload) — lets the boss summon
+   *  this operative into a session; pseudonymous, RAM-only, not PII */
+  fp: string;
   firstSeen: number;
   lastSeen: number | null;
   online: boolean;
@@ -227,6 +241,7 @@ export function listRoster(): RosterEntry[] {
     out.push({
       nickname: key === "drach" ? "DRACH" : owner.fp ? capitalizeRoll(key) : key,
       role: owner.role,
+      fp: owner.fp,
       firstSeen: owner.firstSeen,
       lastSeen: liveRec ? liveRec.lastSeen : null,
       online,

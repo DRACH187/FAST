@@ -14,6 +14,7 @@ import {
   MessagesSquare,
   Plus,
   Radio,
+  Search,
   ShieldCheck,
   Trash2,
   Users,
@@ -29,10 +30,22 @@ import {
   ROSTER_EMPTY,
   ROSTER_NOTE,
   ROSTER_OFFLINE,
+  ROSTER_OFFLINE_HEAD,
   ROSTER_ONLINE,
+  ROSTER_ONLINE_HEAD,
+  ROSTER_SEARCH_PLACE,
   ROSTER_SUB,
   ROSTER_TITLE,
   ROSTER_TOTAL,
+  SUMMON_ALL_CTA,
+  SUMMON_BUSY,
+  SUMMON_CANCEL,
+  SUMMON_CTA,
+  SUMMON_CONFIRM,
+  SUMMON_CONFIRM_ALL,
+  SUMMON_DONE,
+  SUMMON_GO,
+  SUMMON_NOTE,
   HUB_CODE_LABEL,
   HUB_CONFIRM_DELETE,
   HUB_DELETE,
@@ -91,6 +104,8 @@ type HubProps = {
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
+  /** BOSS move: open a fresh E2EE session and doorbell the target fps. */
+  onBossSummon: (targets: string[]) => Promise<string>;
 };
 
 export function HubScreen({
@@ -107,6 +122,7 @@ export function HubScreen({
   onOpenMap,
   onOpenWanted,
   onOpenLive,
+  onBossSummon,
 }: HubProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const [joinCode, setJoinCode] = useState("");
@@ -119,8 +135,12 @@ export function HubScreen({
   const [rosterOpen, setRosterOpen] = useState(false);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [rosterError, setRosterError] = useState<string | null>(null);
-  type RosterRow = { nickname: string; role: "member" | "boss"; online: boolean; firstSeen: string; lastSeen: string | null };
+  type RosterRow = { nickname: string; role: "member" | "boss"; fp: string; online: boolean; firstSeen: string; lastSeen: string | null };
   const [rosterRows, setRosterRows] = useState<RosterRow[] | null>(null);
+  const [rosterQuery, setRosterQuery] = useState("");
+  // summon confirmation state — one target or the whole online roll
+  const [summonPick, setSummonPick] = useState<{ mode: "one"; fp: string; nickname: string } | { mode: "all" } | null>(null);
+  const [summonBusy, setSummonBusy] = useState(false);
   // one war cry per visit — fresh from the house voice
   const warCry = useHouseLine(HUB_TAGLINES);
   const startLabel = useHouseLine(HUB_START);
@@ -197,6 +217,8 @@ export function HubScreen({
     setRosterOpen(true);
     setRosterLoading(true);
     setRosterError(null);
+    setSummonPick(null);
+    setRosterQuery("");
     try {
       const res = await fetch("/api/roster", {
         method: "POST",
@@ -222,6 +244,27 @@ export function HubScreen({
       setRosterLoading(false);
     }
   }, [callsign, identityFp]);
+
+  /** THE BOSS MOVE: new E2EE room, doorbell the targets, step in and hold it. */
+  const execSummon = useCallback(async () => {
+    if (!summonPick || summonBusy) return;
+    setSummonBusy(true);
+    try {
+      const targets =
+        summonPick.mode === "one"
+          ? [summonPick.fp]
+          : (rosterRows ?? []).filter((r) => r.online && r.role !== "boss").map((r) => r.fp);
+      const code = await onBossSummon(targets);
+      setSummonPick(null);
+      setRosterOpen(false);
+      toast.success(SUMMON_DONE(code));
+      onOpen(code); // boss holds the room — keys wrap out from this device
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Ontbieding geblok — probeer weer");
+    } finally {
+      setSummonBusy(false);
+    }
+  }, [onBossSummon, onOpen, rosterRows, summonBusy, summonPick]);
 
   return (
     <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col">
@@ -514,7 +557,7 @@ export function HubScreen({
         </div>
       </FastModal>
 
-      {/* boss-only roll */}
+      {/* boss-only roll + summons control room */}
       <FastModal open={rosterOpen} onClose={() => setRosterOpen(false)} label="Boss roll" wide>
         <div className="flex max-h-[80dvh] flex-col gap-4 overflow-y-auto">
           <div className="text-center">
@@ -540,38 +583,113 @@ export function HubScreen({
             rosterRows.length === 0 ? (
               <p className="py-8 text-center text-sm font-semibold text-neutral-500">{ROSTER_EMPTY}</p>
             ) : (
-              <>
-                <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
-                  {ROSTER_TOTAL(rosterRows.length)} · {rosterRows.filter((r) => r.online).length} {ROSTER_ONLINE}
-                </p>
-                <ul className="flex flex-col gap-2">
-                  {rosterRows.map((r) => (
-                    <li
-                      key={r.nickname}
-                      className="flex items-center gap-3 rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5"
-                    >
-                      <span
-                        aria-hidden
-                        className={`size-2 shrink-0 rounded-full ${r.online ? "animate-fast-pulse bg-white" : "bg-neutral-700"}`}
+              (() => {
+                const q = rosterQuery.trim().toLowerCase();
+                const searched = q ? rosterRows.filter((r) => r.nickname.toLowerCase().includes(q)) : rosterRows;
+                const onlineRows = searched.filter((r) => r.online);
+                const offlineRows = searched.filter((r) => !r.online);
+                const summonable = onlineRows.filter((r) => r.role !== "boss");
+                return (
+                  <>
+                    <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
+                      {ROSTER_TOTAL(rosterRows.length)} · {rosterRows.filter((r) => r.online).length} {ROSTER_ONLINE}
+                    </p>
+
+                    {/* search the roll */}
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-neutral-600" aria-hidden />
+                      <FastInput
+                        value={rosterQuery}
+                        onChange={(e) => setRosterQuery(e.target.value.slice(0, 24))}
+                        placeholder={ROSTER_SEARCH_PLACE}
+                        aria-label="Search the roll"
+                        className="h-11 pl-10 font-mono text-xs font-bold tracking-[0.1em]"
                       />
-                      <span
-                        className={`min-w-0 flex-1 truncate text-neutral-100 ${
-                          r.role === "boss" ? "drach-font text-lg leading-none text-white" : "font-mono text-sm font-bold uppercase tracking-[0.14em]"
-                        }`}
+                    </div>
+
+                    {/* ONLINE — summonable now */}
+                    <div className="flex flex-col gap-2">
+                      <span className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-300">
+                        <span aria-hidden className="size-1.5 animate-fast-pulse rounded-full bg-white" />
+                        {ROSTER_ONLINE_HEAD} · {onlineRows.length}
+                      </span>
+                      {onlineRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed border-neutral-800 px-3 py-4 text-center text-xs font-semibold text-neutral-500">
+                          Niemand aanlyn nie — selfs Varados slaap.
+                        </p>
+                      ) : (
+                        <ul className="flex flex-col gap-2">
+                          {onlineRows.map((r) => (
+                            <RosterLine
+                              key={r.nickname}
+                              row={r}
+                              summonable={r.role !== "boss"}
+                              summonBusy={summonBusy}
+                              picked={summonPick?.mode === "one" && summonPick.fp === r.fp}
+                              onSummon={() => setSummonPick({ mode: "one", fp: r.fp, nickname: r.nickname })}
+                            />
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* OFFLINE — history only */}
+                    {offlineRows.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-600">
+                          {ROSTER_OFFLINE_HEAD} · {offlineRows.length}
+                        </span>
+                        <ul className="flex flex-col gap-2">
+                          {offlineRows.map((r) => (
+                            <RosterLine key={r.nickname} row={r} summonable={false} summonBusy={false} picked={false} onSummon={() => undefined} />
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* boss move — summon everyone online in one blast */}
+                    {summonable.length > 0 && (
+                      <FastButton
+                        variant="outline"
+                        disabled={summonBusy}
+                        onClick={() => setSummonPick({ mode: "all" })}
+                        className="w-full font-mono text-xs uppercase tracking-[0.2em]"
                       >
-                        {r.nickname}
-                      </span>
-                      <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">
-                        {r.online ? ROSTER_ONLINE : ROSTER_OFFLINE}
-                      </span>
-                      <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600">
-                        {rosterFmt.format(new Date(r.firstSeen))}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </>
+                        <Radio className="size-4" aria-hidden />
+                        {SUMMON_ALL_CTA} · {summonable.length}
+                      </FastButton>
+                    )}
+
+                    {/* summons doorbell mechanics — honest about the key law */}
+                    <p className="rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-neutral-400">
+                      {SUMMON_NOTE}
+                    </p>
+                  </>
+                );
+              })()
             )
+          )}
+
+          {/* confirm bar — the boss never fires by accident */}
+          {summonPick && !summonBusy && (
+            <div className="sticky bottom-0 flex flex-col gap-2 rounded-xl border border-neutral-700 bg-neutral-950 p-3">
+              <p className="text-center text-sm font-bold text-neutral-100">
+                {summonPick.mode === "one" ? SUMMON_CONFIRM(summonPick.nickname) : SUMMON_CONFIRM_ALL((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length)}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <FastButton variant="ghost" onClick={() => setSummonPick(null)} className="w-full">
+                  {SUMMON_CANCEL}
+                </FastButton>
+                <FastButton onClick={() => void execSummon()} className="w-full font-mono text-xs uppercase tracking-[0.18em]">
+                  {SUMMON_GO}
+                </FastButton>
+              </div>
+            </div>
+          )}
+          {summonBusy && (
+            <p className="py-2 text-center font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-400">
+              {SUMMON_BUSY}
+            </p>
           )}
 
           <p className="border-t border-neutral-900 pt-3 text-center text-[11px] font-semibold leading-relaxed text-neutral-500">
@@ -703,6 +821,60 @@ function ActionRow({ icon: Icon, label, hint, onClick, disabled }: ActionRowProp
         aria-hidden
       />
     </button>
+  );
+}
+
+/** One line on the boss's roll — online rows carry the ONTBIE doorbell. */
+function RosterLine({
+  row,
+  summonable,
+  summonBusy,
+  picked,
+  onSummon,
+}: {
+  row: { nickname: string; role: "member" | "boss"; online: boolean; firstSeen: string; lastSeen: string | null };
+  summonable: boolean;
+  summonBusy: boolean;
+  picked: boolean;
+  onSummon: () => void;
+}) {
+  const boss = row.role === "boss";
+  return (
+    <li
+      className={`flex items-center gap-2.5 rounded-xl border bg-black px-3 py-2.5 transition-colors ${
+        picked ? "border-white" : "border-neutral-900"
+      }`}
+    >
+      <span
+        aria-hidden
+        className={`size-2 shrink-0 ${row.online ? "animate-fast-pulse rounded-full bg-white" : "rounded-full bg-neutral-700"}`}
+      />
+      <span
+        className={`min-w-0 flex-1 truncate text-neutral-100 ${
+          boss ? "drach-font text-lg leading-none text-white" : "font-mono text-sm font-bold uppercase tracking-[0.14em]"
+        }`}
+      >
+        {row.nickname}
+      </span>
+      <span className="hidden font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600 sm:inline">
+        {rosterFmt.format(new Date(row.firstSeen))}
+      </span>
+      {summonable ? (
+        <button
+          onClick={onSummon}
+          disabled={summonBusy}
+          aria-label={`Summon ${row.nickname} into a new session`}
+          className="flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-neutral-700 px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-200 outline-none transition-colors hover:border-white hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-40"
+        >
+          <Radio className="size-3.5" aria-hidden />
+          {SUMMON_CTA}
+        </button>
+      ) : (
+        <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">
+          {row.online ? ROSTER_ONLINE : ROSTER_OFFLINE}
+        </span>
+      )}
+    </li>
   );
 }
 

@@ -155,6 +155,29 @@ async function aesGcmOpen(key: CryptoKey, ivB64: string, ciphertextB64: string, 
 }
 
 // ---------------------------------------------------------------------------
+// Traffic-analysis padding — ciphertext length buckets
+// ---------------------------------------------------------------------------
+
+const PAD_BUCKETS = [256, 1024, 4096, 16384, 65536];
+
+/**
+ * Pad a plaintext JSON payload so its byte length lands inside a coarse size
+ * bucket (+ jitter inside the bucket). An observer of the sealed stream sees
+ * "a ≤1KB blob", never "a 313-byte blob" — exact-length traffic analysis
+ * gets nothing. `p` is pure filler and is dropped on decrypt. One-way,
+ * backward-compatible: unpadded blobs decrypt identically.
+ */
+function padPayload(obj: Record<string, unknown>): string {
+  const json = JSON.stringify(obj);
+  const size = te.encode(json).length;
+  const bucket = PAD_BUCKETS.find((b) => size <= b);
+  if (bucket === undefined) return json; // over the top bucket — ship as-is
+  const jitter = crypto.getRandomValues(new Uint8Array(1))[0] % 64;
+  const filler = Math.max(0, bucket - size - 12 - jitter);
+  return JSON.stringify({ ...obj, p: "x".repeat(filler) });
+}
+
+// ---------------------------------------------------------------------------
 // Session keys
 // ---------------------------------------------------------------------------
 
@@ -279,7 +302,7 @@ export async function encryptMessage(
 ): Promise<EncryptedPayload> {
   const key = await deriveMessageKey(sessionKey, code, senderFp, counter);
   const ad = te.encode(`${code}|${senderFp}|${counter}`);
-  const { iv, ciphertext } = await aesGcmSeal(key, te.encode(JSON.stringify(payload)), ad);
+  const { iv, ciphertext } = await aesGcmSeal(key, te.encode(padPayload(payload)), ad);
   return { id, counter, iv, ciphertext };
 }
 
@@ -292,7 +315,8 @@ export async function decryptMessage(
   const key = await deriveMessageKey(sessionKey, code, envelope.senderFp, envelope.counter);
   const ad = te.encode(`${code}|${envelope.senderFp}|${envelope.counter}`);
   const pt = await aesGcmOpen(key, envelope.iv, envelope.ciphertext, ad);
-  return JSON.parse(td.decode(pt));
+  const parsed = JSON.parse(td.decode(pt)) as { t: string; ts: number; p?: string };
+  return { t: parsed.t, ts: parsed.ts }; // `p` filler never leaves this scope
 }
 
 // ---------------------------------------------------------------------------

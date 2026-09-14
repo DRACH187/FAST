@@ -1,107 +1,36 @@
 "use client";
 
 /**
- * FAST — SURROUNDINGS: plain Google Maps, house-themed.
- * =====================================================
- * The basemap is a REAL interactive Google Map (the normal embed — pan,
- * pinch, zoom all work like google.com/maps) pushed through a custom
- * monochrome theme filter so it stays black/white/grey like the house.
- * One tap flips it to RAW SAT (satellite, moody). The viewport follows the
- * intel feed: tap an area and the map drives there. "WYS HEEL SA" pulls
- * back to the whole country. No geolocation anywhere, ever.
+ * FAST — SURROUNDINGS: JUST A MAP.
+ * ================================
+ * Nothing else. A real, normal Google Map (pan, pinch, zoom — exactly like
+ * google.com/maps) wearing the house colours through a monochrome theme
+ * filter. One tap flips it to RAW SAT. One tap pulls it back to the whole
+ * country. No intel feeds, no hotspots, no blocks, no sync — the user drives
+ * everything themselves with their own fingers.
  *
- * Intel: Gemini free flash via /api/map/hotspots (curated offline fallback
- * built in). Auto-sync every 10 minutes while open; a NEXT SYNC chip ticks
- * down in the header. Areas carry real sub-neighbourhood BLOCK rows with
- * allegiance chips (FAST GUNS = home solid white, AMERICANS = ally,
- * VARADOS = rival struck through, documented gangs = grey).
- *
- * Layout: phone = map up top, intel feed scrolling under it. Desktop =
- * map parked left (full height), intel rail on the right. GSAP entrances,
- * reduced-motion respected, zero default map chrome.
+ * Layout: the map owns the ENTIRE screen on every device — phone, tablet,
+ * desktop. Safe-area padded, 44px+ touch targets, reduced-motion respected.
+ * No geolocation anywhere, ever.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import gsap from "gsap";
-import { useGSAP } from "@gsap/react";
+import { ArrowLeft, Globe2, MapPin, Satellite, WifiOff } from "lucide-react";
+import { ScreenShell } from "@/components/fast/motion";
 import {
-  ArrowLeft,
-  ChevronDown,
-  Globe2,
-  MapPin,
-  RefreshCw,
-  Satellite,
-  WifiOff,
-} from "lucide-react";
-import { REDUCED_MOTION, ScreenShell } from "@/components/fast/motion";
-import {
-  MAP_INTENSITY,
   MAP_OFFLINE_NOTE,
   MAP_PICK_COUNTRY,
-  MAP_REFRESH_NOTE,
-  MAP_SOURCE_FALLBACK,
-  MAP_SOURCE_GEMINI,
   MAP_SUB,
-  MAP_TAP_AREA,
   MAP_THEME_DARK,
   MAP_THEME_SAT,
   MAP_TITLE,
-  pick,
 } from "@/lib/fast/copy";
-import {
-  BLOCK_CHIP_CLASS,
-  countTurf,
-  type BlockAllegiance,
-  type TurfBlock,
-} from "@/lib/fast/gang-turf";
 
-gsap.registerPlugin(useGSAP);
-
-// -------------------------------------------------------------------- types
-
-type Threat = "MODERATE" | "HIGH" | "SEVERE";
-type Gang = { name: string; threat: Threat; notes: string };
-
-type Hotspot = {
-  area: string;
-  province: string;
-  lat: number;
-  lng: number;
-  intensity: number;
-  summary: string;
-  gangs: Gang[];
-  blocks: TurfBlock[];
-};
-
-type FeedSource = "gemini" | "fallback" | "cache";
-
-type Feed = { hotspots: Hotspot[]; source: FeedSource; updatedAt: string; reason?: string };
-
-const FEED_URL = "/api/map/hotspots";
-const SYNC_MS = 10 * 60 * 1000; // server TTL mirror
+// -------------------------------------------------------------------- consts
 
 const SA_CENTER = { lat: -29.1, lng: 24.5 };
-const AREA_ZOOM = 13;
 const SA_ZOOM = 5;
-
-const PROVINCE_ORDER = [
-  "Eastern Cape",
-  "Free State",
-  "Gauteng",
-  "KwaZulu-Natal",
-  "Limpopo",
-  "Mpumalanga",
-  "North West",
-  "Northern Cape",
-  "Western Cape",
-];
-
-const SOURCE_BADGE: Record<FeedSource, string> = {
-  gemini: MAP_SOURCE_GEMINI,
-  cache: "GEKAS · VORIGE SINK",
-  fallback: MAP_SOURCE_FALLBACK,
-};
 
 /** Custom Google Maps themes — the house palette, two moods. */
 const MAP_FILTERS: Record<"dark" | "sat", string> = {
@@ -111,139 +40,31 @@ const MAP_FILTERS: Record<"dark" | "sat", string> = {
   sat: "grayscale(0.4) contrast(1.12) brightness(0.82)",
 };
 
-function intensityChipClass(intensity: number): string {
-  if (intensity >= 5) return "border-white bg-white text-black";
-  if (intensity >= 4) return "border-neutral-400 text-neutral-100";
-  if (intensity >= 3) return "border-neutral-600 text-neutral-300";
-  return "border-neutral-700 text-neutral-500";
-}
-
-/** Chip text for a block row: crew names for the house, gang name otherwise. */
-function blockChipLabel(b: TurfBlock): string {
-  if (b.allegiance === "home") return "FAST GUNS";
-  if (b.allegiance === "ally") return "AMERICANS";
-  return b.gang.toUpperCase() || "GEDOKUMENTEERD";
-}
-
-function fmtCountdown(ms: number): string {
-  const s = Math.max(0, Math.ceil(ms / 1000));
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, "0")}`;
-}
-
 // --------------------------------------------------------------- component
 
 export function MapScreen({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [mounted, setMounted] = useState(false);
   const [shownOpen, setShownOpen] = useState(open);
-  const [feed, setFeed] = useState<Feed | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [feedError, setFeedError] = useState<string | null>(null);
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [theme, setTheme] = useState<"dark" | "sat">("dark");
   const [online, setOnline] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
-  const [sub] = useState(() => pick(MAP_SUB));
-
-  const listRef = useRef<HTMLDivElement>(null);
-  const inflight = useRef(false);
 
   if (open !== shownOpen) {
     setShownOpen(open);
     if (open) setMounted(true);
   }
 
-  // ------------------------------------------------------------- data flow
-
-  const sync = useCallback(async () => {
-    if (inflight.current) return;
-    inflight.current = true;
-    setSyncing(true);
-    try {
-      const res = await fetch(FEED_URL, { cache: "no-store" });
-      const data = (await res.json().catch(() => ({}))) as Partial<Feed> & { ok?: boolean; error?: string };
-      if (!res.ok || data.ok !== true || !Array.isArray(data.hotspots)) {
-        setFeedError(typeof data.error === "string" ? data.error : "Intel-bron weg — probeer weer");
-        return;
-      }
-      setFeedError(null);
-      setFeed({
-        hotspots: data.hotspots as Hotspot[],
-        source: (data.source as FeedSource) ?? "fallback",
-        updatedAt: data.updatedAt ?? new Date().toISOString(),
-        reason: data.reason,
-      });
-    } catch {
-      setFeedError("Netwerk onbereikbaar — HUIS INTEL dra die kaart");
-    } finally {
-      setSyncing(false);
-      inflight.current = false;
-    }
-  }, []);
-
-  // sync on open + every TTL while open + 1s housekeeping tick
+  // track connectivity so the dead-air state can show itself honestly
   useEffect(() => {
     if (!open || !mounted) return;
-    void sync();
-    const syncTimer = setInterval(() => void sync(), SYNC_MS);
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    const onOnline = () => setOnline(navigator.onLine);
-    const onOffline = () => setOnline(navigator.onLine);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    setOnline(navigator.onLine);
+    const sync = () => setOnline(navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
     return () => {
-      clearInterval(syncTimer);
-      clearInterval(tick);
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
     };
-  }, [open, mounted, sync]);
-
-  // ------------------------------------------------------------- derived
-
-  const hotspots = feed?.hotspots ?? [];
-
-  const sorted = useMemo(() => {
-    return [...hotspots].sort((a, b) => {
-      const pa = PROVINCE_ORDER.indexOf(a.province);
-      const pb = PROVINCE_ORDER.indexOf(b.province);
-      if (pa !== pb) return pa - pb;
-      return b.intensity - a.intensity;
-    });
-  }, [hotspots]);
-
-  const selected = selectedIdx !== null ? (sorted[selectedIdx] ?? null) : null;
-
-  const nextSyncAt = useMemo(() => {
-    if (!feed) return null;
-    const at = Date.parse(feed.updatedAt);
-    return Number.isFinite(at) ? at + SYNC_MS : null;
-  }, [feed]);
-
-  const countdown = nextSyncAt ? fmtCountdown(nextSyncAt - now) : "—";
-
-  /** The actual Google Map — a normal embed, themed by CSS filter. */
-  const mapSrc = useMemo(() => {
-    const c = selected ?? SA_CENTER;
-    const z = selected ? AREA_ZOOM : SA_ZOOM;
-    const t = theme === "sat" ? "k" : "m";
-    return `https://maps.google.com/maps?ll=${c.lat},${c.lng}&q=${c.lat},${c.lng}&z=${z}&t=${t}&hl=en&output=embed`;
-  }, [selected, theme]);
-
-  // GSAP entrance for the intel rail
-  useGSAP(
-    () => {
-      if (REDUCED_MOTION || !listRef.current) return;
-      const rows = listRef.current.querySelectorAll("[data-area-row]");
-      gsap.fromTo(
-        rows,
-        { opacity: 0, y: 14 },
-        { opacity: 1, y: 0, duration: 0.4, stagger: 0.04, ease: "power3.out", overwrite: "auto" }
-      );
-    },
-    { scope: listRef, dependencies: [sorted.length, selectedIdx] }
-  );
+  }, [open, mounted]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -254,13 +75,25 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
     return () => window.removeEventListener("keydown", onKey);
   }, [mounted, onClose]);
 
+  /** One static embed — the user drives. Theme flips swap the map type. */
+  const mapSrc = useMemo(() => {
+    const t = theme === "sat" ? "k" : "m";
+    return `https://maps.google.com/maps?ll=${SA_CENTER.lat},${SA_CENTER.lng}&q=${SA_CENTER.lat},${SA_CENTER.lng}&z=${SA_ZOOM}&t=${t}&hl=en&output=embed`;
+  }, [theme]);
+
+  const [mapKey, setMapKey] = useState(0);
+  const resetView = useCallback(() => {
+    // remount the iframe at the country view — the only "reset" a plain map needs
+    setMapKey((k) => k + 1);
+  }, []);
+
   if (!open || !mounted) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-[90] bg-black" role="dialog" aria-label="Surroundings map">
       <ScreenShell as="div" className="flex h-dvh flex-col">
         {/* ---------------------------------------------------------- header */}
-        <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+        <header className="sticky top-0 z-20 shrink-0 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
           <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
             <button
               onClick={onClose}
@@ -272,226 +105,75 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             <div className="flex min-w-0 flex-col">
               <span className="gang-font text-2xl leading-none text-white">{MAP_TITLE}</span>
               <span className="truncate font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-500">
-                {sub} · {hotspots.length} GEBIEDE · {hotspots.reduce((n, h) => n + (h.blocks?.length ?? 0), 0)} BLOKKE
+                {MAP_SUB}
               </span>
             </div>
-            <div className="flex-1" />
-            <button
-              onClick={() => void sync()}
-              disabled={syncing}
-              aria-label="Sync intel now"
-              className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-neutral-800 text-neutral-400 outline-none transition-colors hover:border-neutral-500 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-40"
-            >
-              <RefreshCw className={`size-4 ${syncing ? "animate-spin" : ""}`} aria-hidden />
-            </button>
-          </div>
-          <div className="flex items-center justify-between gap-2 px-3 pb-2 sm:px-4">
-            <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-500">
-              {MAP_REFRESH_NOTE}
-            </span>
-            <span className="flex items-center gap-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]">
-              <span className="rounded-full border border-neutral-800 px-2 py-0.5 tabular-nums text-neutral-300">
-                NEXT SYNC {countdown}
-              </span>
-              {feed && (
-                <span className="rounded-full border border-neutral-800 px-2 py-0.5 text-neutral-400">
-                  {SOURCE_BADGE[feed.source]}
-                </span>
-              )}
-            </span>
           </div>
         </header>
 
-        {/* ------------------------------------------------------- body */}
-        <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_420px]">
-          {/* -------------------------------------------------- the map */}
-          <section
-            aria-label="Google map of South Africa"
-            className="relative h-[46dvh] min-h-[280px] shrink-0 border-b border-neutral-900 lg:h-auto lg:min-h-0 lg:border-b-0 lg:border-r"
-          >
-            {online ? (
-              <iframe
-                key={mapSrc}
-                title="Google Maps — South Africa"
-                src={mapSrc}
-                loading="lazy"
-                allowFullScreen
-                referrerPolicy="no-referrer-when-downgrade"
-                className="absolute inset-0 size-full border-0"
-                style={{ filter: MAP_FILTERS[theme] }}
-              />
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
-                <WifiOff className="size-7 text-neutral-700" aria-hidden />
-                <p className="text-sm font-bold text-neutral-400">{MAP_OFFLINE_NOTE}</p>
-              </div>
-            )}
-
-            {/* theme flip + country reset — above the map chrome */}
-            <div className="absolute right-3 top-3 flex flex-col gap-1.5">
-              <button
-                onClick={() => setTheme("dark")}
-                aria-pressed={theme === "dark"}
-                className={`flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
-                  theme === "dark"
-                    ? "border-white bg-black/85 text-white"
-                    : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
-                }`}
-              >
-                <Globe2 className="size-3.5" aria-hidden />
-                {MAP_THEME_DARK}
-              </button>
-              <button
-                onClick={() => setTheme("sat")}
-                aria-pressed={theme === "sat"}
-                className={`flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
-                  theme === "sat"
-                    ? "border-white bg-black/85 text-white"
-                    : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
-                }`}
-              >
-                <Satellite className="size-3.5" aria-hidden />
-                {MAP_THEME_SAT}
-              </button>
+        {/* ----------------------------------------------- the map — full bleed */}
+        <section
+          aria-label="Google map of South Africa"
+          className="relative min-h-0 flex-1"
+        >
+          {online ? (
+            <iframe
+              key={`${mapSrc}#${mapKey}`}
+              title="Google Maps — South Africa"
+              src={mapSrc}
+              allowFullScreen
+              referrerPolicy="no-referrer-when-downgrade"
+              className="absolute inset-0 size-full border-0"
+              style={{ filter: MAP_FILTERS[theme] }}
+            />
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
+              <WifiOff className="size-7 text-neutral-700" aria-hidden />
+              <p className="text-sm font-bold text-neutral-400">{MAP_OFFLINE_NOTE}</p>
             </div>
+          )}
 
-            {/* current pin + reset */}
-            <div className="absolute bottom-3 left-3 flex max-w-[70%] flex-col gap-1.5">
-              {selected && (
-                <span className="pointer-events-none flex items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/85 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-sm">
-                  <MapPin className="size-3.5 shrink-0" aria-hidden />
-                  <span className="truncate">{selected.area} · {selected.province}</span>
-                </span>
-              )}
-              <button
-                onClick={() => setSelectedIdx(null)}
-                className="pointer-events-auto flex min-h-[38px] w-fit items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/80 px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-300 backdrop-blur-sm outline-none transition-colors hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
-              >
-                {MAP_PICK_COUNTRY}
-              </button>
-            </div>
-          </section>
-
-          {/* ----------------------------------------------- intel rail */}
-          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-3 pb-24 pt-3 sm:px-4 lg:pb-6">
-            {feedError && (
-              <div className="mb-3 rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-center">
-                <p className="text-xs font-bold text-neutral-300">{feedError}</p>
-              </div>
-            )}
-
-            {/* hint */}
-            <p className="mb-3 text-center font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-600">
-              {MAP_TAP_AREA}
-            </p>
-
-            {/* area list */}
-            {sorted.length === 0 && !feedError ? (
-              <div className="rounded-2xl border border-dashed border-neutral-800 px-4 py-10 text-center">
-                <p className="text-sm font-bold text-neutral-400">Intel laai nog, ouen…</p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {sorted.map((h, i) => {
-                  const isActive = selectedIdx === i;
-                  const tally = countTurf([h]);
-                  return (
-                    <article
-                      key={`${h.area}-${h.province}`}
-                      data-area-row
-                      className={`overflow-hidden rounded-2xl border bg-neutral-950 transition-colors ${
-                        isActive ? "border-neutral-400" : "border-neutral-800 hover:border-neutral-600"
-                      }`}
-                    >
-                      <button
-                        onClick={() => setSelectedIdx(isActive ? null : i)}
-                        aria-expanded={isActive}
-                        className="flex w-full flex-col gap-1.5 px-4 py-3.5 text-left outline-none"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="gang-font text-lg leading-tight text-white">{h.area}</span>
-                          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">
-                            {h.province}
-                          </span>
-                          <span className="flex-1" />
-                          <span
-                            className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] ${intensityChipClass(h.intensity)}`}
-                          >
-                            {MAP_INTENSITY[(Math.min(5, Math.max(1, h.intensity)) as 1 | 2 | 3 | 4 | 5)] ?? "STIL"}
-                          </span>
-                          <ChevronDown
-                            className={`size-4 shrink-0 text-neutral-600 transition-transform ${isActive ? "rotate-180" : ""}`}
-                            aria-hidden
-                          />
-                        </div>
-                        <p className="line-clamp-2 text-xs font-semibold leading-relaxed text-neutral-400">
-                          {h.summary}
-                        </p>
-                        <div className="flex flex-wrap gap-1.5 pt-0.5">
-                          {tally.home > 0 && <Chip label={`FAST GUNS · ${tally.home}`} cls={BLOCK_CHIP_CLASS.home} />}
-                          {tally.ally > 0 && <Chip label={`AMERICANS · ${tally.ally}`} cls={BLOCK_CHIP_CLASS.ally} />}
-                          {tally.rival > 0 && <Chip label={`VARADOS · ${tally.rival}`} cls={BLOCK_CHIP_CLASS.rival} />}
-                          {tally.documented > 0 && <Chip label={`GEDOKUMENTEERD · ${tally.documented}`} cls={BLOCK_CHIP_CLASS.documented} />}
-                        </div>
-                      </button>
-
-                      {isActive && (
-                        <div className="border-t border-neutral-900 px-4 pb-4 pt-3">
-                          {(h.blocks ?? []).length > 0 && (
-                            <ul className="mb-3 flex flex-col gap-2">
-                              {(h.blocks ?? []).map((b) => (
-                                <li key={b.name} className="rounded-xl border border-neutral-900 bg-black px-3 py-2.5">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-[13px] font-bold text-neutral-100">{b.name}</span>
-                                    <span className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em] ${BLOCK_CHIP_CLASS[b.allegiance]}`}>
-                                      {blockChipLabel(b)}
-                                    </span>
-                                  </div>
-                                  {b.note && (
-                                    <p className={`mt-1 text-[11px] font-semibold leading-relaxed ${b.allegiance === "rival" ? "italic text-neutral-500" : "text-neutral-500"}`}>
-                                      {b.note}
-                                    </p>
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          {(h.gangs ?? []).length > 0 && (
-                            <div className="flex flex-col gap-1.5">
-                              <span className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-600">
-                                GEDOKUMENTEERDE GROEPE
-                              </span>
-                              {(h.gangs ?? []).map((gang) => (
-                                <div key={gang.name} className="flex items-baseline gap-2">
-                                  <span className="text-xs font-bold text-neutral-200">{gang.name}</span>
-                                  <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-neutral-600">
-                                    {gang.threat}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            )}
+          {/* theme flip — above the map chrome, thumb-reachable */}
+          <div className="absolute right-3 top-3 flex flex-col gap-1.5">
+            <button
+              onClick={() => setTheme("dark")}
+              aria-pressed={theme === "dark"}
+              className={`flex min-h-[44px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                theme === "dark"
+                  ? "border-white bg-black/85 text-white"
+                  : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
+              }`}
+            >
+              <Globe2 className="size-3.5" aria-hidden />
+              {MAP_THEME_DARK}
+            </button>
+            <button
+              onClick={() => setTheme("sat")}
+              aria-pressed={theme === "sat"}
+              className={`flex min-h-[44px] items-center gap-1.5 rounded-xl border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] backdrop-blur-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                theme === "sat"
+                  ? "border-white bg-black/85 text-white"
+                  : "border-neutral-700 bg-black/70 text-neutral-400 hover:text-white"
+              }`}
+            >
+              <Satellite className="size-3.5" aria-hidden />
+              {MAP_THEME_SAT}
+            </button>
           </div>
-        </div>
+
+          {/* country reset */}
+          <div className="absolute bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-3 flex flex-col gap-1.5">
+            <button
+              onClick={resetView}
+              className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/80 px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-300 backdrop-blur-sm outline-none transition-colors hover:border-neutral-400 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+            >
+              <MapPin className="size-3.5" aria-hidden />
+              {MAP_PICK_COUNTRY}
+            </button>
+          </div>
+        </section>
       </ScreenShell>
     </div>,
     document.body
-  );
-}
-
-// ------------------------------------------------------------------ pieces
-
-function Chip({ label, cls }: { label: string; cls: string }) {
-  return (
-    <span className={`rounded-full border px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.14em] ${cls}`}>
-      {label}
-    </span>
   );
 }

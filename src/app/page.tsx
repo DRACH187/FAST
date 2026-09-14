@@ -69,6 +69,7 @@ export default function Page() {
             onOpenMap={openMap}
             onOpenWanted={() => setWantedOpen(true)}
             onOpenLive={() => setLiveOpen(true)}
+            onBossSummon={(targets) => mgr.bossSummon(targets)}
           />
         ))}
 

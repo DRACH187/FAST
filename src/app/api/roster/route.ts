@@ -57,6 +57,7 @@ export async function POST(req: Request) {
     roll: roll.map((r) => ({
       nickname: r.nickname,
       role: r.role,
+      fp: r.fp,
       online: r.online,
       firstSeen: new Date(r.firstSeen).toISOString(),
       lastSeen: r.lastSeen ? new Date(r.lastSeen).toISOString() : null,

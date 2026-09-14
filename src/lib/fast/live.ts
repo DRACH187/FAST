@@ -12,6 +12,9 @@ import type { Role } from "@/lib/fast/identity-store";
 
 export type LiveUser = { fp: string; nickname: string; role: Role; since: number };
 
+/** A boss summons: the code of the E2EE session DRACH pulled you into. */
+export type Summon = { code: string; at: number };
+
 type LiveState = {
   online: LiveUser[];
   count: number;
@@ -25,6 +28,26 @@ let heartbeatInFlight = false;
 
 let myFp = "";
 let myToken = "";
+
+/** Boss-summons subscribers (session-manager auto-join lives here). */
+const summonHandlers = new Set<(s: Summon) => void>();
+
+export function onSummon(handler: (s: Summon) => void): () => void {
+  summonHandlers.add(handler);
+  return () => summonHandlers.delete(handler);
+}
+
+function dispatchSummons(list: Summon[]): void {
+  for (const s of list) {
+    for (const h of summonHandlers) {
+      try {
+        h(s);
+      } catch {
+        /* one bad handler never starves the rest */
+      }
+    }
+  }
+}
 
 function notify() {
   for (const l of listeners) l();
@@ -54,6 +77,7 @@ async function beat(): Promise<void> {
       ok?: boolean;
       count?: number;
       online?: { fp: string; nickname: string; role: string; since: number }[];
+      summons?: { code: string; at: number }[];
     };
     if (res.ok && data.ok === true && Array.isArray(data.online)) {
       setState({
@@ -66,6 +90,10 @@ async function beat(): Promise<void> {
         count: typeof data.count === "number" ? data.count : data.online.length,
         error: false,
       });
+      const fresh = (data.summons ?? []).filter(
+        (s) => typeof s?.code === "string" && /^[A-Z]{6}$/.test(s.code)
+      );
+      if (fresh.length > 0) dispatchSummons(fresh);
     } else {
       setState({ error: true });
     }

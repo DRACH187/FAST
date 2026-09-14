@@ -37,7 +37,7 @@ import {
   type CallsignIdentity,
   type StoredCallsign,
 } from "@/lib/fast/identity";
-import { configureHeartbeat, setHeartbeatActive } from "@/lib/fast/live";
+import { configureHeartbeat, onSummon, setHeartbeatActive, type Summon } from "@/lib/fast/live";
 import { stashGatePasscode } from "@/lib/crypto/keyvault";
 
 export type Phase = "splash" | "gate" | "callsign" | "app";
@@ -741,6 +741,112 @@ export function useSessionManager() {
     }
   }, []);
 
+  // ------------------------------------------------------------- BOSS SUMMONS
+
+  /** Dedupe ledger for summons (localStorage — codes seen in the last 10 min). */
+  const summonSeen = useCallback((code: string): boolean => {
+    try {
+      const key = "fast_summons_seen_v1";
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, number>;
+      for (const [c, at] of Object.entries(raw)) {
+        if (now - at > 10 * 60 * 1000) delete raw[c];
+      }
+      if (raw[code]) return true;
+      raw[code] = now;
+      localStorage.setItem(key, JSON.stringify(raw));
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /**
+   * A summons arrived: join the boss's room automatically. The room may sit
+   * on another warm lambda than this device's heartbeats — retry a few times
+   * before giving up honestly. If the user is already inside a chat we do
+   * NOT yank them: the room joins in the background with an alert toast.
+   */
+  const joinSummoned = useCallback(
+    async (code: string) => {
+      if (!CODE_RE.test(code)) return;
+      if (sessionsRef.current.some((s) => s.code === code)) return;
+      if (summonSeen(code)) return;
+
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const wasActive = activeCodeRef.current;
+          await joinSession(code);
+          if (wasActive) {
+            // user was mid-chat — put them back, the room rides with an alert
+            setActiveCode(wasActive);
+            patchSession(code, (s) => ({ unread: s.unread + 1 }));
+          }
+          toast.alert(`DRACH het jou ontbied — werf ${code} is oop`);
+          return;
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+      toast.error(
+        lastErr instanceof Error && lastErr.message.includes("404")
+          ? "Die boss se werf is al weg."
+          : "Kon nie by die boss se werf intrek nie — probeer self met die kode."
+      );
+    },
+    [summonSeen, joinSession, patchSession]
+  );
+
+  // summons subscription lives for the whole app phase
+  useEffect(() => {
+    if (phase !== "app") return;
+    return onSummon((s: Summon) => void joinSummoned(s.code));
+  }, [phase, joinSummoned]);
+
+  /**
+   * BOSS move: open a fresh E2EE session, then doorbell every target fp.
+   * The room is created client-side (key never leaves this tab), so summoned
+   * devices auto-join and get the key wrapped to them by THIS device.
+   * Rolls the room back if the doorbell call fails.
+   */
+  const bossSummon = useCallback(
+    async (targets: string[]) => {
+      const identity = identityRef.current;
+      const stored = callsignRef.current;
+      if (!identity || !stored || stored.role !== "boss") {
+        throw new Error("Boss ground only.");
+      }
+      const clean = [...new Set(targets.filter((t) => t && t !== identity.fingerprint))];
+      if (clean.length === 0) throw new Error("Niemand aanlyn om te ontbied nie.");
+
+      const code = await startSession();
+      try {
+        const res = await fetch("/api/summons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fingerprint: identity.fingerprint,
+            token: stored.token,
+            code,
+            targets: clean,
+          }),
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || data.ok !== true) {
+          throw new Error(typeof data.error === "string" ? data.error : "Summons rejected");
+        }
+        return code;
+      } catch (err) {
+        await deleteSession(code); // never leave an empty summoned room behind
+        throw err;
+      }
+    },
+    [deleteSession, startSession]
+  );
+
   /**
    * Take a photo -> encrypt -> sync. NOTHING is persisted: no DB row, no
    * vault blob, no wire cache. Only RAM on the devices currently in the room.
@@ -1089,6 +1195,7 @@ export function useSessionManager() {
     deleteSession,
     sendMessage,
     sendPhoto,
+    bossSummon,
     setActiveCode,
   };
 }

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { FastToaster } from "@/components/fast/toast";
+import { Lockdown } from "@/components/fast/lockdown";
 import { OfflineVaultRegistrar } from "@/components/fast/offline-vault";
 
 const geistSans = Geist({
@@ -61,6 +62,7 @@ export default function RootLayout({
       <body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased bg-background text-foreground`}>
         {children}
         <FastToaster />
+        <Lockdown />
         <OfflineVaultRegistrar />
       </body>
     </html>
