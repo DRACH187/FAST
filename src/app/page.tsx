@@ -113,6 +113,7 @@ export default function Page() {
                   onOpenWanted={() => setTab("wanted")}
                   onOpenLive={() => setTab("live")}
                   onDelete={(code) => mgr.deleteSession(code)}
+                  onClose={(code) => mgr.closeSession(code)}
                 />
               </div>
             ) : (
@@ -134,7 +135,13 @@ export default function Page() {
                   onOpenBossPanel={() => setBossPanelOpen(true)}
                   onOpenLive={() => setTab("live")}
                   onBossSummon={(targets, opts) =>
-                    mgr.bossSummon(targets, opts?.private ? { ttlMinutes: 120 } : undefined)
+                    mgr.bossSummon(targets, {
+                      // conscription (task 21): room given -> doorbell into
+                      // THAT werf; the bell hangs up to 2h so even offline
+                      // members get grabbed the moment they surface
+                      ttlMinutes: 120,
+                      ...(opts?.room ? { code: opts.room } : {}),
+                    })
                   }
                 />
               </div>

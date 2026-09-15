@@ -26,6 +26,8 @@ export function securityStats(): {
   gateLocks: number;
   gateLockoutsLive: number;
   circuitCount: number;
+  probeWatch: number;
+  probeTarpits: number;
 } {
   const now = Date.now();
   let gateLockoutsLive = 0;
@@ -33,11 +35,15 @@ export function securityStats(): {
     if (rec.lockedUntil > now) gateLockoutsLive += 1;
   }
   const minute = Math.floor(now / 60_000);
+  let probeTarpits = 0;
+  for (const rec of probes.values()) probeTarpits += rec.sleeps;
   return {
     limiterBuckets: buckets.size,
     gateLocks: failures.size,
     gateLockoutsLive,
     circuitCount: g.__fastCircuit?.minute === minute ? g.__fastCircuit.count : 0,
+    probeWatch: probes.size,
+    probeTarpits,
   };
 }
 
@@ -106,6 +112,7 @@ const g = globalThis as unknown as {
   __fastLimitBuckets?: BucketStore;
   __fastGateFailures?: Map<string, FailRec>;
   __fastCircuit?: { minute: number; count: number };
+  __fastProbes?: Map<string, ProbeRec>;
 };
 const buckets: BucketStore = g.__fastLimitBuckets ?? new Map();
 g.__fastLimitBuckets = buckets;
@@ -278,6 +285,70 @@ export function registerGateFailure(ip: string): void {
 export function clearGateFailures(ip: string): void {
   failures.delete(ip);
 }
+
+/** How many gate failures this source has stacked in the current window
+ *  (after the newest one registered) — drives the escalating tarpit. */
+export function gateFailCount(ip: string): number {
+  return failures.get(ip)?.count ?? 1;
+}
+
+// ------------------------------------------------------------------ tarpit
+// Room-probe tarpit: every `join` aimed at a NON-EXISTENT room is logged per
+// trusted source. Code-guessing is a 26^6 lottery — the honest user never
+// hits a dead room by accident — so after a small tolerance the source gets
+// escalating artificial LATENCY on every further probe. Slow attacks die of
+// old age; fast ones trip the limiter anyway. RAM-only, numbers-only stats.
+
+type ProbeRec = { count: number; first: number; sleeps: number };
+const probes: Map<string, ProbeRec> = g.__fastProbes ?? new Map();
+g.__fastProbes = probes;
+
+const PROBE_WINDOW_MS = 10 * 60_000;
+const PROBE_TOLERANCE = 20;
+const PROBE_MAX_MS = 3_000;
+
+export function registerProbe(ip: string): void {
+  const now = Date.now();
+  const rec = probes.get(ip);
+  if (!rec || now - rec.first > PROBE_WINDOW_MS) {
+    probes.set(ip, { count: 1, first: now, sleeps: 0 });
+    return;
+  }
+  rec.count += 1;
+}
+
+/** Milliseconds this source must stew before the answer — 0 for honest users. */
+export function probeTarpitMs(ip: string): number {
+  const rec = probes.get(ip);
+  if (!rec) return 0;
+  const now = Date.now();
+  if (now - rec.first > PROBE_WINDOW_MS) {
+    probes.delete(ip);
+    return 0;
+  }
+  if (rec.count <= PROBE_TOLERANCE) return 0;
+  return Math.min(600 + (rec.count - PROBE_TOLERANCE) * 120, PROBE_MAX_MS);
+}
+
+export function tarpitSleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Record that a tarpit actually fired (boss panel visibility). */
+export function registerProbeSleep(ip: string, ms: number): void {
+  const rec = probes.get(ip);
+  if (rec) rec.sleeps += Math.round(ms);
+}
+
+// opportunistic GC keeps the probe map bounded
+const probeGc = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of probes) {
+    if (now - rec.first > PROBE_WINDOW_MS) probes.delete(ip);
+  }
+}, 60_000);
+probeGc.unref?.();
 
 // opportunistic GC so the failure map stays bounded
 const failGc = setInterval(() => {

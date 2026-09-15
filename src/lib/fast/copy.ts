@@ -313,6 +313,35 @@ export const SUMMON_PRIVATE_NOTE =
 export const SUMMON_OFFLINE_TAG = "WEG — KLOK HOM TOG, DIT BLY HANG";
 export const ROSTER_ALLTIME = (n: number) => `${n} OUENS OIT DEUR DIE HEK`;
 
+// boss conscription (task 21) — DRACH throws members into ANY open werf,
+// whenever he wants. Not a new room necessarily: THE room of his choice.
+export const SUMMON_ROOM_LABEL = "GOOI HULLE IN WATTER WERF";
+export const SUMMON_ROOM_NEW = "NUWE WERF";
+export const SUMMON_ROOM_HINT =
+  "Kies 'n oop werf en hulle word IN DAAR ingegooi — nou as hulle aanlyn is, of die sekonde hulle opdaag. NUWE WERF maak 'n vars een oop soos gewoonlik.";
+export const SUMMON_INTO_CONFIRM = (n: string, c: string) => `Gooi ${n} in werf ${c}?`;
+export const SUMMON_INTO_ALL_CONFIRM = (n: number, c: string) =>
+  `Gooi almal — ${n} ouen${n === 1 ? "" : "e"} — in werf ${c}?`;
+export const SUMMON_INTO_DONE = (c: string) => `Hulle is geklooi — werf ${c} wag. Sleutels kom net van jou af.`;
+export const SUMMON_OFFLINE_INTO_TAG = "WEG — DIE KLOK BLY HANG TOT HY OPDAAK";
+export const SUMMON_INTO_DEAD_ROOM = "Daai werf se sleutel is van hierdie toestel weg — kies 'n ander of maak 'n nuwe werf.";
+
+// ------------------------------------------------------------ deletion v2
+// Deleting a chat is now a PICK, not a memory test: tap the werf off a list,
+// see exactly what dies with it, or type a remote code to kill a werf you
+// are not even standing in (creator/boss law enforced server-side).
+
+export const HUB_WIPE_TITLE = ["MOER 'N WERF UIT", "GRAAF DIE GRAF", "VERBRAND DIE KAK"] as const;
+export const HUB_WIPE_SUB =
+  "Kies die werf wat moet sterf. Almal word op die slag uitgeskop, elke toestel se kopie brand, geen undo, geen genade.";
+export const HUB_WIPE_PICK = "OOP WERWE — TIK OM TE VERBRAND";
+export const HUB_WIPE_TYPE_TOGGLE = "OF TIK DIE KODE — WERWE WAT HIER NIE STAAN NIE STERF OOK";
+export const HUB_WIPE_CONFIRM_GO = "VERBRAND VIR ALMAL";
+export const HUB_WIPE_DEAD = (c: string) => `Werf ${c} is as. Almal geskop. Fokol bly staan.`;
+export const HUB_WIPE_NONE = "Geen oop werwe op hierdie toestel nie — tik die kode.";
+export const HUB_ROW_BURN = (c: string) => `Verbrand werf ${c} vir almal`;
+export const HUB_WIPE_META = (live: number, msgs: number) => `${live} AANLYN · ${msgs} KOEËLS`;
+
 // ----------------------------------------------------------------- splash
 
 export const SPLASH_TAGLINE = "GEEN SAGTES HIER";
@@ -369,6 +398,17 @@ export const SEC_MEDIA_LAW = "ELKE BEELD EN VIDEO · GE-ENKRIPT VOORDAT DIT DIE 
 
 export const CHAT_MEDIA_SEALED = "AES-256 · GE-ENKRIPT";
 export const WANTED_MEDIA_BADGE = "AES-256-GCM";
+
+// chat deletion v2 — two clean, separated ways out; never a guess
+export const CHAT_BURN_TITLE = (c: string) => `Verbrand ${c} vir almal?`;
+export const CHAT_BURN_SUB =
+  "Elke ouen word op die slag uitgeskop en die geskiedenis brand van elkeen se toestel af. Geen undo, geen genade, fokol.";
+export const CHAT_BURN_GO = "VERBRAND VIR ALMAL";
+export const CHAT_BURN_META = (msgs: number, live: number) =>
+  `${msgs} KOEËLS · ${live} AANLYN — ALLES STERF SAAM MET DIE WERF`;
+export const CHAT_LEAVE_GO = "TOE VIR HIERDIE TOESTEL";
+export const CHAT_LEAVE_SUB =
+  "Hierdie toestel verbrand sy sleutels en klop uit. Die res bly praat sonder jou — om terug te kom moet iemand jou weer die sleutel gee.";
 
 // ----------------------------------------------------- boss command panel
 // DRACH's admin room — the whole site in one glass, boss eyes only. Counts,
@@ -435,6 +475,9 @@ export const PANEL_SYS_SUMMONS = (n: number) => `${n} ONTBIEDINGS HANG NOU`;
 export const PANEL_SYS_LIMITERS = (n: number) => `${n} RATE-LIMIT EMMERS AKTIEF`;
 export const PANEL_SYS_LOCKS = (n: number) => `${n} HEK-SLUITINGS · ${n === 1 ? "LYK" : "LYKE"} AGTER DIE HEK`;
 export const PANEL_SYS_CIRCUIT = (n: number) => `${n} VERSOEKE HIERDIE MINUUT`;
+export const PANEL_SYS_REPLAY = (n: number) => `${n} REPLAY-AANVALLE GEBLOK`;
+export const PANEL_SYS_PROBES = (n: number) => `${n} WERF-PROEERS IN DIE WAGHOK`;
+export const PANEL_SYS_TARPIT = (n: number) => `${n}ms TARPIT AAN PROEERS GEGEE`;
 export const PANEL_SYS_PLATFORM = (p: string) => `LOOP OP ${p.toUpperCase()}`;
 export const PANEL_SYS_LAW =
   "ALLES IN RAM · GEEN DATABASE · ALLES STERF MET DIE PROSES · NIKS OIT GESIEN WAT NIE SIFTERTEKS WAS NIE";

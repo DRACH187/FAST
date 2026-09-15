@@ -94,6 +94,11 @@ type SessionRec = {
   envelopes: (EnvelopeBlob & { seq: number })[];
   photos: (PhotoBlob & { seq: number })[];
   keyRequests: Map<string, number>; // fp -> requested-at ms
+  /** anti-replay: senderFp -> highest counter ever accepted from it. A
+   *  fingerprint binds to one ECDH key for its whole life (fresh reload =
+   *  fresh fingerprint), so per-fp counters are strictly monotonic and any
+   *  regression with a NEW message id is a replay, not a retry. */
+  counters: Map<string, number>;
   terminated: boolean;
   /** true once the 5h retention window elapsed — distinct from user delete */
   expired: boolean;
@@ -177,6 +182,7 @@ function expireSession(s: SessionRec) {
   s.photos = [];
   s.keyRequests = new Map();
   s.participants = new Map();
+  s.counters = new Map();
   s.terminated = true;
   s.expired = true;
   s.lastActivity = Date.now();
@@ -245,6 +251,7 @@ export function provisionSession(
     envelopes: [],
     photos: [],
     keyRequests: new Map(),
+    counters: new Map(),
     terminated: false,
     expired: false,
     lastActivity: Date.now(),
@@ -472,13 +479,46 @@ export function dropPresence(code: string, fingerprint: string) {
 }
 
 // ---------------------------------------------------------------- messages
+// ANTI-REPLAY (hostility pass): the client ratchet produces STRICTLY
+// increasing counters per (fingerprint, session). A message whose counter
+// regresses and whose id is NOT an exact retry is a captured packet being
+// shoved back into the room — it is refused and counted.
+
+export type AddResult = { ok: true } | { ok: false; reason: "replay" } | { ok: false; reason: "gone" };
+
+/* globalThis-pinned counter of refused replays — boss panel feed. */
+const gReplay = globalThis as unknown as { __fastReplayBlocks?: number };
+function registerReplayBlock(): void {
+  gReplay.__fastReplayBlocks = (gReplay.__fastReplayBlocks ?? 0) + 1;
+}
+export function bossReplayBlocks(): number {
+  return gReplay.__fastReplayBlocks ?? 0;
+}
+
+/**
+ * Shared counter gate for messages AND photos — they ride one ratchet per
+ * (fingerprint, session). Exact-id retries never reach this gate (they are
+ * deduped first); a NEW id with a regressed counter is a replay.
+ */
+function counterGate(s: SessionRec, senderFp: string, counter: number): "ok" | "replay" {
+  const prev = s.counters.get(senderFp);
+  if (prev !== undefined && counter <= prev) return "replay";
+  s.counters.set(senderFp, counter);
+  return "ok";
+}
 
 export function addMessage(
   code: string,
   blob: Omit<WireBlob, "createdAt"> & { createdAt?: string }
-): WireBlob | null {
+): AddResult {
   const s = getSession(code);
-  if (!s) return null;
+  if (!s) return { ok: false, reason: "gone" };
+  const existing = s.messages.find((m) => m.id === blob.id);
+  if (existing) return { ok: true }; // idempotent retries
+  if (counterGate(s, blob.senderFp, blob.counter) === "replay") {
+    registerReplayBlock();
+    return { ok: false, reason: "replay" };
+  }
   const rec: WireBlob & { seq: number } = {
     id: blob.id,
     senderFp: blob.senderFp,
@@ -489,14 +529,10 @@ export function addMessage(
     createdAt: blob.createdAt ?? new Date().toISOString(),
     seq: nextSeq(),
   };
-  // idempotent by id (client retries must not duplicate)
-  if (s.messages.some((m) => m.id === rec.id)) {
-    return s.messages.find((m) => m.id === rec.id) ?? null;
-  }
   s.messages.push(rec);
   s.lastActivity = Date.now();
   gcSession(s);
-  return rec;
+  return { ok: true };
 }
 
 export function listMessages(code: string, sinceSeq: number): (WireBlob & { seq: number })[] {
@@ -569,9 +605,15 @@ export function listKeyRequests(code: string): string[] {
 export function addPhoto(
   code: string,
   blob: { id: string; senderFp: string; counter: number; iv: string; data: string }
-): PhotoBlob | null {
+): AddResult {
   const s = getSession(code);
-  if (!s) return null;
+  if (!s) return { ok: false, reason: "gone" };
+  const existing = s.photos.find((p) => p.id === blob.id);
+  if (existing) return { ok: true }; // idempotent retries
+  if (counterGate(s, blob.senderFp, blob.counter) === "replay") {
+    registerReplayBlock();
+    return { ok: false, reason: "replay" };
+  }
   const rec: PhotoBlob & { seq: number } = {
     ...blob,
     createdAt: new Date().toISOString(),
@@ -581,7 +623,7 @@ export function addPhoto(
   s.photos.push(rec);
   s.lastActivity = Date.now();
   gcSession(s);
-  return rec;
+  return { ok: true };
 }
 
 export function listPhotos(code: string, sinceSeq: number): (PhotoBlob & { seq: number })[] {

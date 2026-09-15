@@ -1,10 +1,15 @@
 import { createHash } from "crypto";
 import { z } from "zod";
 import {
+  clientIp,
   json,
   missingConfigResponse,
+  probeTarpitMs,
   rateLimit,
   readJson,
+  registerProbe,
+  registerProbeSleep,
+  tarpitSleep,
   verifyAttestation,
 } from "@/lib/server-guard";
 import * as store from "@/lib/fast/memory-store";
@@ -153,6 +158,7 @@ export async function POST(req: Request, { params }: Ctx) {
   const fp = body.fingerprint;
   const action = body.action ?? "sync";
   const create = body.create === true;
+  const ip = clientIp(req);
   const cursors = {
     msg: body.cursors?.msg ?? 0,
     env: body.cursors?.env ?? 0,
@@ -221,6 +227,15 @@ export async function POST(req: Request, { params }: Ctx) {
       store.enforceTtl(code);
       return syncPayload(code, fp, cursors, true);
     }
+    // TARPIT: a join aimed at a room that does not exist is a code-guessing
+    // probe. Honest users typo once, at most; systematic guessers earn
+    // escalating latency before the honest "nothing here" answer.
+    registerProbe(ip);
+    const stew = probeTarpitMs(ip);
+    if (stew > 0) {
+      registerProbeSleep(ip, stew);
+      await tarpitSleep(stew);
+    }
     return json({ ok: true, alive: false });
   }
 
@@ -253,7 +268,7 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ ok: false, error: "Join before posting." }, 403);
     }
     store.enforceTtl(code);
-    store.addMessage(code, {
+    const put = store.addMessage(code, {
       id: m.id,
       senderFp: m.senderFp,
       counter: m.counter,
@@ -261,6 +276,14 @@ export async function POST(req: Request, { params }: Ctx) {
       ciphertext: m.ciphertext,
       sig: m.sig,
     });
+    // ANTI-REPLAY: a NEW message id riding a regressed ratchet counter is a
+    // captured packet being shoved back into the room. Refused, never stored.
+    if (!put.ok) {
+      if (put.reason === "replay") {
+        return json({ ok: false, error: "Replay rejected" }, 409);
+      }
+      return json({ ok: true, alive: false }); // room died mid-flight
+    }
     return syncPayload(code, fp, cursors, false);
   }
 
@@ -289,13 +312,20 @@ export async function POST(req: Request, { params }: Ctx) {
     }
     store.enforceTtl(code);
     // RAM-ONLY with a hard 60s TTL — the server forwards and forgets.
-    store.addPhoto(code, {
+    // Same anti-replay ratchet gate as text: photos share the counter space.
+    const put = store.addPhoto(code, {
       id: p.id,
       senderFp: p.senderFp,
       counter: p.counter,
       iv: p.iv,
       data: p.data,
     });
+    if (!put.ok) {
+      if (put.reason === "replay") {
+        return json({ ok: false, error: "Replay rejected" }, 409);
+      }
+      return json({ ok: true, alive: false });
+    }
     return syncPayload(code, fp, cursors, false);
   }
 

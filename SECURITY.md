@@ -323,3 +323,54 @@ explicit. Recorded changes and their honest scope:
   the device holder); it renders no key material. The auto-lock pulse now
   also rides rail/dock interactions, keeping the dead-man's switch honest
   while the user navigates.
+
+## 12. Hostility pass (task 21) — recorded changes and honest scope
+
+User mandate: "make it hell for cybersecurity experts." Interpreted as it
+must be for a private E2EE messenger: make the app maximally HOSTILE to
+attackers, traffic analysts and forensic collection — never to the people
+using it. All changes below are defensive. Nothing here evades lawful
+process, defeats other people's security tooling, or touches third-party
+systems; the house has no such capability by design (zero databases, no
+plaintext anywhere, nothing to seize that survives the process).
+
+- **Anti-replay ratchet enforcement (server).** Every fingerprint binds to
+  exactly one ECDH keypair for its lifetime, so per-(session, sender)
+  counters are strictly monotonic by construction. The relay now refuses —
+  HTTP 409, never stored, never relayed — any message or photo whose
+  counter regresses and whose id is not an exact retry of an already-
+  stored packet. A captured ciphertext replayed into a room now dies at
+  the door. Refusals are counted for the boss panel.
+- **Escalating gate tarpit (server).** The flat 350 ms failure delay is
+  replaced with an escalating one: the Nth wrong passcode from a source
+  stews N×350 ms, capped at 2 s, before the constant-time denial returns.
+  Combined with the existing 10/60s limiter and the 10m→30m→90m→6h→24h
+  lockout ladder, online guessing now decays into geological time.
+- **Room-probe tarpit (server).** Every `join` aimed at a room that does
+  not exist is a code-guessing probe (the code space is 23^6 ≈ 148M).
+  Honest users never hit dead rooms systematically, so after a 20-probe
+  tolerance inside a 10-minute window the source earns escalating
+  artificial latency (0.6s → 3s cap) on every further probe — the honest
+  "nothing here" answer still comes, it just comes slowly. Probe counts
+  and total tarpit milliseconds feed the boss panel (numbers only; the
+  tarpit table is keyed on the trusted IP hash and dies with the process).
+- **Crawl/preview amputation.** `src/app/robots.ts` now disallows every
+  user-agent from every path, on top of the existing
+  `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`
+  header — the deployment cannot be indexed, archived, or link-previewed.
+- **Deletion made honest (UX as a security control).** A wipe you can't
+  find or verify is a wipe that doesn't happen. The hub wipe flow is now a
+  pick-off-a-list modal (code, live-count, bullet-count, TTL chip per
+  victim werf), with a typed-code fallback for remote kills, and each hub
+  row carries a direct burn button. The in-chat modal separates "burn for
+  everyone" from "leave on this device" with explicit consequences. The
+  server-side authority law is unchanged: creator or attested boss only.
+- **Conscription is boss-only, doorbell-only.** DRACH throwing members
+  into a room of his choice moves one more line of metadata (target fp +
+  code + timestamp) through the existing RAM-only summons table. No
+  content, no new persistence, same HMAC boss attestation requirement.
+
+Not done, deliberately: no client fingerprinting beyond the existing
+RAM-only device handle, no anti-debug theatre, no decoy content schemes
+that could mislead the app's own users. The house stays hostile outward
+and honest inward.

@@ -3,12 +3,14 @@ import {
   circuitBreaker,
   clearGateFailures,
   clientIp,
+  gateFailCount,
   gateLockState,
   json,
   missingConfigResponse,
   rateLimit,
   readJson,
   registerGateFailure,
+  tarpitSleep,
   verifyPasscode,
 } from "@/lib/server-guard";
 
@@ -25,7 +27,9 @@ import {
  *      client-supplied XFF values cannot mint new buckets
  *   4. escalating lockout — 8 failures inside 10 minutes locks the source
  *      for 10m, then 30m, 90m, 6h, 24h on repeat offenses
- *   5. constant-time comparison + constant delay on failure
+ *   5. constant-time comparison + ESCALATING tarpit on every failure —
+ *      the Nth bad guess stews N×350ms (capped at 2s) before the denial,
+ *      so brute-force walls decay into geological time
  */
 
 const bodySchema = z.object({ passcode: z.string().min(1).max(256) }).strict();
@@ -70,9 +74,10 @@ export async function POST(req: Request) {
   }
 
   if (!verifyPasscode(check.data.passcode)) {
-    // escalating lockout + small constant delay to blunt online guessing
+    // escalating lockout + ESCALATING tarpit: every stacked failure makes
+    // the next denial slower to arrive. Online guessing becomes mud.
     registerGateFailure(ip);
-    await new Promise((r) => setTimeout(r, 350));
+    await tarpitSleep(Math.min(gateFailCount(ip) * 350, 2_000));
     const after = gateLockState(ip);
     return json(
       { ok: false, error: after.locked ? "Locked. Try again later." : "Access denied" },

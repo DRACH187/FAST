@@ -19,12 +19,15 @@ import {
   Activity,
   Crosshair,
   Cpu,
+  EyeOff,
   Flame,
   KeyRound,
   MessagesSquare,
   Radio,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
+  Timer,
   Users,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
@@ -65,9 +68,12 @@ import {
   PANEL_SYS_LOCKS,
   PANEL_SYS_NODE,
   PANEL_SYS_PLATFORM,
+  PANEL_SYS_PROBES,
   PANEL_SYS_RAM,
+  PANEL_SYS_REPLAY,
   PANEL_SYS_STARTED,
   PANEL_SYS_SUMMONS,
+  PANEL_SYS_TARPIT,
   PANEL_SYS_UPTIME,
   PANEL_TAB_ROLL,
   PANEL_TAB_SESSIONS,
@@ -144,6 +150,9 @@ type PanelData = {
     gateLocks: number;
     gateLockoutsLive: number;
     circuitCount: number;
+    replayBlocks: number;
+    probeWatch: number;
+    probeTarpits: number;
   };
 };
 
@@ -376,11 +385,11 @@ function RollTab({ data }: { data: PanelData }) {
         </p>
       ) : (
         <div className="flex max-h-[34dvh] flex-col gap-2 overflow-y-auto pr-0.5">
-          {members.roll.map((r) => {
+          {members.roll.map((r, ri) => {
             const boss = r.role === "boss";
             return (
               <div
-                key={r.nickname}
+                key={`${r.nickname}-${ri}`}
                 className="flex items-center gap-2.5 rounded-xl border border-neutral-900 bg-black px-3 py-2.5"
               >
                 <span
@@ -419,9 +428,9 @@ function RollTab({ data }: { data: PanelData }) {
             {PANEL_SYS_LIVE(members.live.length)}
           </span>
           <div className="flex flex-wrap gap-1.5">
-            {members.live.map((l) => (
+            {members.live.map((l, li) => (
               <span
-                key={l.nickname}
+                key={`${l.nickname}-${li}`}
                 className="flex items-center gap-1.5 rounded-full border border-neutral-800 bg-neutral-950 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-200"
               >
                 <span aria-hidden className="size-1 animate-fast-pulse rounded-full bg-white" />
@@ -497,9 +506,9 @@ function SessionInspectCard({ row, now }: { row: PanelSessionRow; now: number })
 
       {row.members.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {row.members.map((m) => (
+          {row.members.map((m, mi) => (
             <span
-              key={m.nickname}
+              key={`${m.nickname}-${mi}`}
               className={`rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.12em] ${
                 m.role === "boss"
                   ? "drach-font border-neutral-600 text-[11px] normal-case tracking-normal text-white"
@@ -579,6 +588,11 @@ function SystemTab({ data }: { data: PanelData }) {
         <Stat icon={Flame} value={String(data.summons.pending)} label={PANEL_SYS_SUMMONS(data.summons.pending)} />
         <Stat icon={ShieldCheck} value={String(sys.limiterBuckets)} label={PANEL_SYS_LIMITERS(sys.limiterBuckets)} />
         <Stat icon={KeyRound} value={String(sys.gateLockoutsLive)} label={PANEL_SYS_LOCKS(sys.gateLockoutsLive)} />
+      </StatRow>
+      <StatRow>
+        <Stat icon={ShieldAlert} value={String(sys.replayBlocks)} label={PANEL_SYS_REPLAY(sys.replayBlocks)} />
+        <Stat icon={EyeOff} value={String(sys.probeWatch)} label={PANEL_SYS_PROBES(sys.probeWatch)} />
+        <Stat icon={Timer} value={`${sys.probeTarpits}ms`} label={PANEL_SYS_TARPIT(sys.probeTarpits)} />
       </StatRow>
 
       <div className="flex flex-col gap-1.5 rounded-xl border border-neutral-900 bg-black px-3.5 py-3 font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.16em] text-neutral-400">

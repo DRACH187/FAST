@@ -9,7 +9,7 @@ import {
 } from "@/lib/server-guard";
 import { listLive, listRoster } from "@/lib/fast/identity-store";
 import { memberTotal } from "@/lib/fast/server-roll";
-import { bossChatTotals, bossInspect } from "@/lib/fast/memory-store";
+import { bossChatTotals, bossInspect, bossReplayBlocks } from "@/lib/fast/memory-store";
 import { summonStats } from "@/lib/fast/summons";
 import { wantedBoardStats } from "@/lib/fast/wanted-board";
 
@@ -138,6 +138,9 @@ export async function POST(req: Request) {
       gateLocks: security.gateLocks,
       gateLockoutsLive: security.gateLockoutsLive,
       circuitCount: security.circuitCount,
+      replayBlocks: bossReplayBlocks(),
+      probeWatch: security.probeWatch,
+      probeTarpits: security.probeTarpits,
     },
   });
 }

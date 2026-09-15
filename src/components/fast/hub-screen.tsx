@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Copy,
   Crown,
+  Flame,
   KeyRound,
   Lock,
   Plus,
@@ -42,6 +43,10 @@ import {
   SUMMON_CONFIRM_ALL,
   SUMMON_DONE,
   SUMMON_GO,
+  SUMMON_INTO_ALL_CONFIRM,
+  SUMMON_INTO_CONFIRM,
+  SUMMON_INTO_DONE,
+  SUMMON_OFFLINE_INTO_TAG,
   SUMMON_NOTE,
   SUMMON_OFFLINE_TAG,
   SUMMON_PRIVATE_CONFIRM,
@@ -49,15 +54,24 @@ import {
   SUMMON_PRIVATE_DONE,
   SUMMON_PRIVATE_NOTE,
   SUMMON_PRIVATE_SHORT,
+  SUMMON_ROOM_HINT,
+  SUMMON_ROOM_LABEL,
+  SUMMON_ROOM_NEW,
+  HUB_ROW_BURN,
+  HUB_WIPE_CONFIRM_GO,
+  HUB_WIPE_DEAD,
+  HUB_WIPE_META,
+  HUB_WIPE_NONE,
+  HUB_WIPE_PICK,
+  HUB_WIPE_SUB,
+  HUB_WIPE_TITLE,
+  HUB_WIPE_TYPE_TOGGLE,
   PANEL_TITLE,
   HUB_CODE_LABEL,
-  HUB_CONFIRM_DELETE,
-  HUB_DELETE,
   HUB_EMPTY,
   HUB_FOOTER,
   HUB_JOIN,
   HUB_SESSION_CREATED,
-  HUB_SESSION_DELETED,
   HUB_SESSION_JOINED,
   HUB_START,
   HUB_TAGLINES,
@@ -106,10 +120,11 @@ type HubProps = {
   /** Delete/replace the saved nickname — returns to the callsign login. */
   onSwitchCallsign: () => void;
   onOpenLive: () => void;
-  /** BOSS move: open a fresh E2EE session and doorbell the target fps.
-   *  `opts.private` = a 1:1 DRACH invite whose doorbell hangs up to 2h so
-   *  even an OFFLINE member gets rung the moment they next surface. */
-  onBossSummon: (targets: string[], opts?: { private?: boolean }) => Promise<string>;
+  /** BOSS move — conscription: doorbell the target fps into a session.
+   *  `opts.room` = throw them into THAT open werf (whenever — the bell
+   *  hangs up to 2h for offline members); omitted = open a fresh one.
+   *  `opts.private` = a 1:1 DRACH invite in a brand-new room. */
+  onBossSummon: (targets: string[], opts?: { private?: boolean; room?: string }) => Promise<string>;
   /** Open the profile sheet (owned by the shell since task 19). */
   onOpenProfile: () => void;
   /** Open the BOSS COMMAND PANEL — every ouen, every werf, every count. */
@@ -136,6 +151,9 @@ export function HubScreen({
   const [joinCode, setJoinCode] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteCode, setDeleteCode] = useState("");
+  // wipe v2: pick the victim werf off a list, or type a remote code
+  const [wipeSel, setWipeSel] = useState<string | null>(null);
+  const [wipeTypedOpen, setWipeTypedOpen] = useState(false);
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   // boss-only roll of every callsign that ever stepped in
@@ -149,12 +167,13 @@ export function HubScreen({
   // summon confirmation state — one private 1:1 invite, or the whole online roll
   const [summonPick, setSummonPick] = useState<{ mode: "one"; fp: string; nickname: string; online: boolean } | { mode: "all" } | null>(null);
   const [summonBusy, setSummonBusy] = useState(false);
+  // conscription target room — null = open a brand-new werf (classic summons)
+  const [summonRoom, setSummonRoom] = useState<string | null>(null);
   // one war cry per visit — fresh from the house voice
   const warCry = useHouseLine(HUB_TAGLINES);
   const startLabel = useHouseLine(HUB_START);
   const joinLabel = useHouseLine(HUB_JOIN);
-  const deleteLabel = useHouseLine(HUB_DELETE);
-  const deleteConfirm = useHouseLine(HUB_CONFIRM_DELETE);
+  const wipeTitle = useHouseLine(HUB_WIPE_TITLE);
   const emptyLine = useHouseLine(HUB_EMPTY);
   const footerLine = useHouseLine(HUB_FOOTER);
 
@@ -203,17 +222,20 @@ export function HubScreen({
   );
 
   const submitDelete = useCallback(async () => {
-    const code = deleteCode.trim().toUpperCase();
+    // wipe v2 — the victim comes from the list (wipeSel) or the typed code
+    const code = (wipeSel ?? deleteCode).trim().toUpperCase();
     if (!CODE_RE.test(code)) return;
     try {
       await onDelete(code);
       setDeleteOpen(false);
       setDeleteCode("");
-      toast.success(HUB_SESSION_DELETED);
+      setWipeSel(null);
+      setWipeTypedOpen(false);
+      toast.success(HUB_WIPE_DEAD(code));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Uitmoer het gemors — vuur weer");
     }
-  }, [deleteCode, onDelete]);
+  }, [deleteCode, onDelete, wipeSel]);
 
   const copyCode = useCallback((code: string) => {
     void navigator.clipboard.writeText(code);
@@ -226,6 +248,7 @@ export function HubScreen({
     setRosterLoading(true);
     setRosterError(null);
     setSummonPick(null);
+    setSummonRoom(null);
     setRosterQuery("");
     try {
       const res = await fetch("/api/roster", {
@@ -255,9 +278,9 @@ export function HubScreen({
     }
   }, [callsign, identityFp]);
 
-  /** THE BOSS MOVE: new E2EE room, doorbell the targets, step in and hold it.
-   *  A private pick rings one doorbell with a 2h hang time — the invited
-   *  member walks into a room that only he and the boss hold keys for. */
+  /** THE BOSS MOVE — conscription: throw the targets into the chosen werf
+   *  (or a fresh one when none is picked). Private picks keep the 1:1 law:
+   *  a brand-new room only he and the member hold keys for. */
   const execSummon = useCallback(async () => {
     if (!summonPick || summonBusy) return;
     setSummonBusy(true);
@@ -266,18 +289,24 @@ export function HubScreen({
         summonPick.mode === "one"
           ? [summonPick.fp]
           : (rosterRows ?? []).filter((r) => r.online && r.role !== "boss").map((r) => r.fp);
-      const isPrivate = summonPick.mode === "one";
-      const code = await onBossSummon(targets, isPrivate ? { private: true } : undefined);
+      const isPrivate = summonPick.mode === "one" && !summonRoom;
+      const code = await onBossSummon(targets, {
+        private: isPrivate,
+        ...(summonRoom ? { room: summonRoom } : {}),
+      });
       setSummonPick(null);
       setRosterOpen(false);
-      toast.success(isPrivate ? SUMMON_PRIVATE_DONE(code) : SUMMON_DONE(code));
-      onOpen(code); // boss holds the room — keys wrap out from this device
+      setSummonRoom(null);
+      toast.success(
+        summonRoom ? SUMMON_INTO_DONE(code) : isPrivate ? SUMMON_PRIVATE_DONE(code) : SUMMON_DONE(code)
+      );
+      if (!summonRoom) onOpen(code); // fresh room — the boss steps in and holds it
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Ontbieding geblok — skree weer");
     } finally {
       setSummonBusy(false);
     }
-  }, [onBossSummon, onOpen, rosterRows, summonBusy, summonPick]);
+  }, [onBossSummon, onOpen, rosterRows, summonBusy, summonPick, summonRoom]);
 
   return (
     <ScreenShell
@@ -425,6 +454,10 @@ export function HubScreen({
                     now={now}
                     onOpen={() => onOpen(s.code)}
                     onClose={() => setLeaveCode(s.code)}
+                    onBurn={() => {
+                      setWipeSel(s.code);
+                      setDeleteOpen(true);
+                    }}
                   />
                 ))}
               </ul>
@@ -509,43 +542,100 @@ export function HubScreen({
         </div>
       </FastModal>
 
-      {/* wipe for everyone */}
+      {/* wipe v2 — pick the victim off a list, see exactly what dies, or type
+          a remote code to burn a werf this device is not even standing in */}
       <FastModal
         open={deleteOpen}
         onClose={() => {
           setDeleteOpen(false);
           setDeleteCode("");
+          setWipeSel(null);
+          setWipeTypedOpen(false);
         }}
         label="Wipe a session for everyone"
       >
         <div className="flex flex-col gap-4">
           <div className="text-center">
             <h2 className="flex items-center justify-center gap-2 text-base font-bold text-neutral-100">
-              <Trash2 className="size-5 text-neutral-300" aria-hidden />
-              {deleteLabel}
+              <Flame className="size-5 text-neutral-200" aria-hidden />
+              {wipeTitle}
             </h2>
-            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">
-              {deleteConfirm} Die kode, die rol en die geskiedenis — <span className="text-neutral-100">vir almal</span>, dadelik, onomkeerbaar.
-            </p>
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">{HUB_WIPE_SUB}</p>
           </div>
-          <FastInput
-            value={deleteCode}
-            onChange={(e) => setDeleteCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6))}
-            placeholder="KODE"
-            aria-label="Session code to wipe"
-            autoCapitalize="characters"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={6}
-            className="text-center font-mono text-xl font-black tracking-[0.4em] uppercase"
-          />
+
+          {sessions.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-300">
+                {HUB_WIPE_PICK}
+              </span>
+              <ul className="flex max-h-56 flex-col gap-2 overflow-y-auto">
+                {sessions.map((s) => (
+                  <li key={s.code}>
+                    <button
+                      type="button"
+                      onClick={() => setWipeSel((cur) => (cur === s.code ? null : s.code))}
+                      aria-pressed={wipeSel === s.code}
+                      aria-label={`Select ${s.code} to wipe for everyone`}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left outline-none transition-colors ${
+                        wipeSel === s.code
+                          ? "border-white bg-neutral-900"
+                          : "border-neutral-800 bg-black hover:border-neutral-600"
+                      }`}
+                    >
+                      <Flame
+                        className={`size-4 shrink-0 ${wipeSel === s.code ? "text-white" : "text-neutral-500"}`}
+                        aria-hidden
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="font-mono text-base font-black tracking-[0.24em] text-white">{s.code}</span>
+                        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-neutral-500">
+                          {HUB_WIPE_META(s.presence.length, s.messages.length)}
+                        </span>
+                      </span>
+                      <WipeChip expiresAt={s.expiresAt} now={now} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="rounded-xl border border-dashed border-neutral-800 px-3.5 py-3 text-center text-xs font-semibold text-neutral-500">
+              {HUB_WIPE_NONE}
+            </p>
+          )}
+
+          {wipeTypedOpen ? (
+            <FastInput
+              value={deleteCode}
+              onChange={(e) => {
+                setDeleteCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 6));
+                setWipeSel(null);
+              }}
+              placeholder="KODE"
+              aria-label="Session code to wipe"
+              autoCapitalize="characters"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={6}
+              className="text-center font-mono text-xl font-black tracking-[0.4em] uppercase"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setWipeTypedOpen(true)}
+              className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500 underline-offset-4 outline-none transition-colors hover:text-neutral-300 hover:underline"
+            >
+              {HUB_WIPE_TYPE_TOGGLE}
+            </button>
+          )}
+
           <div className="flex flex-col gap-2">
             <FastButton
-              disabled={!CODE_RE.test(deleteCode.trim())}
+              disabled={!CODE_RE.test((wipeSel ?? deleteCode).trim())}
               onClick={() => void submitDelete()}
               className="w-full font-mono text-sm uppercase tracking-[0.24em]"
             >
-              VERBRAND ALLES
+              {HUB_WIPE_CONFIRM_GO}
             </FastButton>
             <FastButton
               variant="ghost"
@@ -553,6 +643,8 @@ export function HubScreen({
               onClick={() => {
                 setDeleteOpen(false);
                 setDeleteCode("");
+                setWipeSel(null);
+                setWipeTypedOpen(false);
               }}
             >
               Bly maar
@@ -617,6 +709,53 @@ export function HubScreen({
                       />
                     </div>
 
+                    {/* CONSCRIPTION — which werf takes the new bodies? DRACH
+                        throws them into ANY open room he holds the key for,
+                        whenever he wants: now, or the moment they surface. */}
+                    <div className="flex flex-col gap-2">
+                      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-300">
+                        {SUMMON_ROOM_LABEL}
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSummonRoom(null)}
+                          disabled={summonBusy}
+                          aria-pressed={summonRoom === null}
+                          className={`flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 font-mono text-[11px] font-bold uppercase tracking-[0.16em] outline-none transition-colors disabled:opacity-40 ${
+                            summonRoom === null
+                              ? "border-white bg-white text-black"
+                              : "border-neutral-800 bg-black text-neutral-200 hover:border-neutral-500"
+                          }`}
+                        >
+                          <Plus className="size-3.5" aria-hidden />
+                          {SUMMON_ROOM_NEW}
+                        </button>
+                        {sessions
+                          .filter((s) => s.hasKey)
+                          .map((s) => (
+                            <button
+                              key={s.code}
+                              type="button"
+                              onClick={() => setSummonRoom(s.code)}
+                              disabled={summonBusy}
+                              aria-pressed={summonRoom === s.code}
+                              className={`flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 font-mono text-[11px] font-black uppercase tracking-[0.2em] outline-none transition-colors disabled:opacity-40 ${
+                                summonRoom === s.code
+                                  ? "border-white bg-white text-black"
+                                  : "border-neutral-800 bg-black text-neutral-200 hover:border-neutral-500"
+                              }`}
+                            >
+                              <Radio className="size-3.5" aria-hidden />
+                              {s.code}
+                            </button>
+                          ))}
+                      </div>
+                      <p className="rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-neutral-400">
+                        {SUMMON_ROOM_HINT}
+                      </p>
+                    </div>
+
                     {/* ONLINE — summonable now */}
                     <div className="flex flex-col gap-2">
                       <span className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-300">
@@ -631,7 +770,7 @@ export function HubScreen({
                         <ul className="flex flex-col gap-2">
                           {onlineRows.map((r) => (
                             <RosterLine
-                              key={r.nickname}
+                              key={r.fp}
                               row={r}
                               inviteable={r.role !== "boss"}
                               summonBusy={summonBusy}
@@ -653,7 +792,7 @@ export function HubScreen({
                         <ul className="flex flex-col gap-2">
                           {offlineRows.map((r) => (
                             <RosterLine
-                              key={r.nickname}
+                              key={r.fp}
                               row={r}
                               inviteable={r.role !== "boss"}
                               summonBusy={summonBusy}
@@ -695,11 +834,17 @@ export function HubScreen({
           {summonPick && !summonBusy && (
             <div className="sticky bottom-0 flex flex-col gap-2 rounded-xl border border-neutral-700 bg-neutral-950 p-3">
               <p className="text-center text-sm font-bold text-neutral-100">
-                {summonPick.mode === "one" ? SUMMON_PRIVATE_CONFIRM(summonPick.nickname) : SUMMON_CONFIRM_ALL((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length)}
+                {summonPick.mode === "one"
+                  ? summonRoom
+                    ? SUMMON_INTO_CONFIRM(summonPick.nickname, summonRoom)
+                    : SUMMON_PRIVATE_CONFIRM(summonPick.nickname)
+                  : summonRoom
+                    ? SUMMON_INTO_ALL_CONFIRM((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length, summonRoom)
+                    : SUMMON_CONFIRM_ALL((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length)}
               </p>
               {summonPick.mode === "one" && !summonPick.online && (
                 <p className="text-center font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-neutral-500">
-                  {SUMMON_OFFLINE_TAG}
+                  {summonRoom ? SUMMON_OFFLINE_INTO_TAG : SUMMON_OFFLINE_TAG}
                 </p>
               )}
               <div className="grid grid-cols-2 gap-2">
@@ -707,10 +852,10 @@ export function HubScreen({
                   {SUMMON_CANCEL}
                 </FastButton>
                 <FastButton onClick={() => void execSummon()} className="w-full font-mono text-xs uppercase tracking-[0.18em]">
-                  {summonPick.mode === "one" ? SUMMON_PRIVATE_CTA : SUMMON_GO}
+                  {summonPick.mode === "one" && !summonRoom ? SUMMON_PRIVATE_CTA : SUMMON_GO}
                 </FastButton>
               </div>
-              {summonPick.mode === "one" && (
+              {summonPick.mode === "one" && !summonRoom && (
                 <p className="text-[11px] font-semibold leading-relaxed text-neutral-500">{SUMMON_PRIVATE_NOTE}</p>
               )}
             </div>
@@ -928,11 +1073,13 @@ function SessionRow({
   now,
   onOpen,
   onClose,
+  onBurn,
 }: {
   session: SessionView;
   now: number;
   onOpen: () => void;
   onClose: () => void;
+  onBurn: () => void;
 }) {
   const rowRef = useRef<HTMLLIElement>(null);
 
@@ -1010,6 +1157,15 @@ function SessionRow({
         className="absolute -right-1.5 -top-1.5 flex size-7 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-400 outline-none transition-colors after:absolute after:-inset-2.5 after:rounded-full after:content-[''] hover:border-neutral-400 hover:text-white focus-visible:border-neutral-300 focus-visible:text-white"
       >
         <X className="size-4" aria-hidden />
+      </button>
+      {/* burn for everyone — jumps straight into the wipe modal with this
+          werf pre-picked (server still enforces creator/boss authority) */}
+      <button
+        onClick={onBurn}
+        aria-label={HUB_ROW_BURN(session.code)}
+        className="absolute -left-1.5 -top-1.5 flex size-7 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-400 outline-none transition-colors after:absolute after:-inset-2.5 after:rounded-full after:content-[''] hover:border-white hover:text-white focus-visible:border-neutral-300 focus-visible:text-white"
+      >
+        <Flame className="size-4" aria-hidden />
       </button>
     </li>
   );

@@ -28,7 +28,19 @@ import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/co
 import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
-import { CHAT_EMPTY, CHAT_MEDIA_SEALED, CHAT_PLACEHOLDER, CHAT_TTL_TICKER, pick } from "@/lib/fast/copy";
+import {
+  CHAT_BURN_GO,
+  CHAT_BURN_META,
+  CHAT_BURN_SUB,
+  CHAT_BURN_TITLE,
+  CHAT_EMPTY,
+  CHAT_LEAVE_GO,
+  CHAT_LEAVE_SUB,
+  CHAT_MEDIA_SEALED,
+  CHAT_PLACEHOLDER,
+  CHAT_TTL_TICKER,
+  pick,
+} from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
@@ -71,6 +83,8 @@ type ChatProps = {
   onOpenWanted: () => void;
   onOpenLive: () => void;
   onDelete: (code: string) => Promise<void>;
+  /** Leave on THIS device only — keys burn here, the room stays alive. */
+  onClose: (code: string) => void;
 };
 
 export function ChatScreen({
@@ -84,6 +98,7 @@ export function ChatScreen({
   onOpenWanted,
   onOpenLive,
   onDelete,
+  onClose,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -571,7 +586,8 @@ export function ChatScreen({
         </div>
       </FastModal>
 
-      {/* delete confirm */}
+      {/* delete confirm — two clean, separated ways out: burn it for EVERY
+          member (server enforces creator/boss) or just leave on this device */}
       <FastModal
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
@@ -581,10 +597,11 @@ export function ChatScreen({
           <div>
             <h2 className="flex items-center justify-center gap-2 text-base font-bold text-neutral-100">
               <ShieldAlert className="size-5 text-neutral-200" aria-hidden />
-              Verbrand {session.code} vir almal?
+              {CHAT_BURN_TITLE(session.code)}
             </h2>
-            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">
-              Elke ouen word op die slag uitgeskop en die geskiedenis word van elkeen se toestel geskop. Daar is geen undo nie.
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">{CHAT_BURN_SUB}</p>
+            <p className="mt-3 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              {CHAT_BURN_META(session.messages.length, session.presence.length)}
             </p>
           </div>
           <div className="flex flex-col gap-2">
@@ -597,8 +614,21 @@ export function ChatScreen({
               }}
               className="w-full font-mono text-sm uppercase tracking-[0.24em]"
             >
-              VERBRAND VIR ALMAL
+              {CHAT_BURN_GO}
             </FastButton>
+            <div className="rounded-xl border border-neutral-900 bg-black px-3.5 py-3">
+              <FastButton
+                variant="outline"
+                className="w-full font-mono text-xs uppercase tracking-[0.2em]"
+                onClick={() => {
+                  setDeleteOpen(false);
+                  onClose(session.code);
+                }}
+              >
+                {CHAT_LEAVE_GO}
+              </FastButton>
+              <p className="mt-2 text-[11px] font-semibold leading-relaxed text-neutral-500">{CHAT_LEAVE_SUB}</p>
+            </div>
             <FastButton variant="ghost" className="w-full" onClick={() => setDeleteOpen(false)}>
               Bly maar
             </FastButton>

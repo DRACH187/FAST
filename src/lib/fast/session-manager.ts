@@ -38,7 +38,7 @@ import { resetWantedKey } from "@/lib/crypto/wanted-crypto";
 import { api, type WireMessage } from "@/lib/fast/api";
 import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
-import { TOAST_AUTOLOCK } from "@/lib/fast/copy";
+import { SUMMON_INTO_DEAD_ROOM, TOAST_AUTOLOCK } from "@/lib/fast/copy";
 import * as vault from "@/lib/fast/vault-db";
 import {
   clearCallsign,
@@ -568,10 +568,13 @@ export function useSessionManager() {
     [appendMessages, patchSession]
   );
 
-  const onTerminated = useCallback((data: { code: string; reason: "deleted" | "expired" }) => {
-    if (!data || !CODE_RE.test(data.code)) return;
-    const code = data.code;
-    const wasOpen = sessionsRef.current.some((s) => s.code === code);
+  /**
+   * Core eviction — remove every local trace of a session: keys, photo
+   * bytes, vault rows, poll timers, roster slots. No toasts (callers own
+   * the user feedback). Shared by remote-terminated events, the 5h
+   * retention tick, and the local delete action.
+   */
+  const evictSessionLocal = useCallback((code: string) => {
     purgeSession(code); // also zeroes the session's photo bytes
     const poll = keyPoll.current.get(code);
     if (poll) clearInterval(poll);
@@ -586,6 +589,13 @@ export function useSessionManager() {
     void vault.forgetSession(code); // wipe local vault rows too
     setSessions((prev) => prev.filter((s) => s.code !== code));
     setActiveCode((cur) => (cur === code ? null : cur));
+  }, []);
+
+  const onTerminated = useCallback((data: { code: string; reason: "deleted" | "expired" }) => {
+    if (!data || !CODE_RE.test(data.code)) return;
+    const code = data.code;
+    const wasOpen = sessionsRef.current.some((s) => s.code === code);
+    evictSessionLocal(code);
     if (wasOpen || sessionsRef.current.length > 0) {
       if (data.reason === "expired") {
         toast.success(`Session ${code} auto-wiped after 5 hours`);
@@ -593,7 +603,7 @@ export function useSessionManager() {
         toast.success(`Session ${code} was deleted for everyone`);
       }
     }
-  }, []);
+  }, [evictSessionLocal]);
 
   /**
    * Local enforcement of the 5h retention window: even if the server never
@@ -789,9 +799,10 @@ export function useSessionManager() {
 
   const deleteSession = useCallback(async (code: string) => {
     const identity = identityRef.current;
-    restoredIds.current.delete(code);
-    void vault.forgetSession(code);
-    purgeSession(code); // zero local keys + photo bytes immediately
+    // evict locally FIRST: the deleter's own device never receives the
+    // terminated event (its poll loop stops with the terminate call), so
+    // without this the hub would keep a dead row until reload.
+    evictSessionLocal(code);
     // soft-terminate server-side; every member's next sync evicts itself.
     // H3: the attestation proves creator/boss authority to the server.
     try {
@@ -803,7 +814,7 @@ export function useSessionManager() {
     } catch {
       /* room may already be gone — local wipe still applies */
     }
-  }, []);
+  }, [evictSessionLocal]);
 
   // ------------------------------------------------------------- BOSS SUMMONS
 
@@ -870,13 +881,18 @@ export function useSessionManager() {
   }, [phase, joinSummoned]);
 
   /**
-   * BOSS move: open a fresh E2EE session, then doorbell every target fp.
-   * The room is created client-side (key never leaves this tab), so summoned
-   * devices auto-join and get the key wrapped to them by THIS device.
-   * Rolls the room back if the doorbell call fails.
+   * BOSS move — conscription (task 21): DRACH grabs members and throws them
+   * into ANY chat session he wants, WHENEVER he wants.
+   *   - `opts.code` given  -> doorbell them straight into THAT existing room
+   *     (this device must still hold its key — it wraps keys to every
+   *     newcomer). The room is never rolled back on failure.
+   *   - no `opts.code`     -> a fresh E2EE room is opened first (classic
+   *     summons; rolled back if the doorbell call fails).
+   * `opts.ttlMinutes` keeps the doorbell hanging (up to 2h server-clamped)
+   * so even OFFLINE members get grabbed the moment they next surface.
    */
   const bossSummon = useCallback(
-    async (targets: string[], opts?: { ttlMinutes?: number }) => {
+    async (targets: string[], opts?: { ttlMinutes?: number; code?: string }) => {
       const identity = identityRef.current;
       const stored = callsignRef.current;
       if (!identity || !stored || stored.role !== "boss") {
@@ -885,7 +901,21 @@ export function useSessionManager() {
       const clean = [...new Set(targets.filter((t) => t && t !== identity.fingerprint))];
       if (clean.length === 0) throw new Error("Niemand aanlyn om te ontbied nie.");
 
-      const code = await startSession();
+      let code: string;
+      let existingRoom = false;
+      if (opts?.code) {
+        if (!CODE_RE.test(opts.code)) throw new Error("Kak kode — 6 letters.");
+        // conscripting into an EXISTING room: this device must hold the key,
+        // otherwise the newcomers arrive into a room nobody can unlock for them
+        const target = sessionsRef.current.find((s) => s.code === opts.code);
+        if (!target || !hasSessionKey(opts.code)) {
+          throw new Error(SUMMON_INTO_DEAD_ROOM);
+        }
+        code = opts.code;
+        existingRoom = true;
+      } else {
+        code = await startSession();
+      }
       try {
         const res = await fetch("/api/summons", {
           method: "POST",
@@ -905,7 +935,7 @@ export function useSessionManager() {
         }
         return code;
       } catch (err) {
-        await deleteSession(code); // never leave an empty summoned room behind
+        if (!existingRoom) await deleteSession(code); // never leave an empty summoned room behind
         throw err;
       }
     },
