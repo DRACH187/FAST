@@ -8,15 +8,22 @@
  * ("DIE SAKBOEK"). Everything is AES-256-GCM sealed client-side before it
  * leaves the tab; the server stores ciphertext only.
  *
- * The case view reads like an evidence file: gallery LEFT (main viewer +
- * exhibit strip), info + sakboek comments RIGHT. On phones it stacks —
- * gallery first, then the paper work. Exhibits decrypt straight into RAM
- * blob URLs and are revoked when the board unmounts — nothing media-related
- * ever touches disk.
+ * UNTRACEABLE (v3): the wire carries NO creator fingerprint — posts and
+ * comments are managed with random holder nonces stored only on the poster's
+ * device, and "mine" rides a one-way creator tag sealed INSIDE each envelope.
+ * PERSISTENT (v3): 7-day retention server-side + the IndexedDB ciphertext
+ * vault reseeds a cold board, so material outlives restarts — still spoorloos.
+ *
+ * The case view reads like an evidence file: the MAIN EXHIBIT dominates the
+ * RIGHT — scaled huge — with the paperwork + sakboek notes on the LEFT. On
+ * phones it stacks — gallery first, huge, then the paper work. Exhibits
+ * decrypt straight into RAM blob URLs and are revoked when the board
+ * unmounts — nothing media-related ever touches disk. Tapping an exhibit
+ * blows it up fullscreen (lightbox).
  *
  * Board features: live status filters, search across decrypted content,
- * threat meters, poster attribution, creator-only burn, 60s auto-refresh,
- * cold-start self-heal via the IndexedDB ciphertext vault, 24h retention.
+ * threat meters, creator-only burn, 60s auto-refresh, cold-start self-heal
+ * via the IndexedDB ciphertext vault, 7-day retention.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -35,6 +42,7 @@ import {
   ImagePlus,
   Images,
   Lock,
+  Maximize2,
   MessageSquare,
   Search,
   Send,
@@ -53,6 +61,7 @@ import {
   encryptWantedComment,
   MAX_MEDIA_CIPHER_CHARS,
   resetWantedKey,
+  wantedCreatorTag,
   type MediaDraft,
   type WantedComment,
   type WantedContent,
@@ -65,6 +74,7 @@ import {
   forgetCase,
   getCommentCap,
   getManageCap,
+  newHolderNonce,
   storeCommentCap,
   storeManageCap,
 } from "@/lib/fast/wanted-caps";
@@ -87,6 +97,7 @@ import {
   WANTED_MEDIA_TOO_BIG,
   WANTED_MEDIA_TOO_MANY,
   WANTED_MEDIA_UNREADABLE,
+  WANTED_RETENTION_LAW,
   WANTED_SEALED_META,
   WANTED_SORT_EVIDENCE,
   WANTED_SORT_NEWEST,
@@ -127,13 +138,14 @@ function caseNo(id: string): string {
   return h.toString(16).toUpperCase().padStart(4, "0").slice(-4);
 }
 
-/** Time left before the board's 24h retention burns this case. */
+/** Time left before the board's 7-day retention burns this case. */
 function ttlLeft(createdAtIso: string): string {
-  const at = Date.parse(createdAtIso) + 24 * 60 * 60 * 1000;
+  const at = Date.parse(createdAtIso) + 7 * 24 * 60 * 60 * 1000;
   const ms = Math.max(0, at - Date.now());
-  const h = Math.floor(ms / 3_600_000);
+  const d = Math.floor(ms / (24 * 3_600_000));
+  const h = Math.floor((ms % (24 * 3_600_000)) / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
-  return WANTED_TTL_LEFT(h, m);
+  return WANTED_TTL_LEFT(d, h, m);
 }
 
 /** ONLY two categories exist on this board: WANTED and ELIMINATED. */
@@ -270,6 +282,8 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
   const [sub] = useState(() => pick(WANTED_SUB));
   const [emptyLine] = useState(() => pick(WANTED_EMPTY));
   const [varadosJab] = useState(() => pick(WANTED_VARADOS_JAB));
+  /** One-way creator tag for "mine" detection — never leaves this tab. */
+  const [myTag, setMyTag] = useState("");
 
   const [composeOpen, setComposeOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
@@ -292,6 +306,17 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
     setShownOpen(open);
     if (open) setMounted(true);
   }
+
+  useEffect(() => {
+    let dead = false;
+    void (async () => {
+      const tag = await wantedCreatorTag(myFp);
+      if (!dead) setMyTag(tag);
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [myFp]);
 
   const detail = useMemo(
     () => entries.find((e) => e.wire.id === detailId) ?? null,
@@ -356,7 +381,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
       let posts = data.posts;
 
       // cold-start self-heal: a wiped board gets its ciphertext re-uploaded
-      // from the local vault (still zero-knowledge — blobs only)
+      // from the local vault (still zero-knowledge — blobs only, no identity)
       if (posts.length === 0) {
         const cached = await loadVault();
         if (cached.length > 0) {
@@ -366,7 +391,6 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 action: "reseed",
-                fingerprint: myFp,
                 posts: cached.slice(0, 30).map((p) => ({
                   id: p.id,
                   iv: p.iv,
@@ -380,10 +404,8 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
                     id: c.id,
                     iv: c.iv,
                     ciphertext: c.ciphertext,
-                    creatorFp: c.creatorFp,
                     createdAt: c.createdAt,
                   })),
-                  creatorFp: p.creatorFp,
                   createdAt: p.createdAt,
                 })),
               }),
@@ -403,13 +425,17 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
 
       void saveVault(posts);
 
-      // decrypt everything we can hold a key for (null content = sealed)
+      // decrypt everything we can hold a key for (null content = sealed);
+      // "mine" rides the sealed creator tag — the wire itself carries fokol
       const decrypted = await Promise.all(
-        posts.map(async (wire) => ({
-          wire,
-          content: await decryptWantedContent(wire),
-          mine: wire.creatorFp === myFp,
-        }))
+        posts.map(async (wire) => {
+          const content = await decryptWantedContent(wire);
+          return {
+            wire,
+            content,
+            mine: content !== null && myTag.length > 0 && content.tag === myTag,
+          };
+        })
       );
       setEntries(decrypted);
     } catch {
@@ -418,7 +444,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
       setFetching(false);
       inflight.current = false;
     }
-  }, [myFp]);
+  }, [myTag]);
 
   // open -> refresh key material + fetch; poll every 60s while open
   useEffect(() => {
@@ -522,16 +548,19 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           status: draft.status,
           by: myNickname,
           byRole: myRole,
+          tag: await wantedCreatorTag(myFp), // sealed INSIDE — never on the wire
         },
         staged.map((s) => ({ bytes: s.bytes, mime: s.mime }))
       );
       const id = crypto.randomUUID();
+      // random per-case holder nonce — the ONLY identity the board ever sees
+      const holder = newHolderNonce();
       const res = await fetch(LIST_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "create",
-          fingerprint: myFp,
+          holder,
           post: { id, iv: sealed.iv, ciphertext: sealed.ciphertext },
         }),
         cache: "no-store",
@@ -545,11 +574,12 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         toast.error(typeof data.error === "string" ? data.error : "Die merk wou nie hang nie — vuur weer");
         return;
       }
-      // the MANAGE capability is this device's only delete/attach authority
-      if (typeof data.cap === "string") storeManageCap(id, data.cap);
+      // the MANAGE capability + holder nonce is this device's only
+      // delete/attach authority — stored together, NOWHERE else
+      if (typeof data.cap === "string") storeManageCap(id, data.cap, holder);
       // exhibits ride one per request (serverless body limits)
       let exhibitsDropped = 0;
-      const manageCap = getManageCap(id);
+      const manage = getManageCap(id);
       for (let i = 0; i < sealed.media.length; i++) {
         const item = sealed.media[i];
         if (item.ciphertext.length > MAX_MEDIA_CIPHER_CHARS) {
@@ -562,10 +592,10 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "attach",
-              fingerprint: myFp,
+              holder: manage?.holder ?? holder,
               id,
               index: i,
-              cap: manageCap,
+              cap: manage?.cap,
               item: { iv: item.iv, ciphertext: item.ciphertext, mime: item.mime },
             }),
             cache: "no-store",
@@ -598,14 +628,15 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
   const burn = useCallback(
     async (entry: BoardEntry) => {
       try {
+        const manage = getManageCap(entry.wire.id);
         const res = await fetch(LIST_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "delete",
-              fingerprint: myFp,
+              holder: manage?.holder,
               id: entry.wire.id,
-              cap: getManageCap(entry.wire.id),
+              cap: manage?.cap,
               token: myToken || undefined,
             }),
           cache: "no-store",
@@ -623,7 +654,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         toast.error("Netwerk onbereikbaar");
       }
     },
-    [fetchBoard, myFp]
+    [fetchBoard, myToken]
   );
 
   const addComment = useCallback(
@@ -635,14 +666,17 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           text: clean,
           by: myNickname,
           byRole: myRole,
+          tag: await wantedCreatorTag(myFp), // sealed authorship — wire sees fokol
         } satisfies WantedComment);
       const bodyCommentId = crypto.randomUUID();
+      // per-comment holder nonce — even my own comments don't link to each other
+      const holder = newHolderNonce();
         const res = await fetch(LIST_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "comment",
-            fingerprint: myFp,
+            holder,
             id: entry.wire.id,
             comment: { id: bodyCommentId, ...sealed },
           }),
@@ -654,7 +688,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           return;
         }
         if (typeof data.cap === "string" && typeof bodyCommentId === "string") {
-          storeCommentCap(bodyCommentId, data.cap);
+          storeCommentCap(bodyCommentId, data.cap, holder);
         }
         toast.success(WANTED_COMMENT_POSTED);
         await fetchBoard();
@@ -668,15 +702,16 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
   const removeComment = useCallback(
     async (entry: BoardEntry, commentId: string) => {
       try {
+        const cap = getCommentCap(commentId);
         await fetch(LIST_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "uncomment",
-            fingerprint: myFp,
+            holder: cap?.holder,
             id: entry.wire.id,
             commentId,
-            cap: getCommentCap(commentId),
+            cap: cap?.cap,
             token: myToken || undefined,
           }),
           cache: "no-store",
@@ -686,7 +721,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         toast.error("Netwerk onbereikbaar");
       }
     },
-    [fetchBoard, myFp, myToken]
+    [fetchBoard, myToken]
   );
 
   /** BOSS purge: burn the WHOLE board server-side (tombstoned) + the local vault. */
@@ -919,8 +954,9 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               {updatedAt ? `Gesink ${timeAgo(updatedAt)}` : "Wag vir eerste sink"} · outo 60s
             </span>
             <span className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
-              <Flame className="size-3.5" aria-hidden />
-              alles bly net in RAM
+              <Flame className="size-3.5 shrink-0" aria-hidden />
+              <span className="hidden sm:inline">{WANTED_RETENTION_LAW}</span>
+              <span className="sm:hidden">7 DAE · SPOORLOOS</span>
             </span>
           </div>
         </footer>
@@ -1163,7 +1199,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
       {detail && (
         <CaseFile
           entry={detail}
-          myFp={myFp}
+          myTag={myTag}
           isBoss={myRole === "boss"}
           exhibitUrls={exhibitUrls.current}
           fetchExhibit={fetchExhibit}
@@ -1416,7 +1452,8 @@ function WantedCard({
 
 type CaseFileProps = {
   entry: BoardEntry;
-  myFp: string;
+  /** This device's one-way creator tag — for "my note" burn rights. */
+  myTag: string;
   /** The DRACH callsign may burn any case on the board. */
   isBoss: boolean;
   exhibitUrls: Map<string, string>;
@@ -1428,12 +1465,13 @@ type CaseFileProps = {
 };
 
 /**
- * THE CASE FILE — evidence gallery LEFT, paperwork + sakboek RIGHT.
- * Full-screen on phones (stacked), a wide two-column file on desktop.
+ * THE CASE FILE — the evidence DOMINATES THE RIGHT (scaled huge, lightbox on
+ * tap), paperwork + sakboek sit on the LEFT. Full-screen on phones (stacked,
+ * gallery on top), a wide two-column file on desktop.
  */
 function CaseFile({
   entry,
-  myFp,
+  myTag,
   isBoss,
   exhibitUrls,
   fetchExhibit,
@@ -1452,7 +1490,7 @@ function CaseFile({
       if (REDUCED_MOTION) return;
       gsap.fromTo(
         galleryRef.current,
-        { opacity: 0, x: -14 },
+        { opacity: 0, x: 14 },
         { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }
       );
       gsap.fromTo(
@@ -1527,13 +1565,15 @@ function CaseFile({
           )}
         </div>
 
-        {/* two-column case file — gallery left, paperwork right */}
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-          {/* --------------------------------------------- LEFT: evidence gallery */}
+        {/* two-column case file — the HUGE exhibit takes the RIGHT, paperwork
+            + sakboek the LEFT. DOM keeps the gallery first so phones get the
+            media on top; on desktop order-2 throws it to the right column. */}
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.35fr)]">
+          {/* --------------------------------------- RIGHT: the evidence, scaled HUGE */}
           <section
             ref={galleryRef}
             aria-label="Case exhibits"
-            className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950"
+            className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950 lg:order-2"
           >
             <ExhibitGallery
               wire={wire}
@@ -1542,8 +1582,12 @@ function CaseFile({
             />
           </section>
 
-          {/* ---------------------------------- RIGHT: info + sakboek comments */}
-          <section ref={scrollRef} className="flex flex-col gap-4" aria-label="Case info and comments">
+          {/* -------------------------------- LEFT: info + sakboek comments */}
+          <section
+            ref={scrollRef}
+            aria-label="Case info and comments"
+            className="order-2 flex flex-col gap-4 lg:order-1"
+          >
             {/* paperwork */}
             <div className="flex flex-col gap-3 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 sm:p-5">
               {/* sealed-metadata strip — the file's own forensic row */}
@@ -1617,7 +1661,7 @@ function CaseFile({
                       <SakboekNote
                         key={note.id}
                         note={note}
-                        myFp={myFp}
+                        myTag={myTag}
                         onBurn={() => onUncomment(note.id)}
                       />
                     ))}
@@ -1663,11 +1707,11 @@ function CaseFile({
 /** One decrypted sakboek note (author + time + burn when mine). */
 function SakboekNote({
   note,
-  myFp,
+  myTag,
   onBurn,
 }: {
-  note: { id: string; iv: string; ciphertext: string; creatorFp: string; createdAt: string };
-  myFp: string;
+  note: { id: string; iv: string; ciphertext: string; createdAt: string };
+  myTag: string;
   onBurn: () => void;
 }) {
   const [note_, setNote_] = useState<WantedComment | null>(null);
@@ -1682,7 +1726,8 @@ function SakboekNote({
     };
   }, [note]);
 
-  const mine = note.creatorFp === myFp;
+  // authorship rides the SEALED tag — the wire itself carries fokol
+  const mine = note_?.tag !== undefined && note_.tag.length > 0 && note_.tag === myTag;
   const boss = note_?.byRole === "boss";
 
   return (
@@ -1712,7 +1757,8 @@ function SakboekNote({
   );
 }
 
-/** Main exhibit viewer + thumbnail strip. Decrypts lazily, caches in RAM. */
+/** Main exhibit viewer + thumbnail strip. Decrypts lazily, caches in RAM.
+ *  The viewer is the star of the case file: scaled huge, fullscreen on tap. */
 function ExhibitGallery({
   wire,
   cache,
@@ -1731,6 +1777,7 @@ function ExhibitGallery({
   }, [wire]);
 
   const [active, setActive] = useState(0);
+  const [zoom, setZoom] = useState(false);
   const [view, setView] = useState<{ wireId: string; index: number; url: string | null; failed: boolean }>(() => ({
     wireId: wire.id,
     index: 0,
@@ -1765,6 +1812,16 @@ function ExhibitGallery({
     };
   }, [wire, active, view.wireId, view.index, view.url, view.failed, cache, fetchExhibit]);
 
+  // lightbox: Escape closes, switching exhibits while zoomed re-renders in place
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setZoom(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoom]);
+
   const url = view.url;
   const failed = view.failed;
 
@@ -1783,8 +1840,8 @@ function ExhibitGallery({
 
   return (
     <div className="flex flex-col">
-      {/* main viewer */}
-      <div className="relative flex min-h-[240px] items-center justify-center bg-black sm:min-h-[320px]">
+      {/* main viewer — the evidence, scaled HUGE */}
+      <div className="relative flex min-h-[240px] items-center justify-center bg-black sm:min-h-[420px] lg:min-h-[68dvh]">
         {!url && !failed && (
           <div className="flex items-center gap-2 py-16 font-mono text-[10px] uppercase tracking-[0.24em] text-neutral-600">
             <Lock className="size-4" aria-hidden />
@@ -1800,12 +1857,13 @@ function ExhibitGallery({
           </div>
         )}
         {url && !isVideo && (
-           
+
           <img
             src={url}
             alt={`Case exhibit ${active + 1}`}
             draggable={false}
-            className="max-h-[58dvh] w-full object-contain"
+            onClick={() => setZoom(true)}
+            className="max-h-[62dvh] w-full cursor-zoom-in object-contain lg:max-h-[80dvh]"
           />
         )}
         {url && isVideo && (
@@ -1814,8 +1872,26 @@ function ExhibitGallery({
             controls
             playsInline
             preload="metadata"
-            className="max-h-[58dvh] w-full bg-black object-contain"
+            className="max-h-[62dvh] w-full bg-black object-contain lg:max-h-[80dvh]"
           />
+        )}
+        {url && isVideo && (
+          <button
+            onClick={() => setZoom(true)}
+            aria-label="Blow the exhibit up fullscreen"
+            className="absolute bottom-3 right-3 flex size-11 items-center justify-center rounded-xl border border-neutral-700 bg-black/80 text-neutral-200 outline-none backdrop-blur-sm transition-colors hover:border-white hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+          >
+            <Maximize2 className="size-4" aria-hidden />
+          </button>
+        )}
+        {url && !isVideo && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full border border-neutral-800 bg-black/80 px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.18em] text-neutral-400 backdrop-blur-sm"
+          >
+            <Maximize2 className="size-3" />
+            VOLL SKERM
+          </span>
         )}
         {list.length > 1 && (
           <span className="absolute right-3 top-3 rounded-full border border-neutral-800 bg-black/80 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-neutral-300 backdrop-blur-sm">
@@ -1835,7 +1911,7 @@ function ExhibitGallery({
                 onClick={() => setActive(i)}
                 aria-label={`Exhibit ${i + 1}`}
                 aria-current={isActive}
-                className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
+                className={`relative h-[4.5rem] w-[4.5rem] shrink-0 overflow-hidden rounded-lg border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-neutral-500 ${
                   isActive ? "border-white" : "border-neutral-800 hover:border-neutral-600"
                 }`}
               >
@@ -1843,6 +1919,46 @@ function ExhibitGallery({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {/* fullscreen lightbox — the exhibit, nothing else, edge to edge */}
+      {zoom && url && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/[0.985] p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Fullscreen exhibit"
+          onClick={() => setZoom(false)}
+        >
+          <button
+            onClick={() => setZoom(false)}
+            aria-label="Close fullscreen exhibit"
+            className="absolute right-4 top-4 z-10 flex size-11 items-center justify-center rounded-xl border border-neutral-800 bg-black/80 text-neutral-300 outline-none transition-colors hover:border-neutral-400 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+          >
+            <X className="size-5" aria-hidden />
+          </button>
+          {isVideo ? (
+            <video
+              src={url}
+              controls
+              autoPlay
+              playsInline
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90dvh] max-w-full bg-black object-contain"
+            />
+          ) : (
+            <img
+              src={url}
+              alt={`Case exhibit ${active + 1}, fullscreen`}
+              draggable={false}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90dvh] max-w-full object-contain"
+            />
+          )}
+          <span className="absolute bottom-4 left-1/2 -translate-x-1/2 font-mono text-[9px] font-bold uppercase tracking-[0.24em] text-neutral-500">
+            {list.length > 1 ? `${active + 1} / ${list.length} · ` : ""}AES-256-GCM · SLEUTEL OP JOU TOESTEL
+          </span>
         </div>
       )}
     </div>

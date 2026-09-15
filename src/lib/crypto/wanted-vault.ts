@@ -4,13 +4,14 @@
  * WANTED vault — ciphertext-only IndexedDB cache (data-saving layer).
  * ===================================================================
  * After every board sync the raw wire (sealed envelopes, sealed exhibits,
- * sealed sakboek notes — NEVER keys) is mirrored here. When the serverless
- * process wakes up cold and the board is empty, the client reseeds the
- * board from this vault: the board self-heals, still zero-knowledge.
+ * sealed sakboek notes — NEVER keys, NEVER identities) is mirrored here.
+ * When the serverless process wakes up cold and the board is empty, the
+ * client reseeds the board from this vault: the board self-heals, still
+ * zero-knowledge and still untraceable (the wire carries no fingerprints).
  *
- * Retention mirrors the server: 24h per entry, hard-pruned on every write.
- * Budget: ~64MB total, oldest entries dropped first — big case files die
- * so the board keeps breathing.
+ * Retention mirrors the server: 7 DAYS per entry, hard-pruned on every
+ * write. Budget: ~64MB total, oldest entries dropped first — big case
+ * files die so the board keeps breathing.
  */
 
 import type { WantedWire } from "@/lib/crypto/wanted-crypto";
@@ -21,7 +22,7 @@ const STORE = "wire";
 const KEY = "board";
 const MAX_POSTS = 120;
 const MAX_TOTAL_CHARS = 64_000_000; // ~64MB of ciphertext
-const RETENTION_MS = 24 * 60 * 60 * 1000;
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 

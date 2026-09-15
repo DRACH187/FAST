@@ -5,6 +5,7 @@ import { DockNav, SideRail, type AppTab } from "@/components/fast/app-nav";
 import { BossPanel } from "@/components/fast/boss-panel";
 import { CallsignScreen } from "@/components/fast/callsign-screen";
 import { ChatScreen } from "@/components/fast/chat-screen";
+import { FacebookScreen } from "@/components/fast/facebook-screen";
 import { GateScreen } from "@/components/fast/gate-screen";
 import { HubScreen } from "@/components/fast/hub-screen";
 import { LiveScreen } from "@/components/fast/live-screen";
@@ -22,7 +23,8 @@ import { useSessionManager } from "@/lib/fast/session-manager";
  *   mobile  — content full-bleed + a floating pill dock (Mobbin-grade);
  *             a focused chat hides the dock and exits via its back arrow.
  *   desktop — a persistent SideRail beside a content pane; tool views
- *             (WANTED / KAART / LIVE) fill the pane instead of the screen.
+ *             (WANTED / KAART / LIVE / FBOEK) fill the pane instead of the
+ *             screen.
  *
  * Keys live only in RAM; every chat self-wipes 5 hours after creation.
  */
@@ -99,6 +101,10 @@ export default function Page() {
             ) : toolView === "live" ? (
               <div key="live" className="fast-fade absolute inset-0">
                 <LiveScreen open onClose={() => setTab("hub")} myFp={mgr.identityFp} />
+              </div>
+            ) : toolView === "fb" ? (
+              <div key="fb" className="fast-fade absolute inset-0">
+                <FacebookScreen open onClose={() => setTab("hub")} />
               </div>
             ) : active ? (
               <div key={`chat-${active.code}`} className="fast-fade flex min-h-0 flex-1 flex-col">

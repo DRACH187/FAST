@@ -54,9 +54,10 @@ Process RAM (the only "storage"; dies with the process; NO database)
 
 The server stores ONLY: `{senderFp, counter, iv, ciphertext, sig?}` per
 message, wrapped key envelopes, ephemeral photo ciphertext (60s), sealed
-board cases (24h), fingerprints, attested nicknames, and operational
-timestamps. There is no database anywhere in the project — verified by
-audit — and no plaintext of user content ever reaches the server.
+board cases (7 days, zero identity — see §13), fingerprints, attested
+nicknames, and operational timestamps. There is no database anywhere in
+the project — verified by audit — and no plaintext of user content ever
+reaches the server.
 
 ## 3. Cryptographic design (all native Web Crypto — no home-rolled math)
 
@@ -228,7 +229,8 @@ future audit flags it as an accident:
 - Consequence accepted: the WANTED-board content key is derived client-side
   from this code (PBKDF2-SHA512, 600k iters). A 3-digit code space (1,000
   keys) means board ciphertext offers no protection against a determined
-  offline attacker who captures it. Board entries self-destruct within 24h.
+  offline attacker who captures it. Board entries self-destruct within 7d
+  (v3 retention — §13) and carry zero creator identity on the wire.
   Board encryption therefore = tamper-evidence + casual-viewer blinding,
   not strong confidentiality.
 - Implementation: `server-env.ts` grants an explicit carve-out for the exact
@@ -374,3 +376,46 @@ Not done, deliberately: no client fingerprinting beyond the existing
 RAM-only device handle, no anti-debug theatre, no decoy content schemes
 that could mislead the app's own users. The house stays hostile outward
 and honest inward.
+
+## 13. WANTED v3 — untraceable + persistent (owner mandate, recorded)
+
+Owner mandate: wanted material must be "persistent but untraceable", and
+the evidence must dominate the case file visually. Recorded scope:
+
+- **Untraceability law (v3).** The wanted wire (`GET /api/wanted`, single
+  exhibit fetches, and every list response) now carries ZERO creator
+  identity. `creatorFp` was removed from posts and comments at the type,
+  schema, storage and wire layers. Two posts by the same ouen are
+  statistically unlinkable by the server, by other members, and by anyone
+  sniffing TLS (which is, in any case, encrypted). Authorization rides
+  random per-item HOLDER nonces (32 hex chars, `crypto.getRandomValues`)
+  generated on the poster's device and stored ONLY in that device's
+  capability ledger (`fast_wanted_caps_v3`, localStorage). Capabilities are
+  HMAC-bound to (action, resource, holder, expiry) with a 7-day TTL — so
+  the server can authorize a burn/attach without ever learning who the
+  device is. Old fingerprint-bound caps (v1/v2 ledgers) are intentionally
+  orphaned and ignored.
+- **"Mine" without identity.** Authorship detection ("jou saak" badge,
+  my-note burn rights) rides a one-way creator tag — SHA-256 over a
+  domain-separated fingerprint, truncated to 128 bits — sealed INSIDE the
+  AES-256-GCM envelope. Only devices holding the same fingerprint (i.e.
+  the poster) can derive and match it. The wire never sees it.
+- **Boss carve-out, explicit.** The wipe/delete/comment-burn attestation
+  path still accepts a boss fingerprint + token — by owner law, because
+  DRACH's power IS his identity. A member's fingerprint never reaches the
+  board; the boss's does only when he chooses to act.
+- **Persistence (7 days).** Server retention and reseed-freshness moved
+  from 24h to 7 days (`POST_TTL_MS`), capability TTLs match (7 days), and
+  the client ciphertext vault (IndexedDB, sealed blobs only — never keys,
+  never identities) mirrors the same 7-day horizon, so a cold serverless
+  restart self-heals the board. Still zero databases: RAM plus device-side
+  ciphertext, nothing else.
+- **Honest limits.** Rate limiting still keys on source IP at the edge
+  (standard infrastructure, no storage); the boss panel still reports
+  counts and byte weights only. "Untraceable" means the board itself
+  carries no linkage — it does not mean the transport is invisible.
+- **FBOEK page (replaces the POESE slot).** One outbound link to the
+  official Facebook group, rendered as a native `<a target="_blank"
+  rel="noopener noreferrer">` — no scripts, no redirectors, no referrer
+  leak beyond what the browser policy already allows. The screen is
+  static, dark, and client-only; it stores nothing and calls nothing.

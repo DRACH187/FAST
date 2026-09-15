@@ -9,12 +9,12 @@
  *    Mobbin-grade: icon + label per tab, the active tab floods white with
  *    black ink, springy press feedback, blur glass, 52px+ touch targets,
  *    never wider than 24rem so thumbs stay in reach on a 320px screen.
- *    Four houses: sessions, the dead-list, the map, live.
+ *    Five houses: sessions, the dead-list, the map, live, FBOEK.
  *    The chat view deliberately hides it (a chat is a focused room with its
  *    own way out — same pattern iMessage/WhatsApp/Telegram ship).
  *
  *  • DESKTOP — SideRail: a fixed app rail that turns FAST GUNS into a real
- *    desktop layout: brand block up top, the four houses of the app as a
+ *    desktop layout: brand block up top, the five houses of the app as a
  *    vertical list, live counters, and the callsign pinned at the bottom.
  *    Content lives in the pane to its right; nothing covers the rail, ever.
  *
@@ -25,6 +25,7 @@ import Image from "next/image";
 import {
   Crown,
   Crosshair,
+  Facebook,
   Map as MapIcon,
   MessagesSquare,
   Radio,
@@ -41,19 +42,21 @@ import {
   NAV_RAIL_PANEL_HINT,
   NAV_RAIL_PROFILE,
   NAV_RAIL_TAG,
+  NAV_TAB_FB,
   NAV_TAB_LIVE,
   NAV_TAB_MAP,
   NAV_TAB_SESSIONS,
   NAV_TAB_WANTED,
 } from "@/lib/fast/copy";
 
-export type AppTab = "hub" | "wanted" | "map" | "live";
+export type AppTab = "hub" | "wanted" | "map" | "live" | "fb";
 
 const NAV_ITEMS = [
   { id: "hub", icon: MessagesSquare, label: NAV_TAB_SESSIONS },
   { id: "wanted", icon: Crosshair, label: NAV_TAB_WANTED },
   { id: "map", icon: MapIcon, label: NAV_TAB_MAP },
   { id: "live", icon: Radio, label: NAV_TAB_LIVE },
+  { id: "fb", icon: Facebook, label: NAV_TAB_FB },
 ] as const satisfies ReadonlyArray<{ id: AppTab; icon: typeof Radio; label: string }>;
 
 // ------------------------------------------------------------------ dock

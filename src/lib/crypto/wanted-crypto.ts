@@ -16,6 +16,11 @@
  * Invariants:
  *  - the server stores ONLY ciphertext + IVs; it cannot read a title, a
  *    description, an image, a clip, a comment, or an author
+ *  - UNTRACEABLE (v3): the wire carries NO creator fingerprint anywhere.
+ *    Posts and comments are managed via random per-item HOLDER nonces
+ *    (capability-bound, stored only on the poster's device), and "mine"
+ *    detection rides a one-way creator tag sealed INSIDE the envelope —
+ *    the server can never link two posts, or a post to a member.
  *  - the passcode and every derived key live in RAM only (keyvault), never
  *    in LocalStorage / IndexedDB / cookies
  *  - media decrypt straight into RAM blob URLs and are revoked the moment
@@ -76,6 +81,8 @@ export type WantedContent = {
   bounty: string;
   by: string; // author callsign
   byRole: string; // "member" | "boss"
+  /** one-way creator tag — sealed inside; never on the wire (v3 law) */
+  tag?: string;
 };
 
 /** One sealed exhibit on the wire. */
@@ -85,12 +92,11 @@ export type WantedMediaWire = {
   mime: string; // "image/jpeg" | "video/mp4" | "video/webm"
 };
 
-/** One sealed sakboek note on the wire. */
+/** One sealed sakboek note on the wire — authorship is SEALED, never public. */
 export type WantedCommentWire = {
   id: string;
   iv: string;
   ciphertext: string;
-  creatorFp: string;
   createdAt: string;
 };
 
@@ -99,6 +105,8 @@ export type WantedComment = {
   text: string;
   by: string;
   byRole: string;
+  /** one-way creator tag — sealed inside; never on the wire (v3 law) */
+  tag?: string;
 };
 
 export type WantedWire = {
@@ -113,10 +121,25 @@ export type WantedWire = {
   /** Light descriptors served with the list (no ciphertext). */
   mediaList?: Array<{ mime: string; size: number }>;
   comments?: WantedCommentWire[];
-  creatorFp: string;
   createdAt: string;
   expiresAt: string;
 };
+
+// -------------------------------------------------------------- creator tag
+// A post's authorship never touches the wire. Instead the creator seals a
+// ONE-WAY tag inside the envelope: SHA-256(domain || fingerprint), truncated.
+// Every device holding the same fingerprint derives the same tag, so "mine"
+// still lights up — but the server and outside observers get fokol to link.
+
+const TAG_DOMAIN = "fast.wanted.creator.v1";
+
+export async function wantedCreatorTag(fp: string): Promise<string> {
+  const digest = await subtle.digest("SHA-256", te.encode(`${TAG_DOMAIN}:${fp}`));
+  const view = new DataView(digest);
+  let hex = "";
+  for (let i = 0; i < 8; i++) hex += view.getUint16(i * 2).toString(16).padStart(4, "0");
+  return hex.slice(0, 32);
+}
 
 // RAM key cache — derived once per tab, dropped with the tab
 let boardKey: CryptoKey | null = null;
@@ -244,6 +267,7 @@ export async function decryptWantedContent(post: {
       bounty: String(parsed.bounty ?? "").slice(0, 60),
       by: String(parsed.by ?? "UNKNOWN").slice(0, 24),
       byRole: parsed.byRole === "boss" ? "boss" : "member",
+      tag: typeof parsed.tag === "string" ? parsed.tag.slice(0, 32) : "",
     };
   } catch {
     return null; // wrong key generation or tampered blob — never render
@@ -316,6 +340,7 @@ export async function decryptWantedComment(comment: {
       text: String(parsed.text ?? "").slice(0, 400),
       by: String(parsed.by ?? "GHOST").slice(0, 24),
       byRole: parsed.byRole === "boss" ? "boss" : "member",
+      tag: typeof parsed.tag === "string" ? parsed.tag.slice(0, 32) : "",
     };
   } catch {
     return null;

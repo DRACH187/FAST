@@ -213,7 +213,13 @@ export const WANTED_ZERO_PREMADE = "NET JOU INSETTE HANG HIER — geen voorgemaa
 export const WANTED_SORT_NEWEST = "NUUT";
 export const WANTED_SORT_THREAT = "GEVAAR";
 export const WANTED_SORT_EVIDENCE = "STUKKE";
-export const WANTED_TTL_LEFT = (h: number, m: number) => `VERBRAND OOR ${h}U ${String(m).padStart(2, "0")}M`;
+export const WANTED_TTL_LEFT = (d: number, h: number, m: number) =>
+  d > 0
+    ? `VERBRAND OOR ${d}DAG${d === 1 ? "" : "E"} ${String(h).padStart(2, "0")}U`
+    : `VERBRAND OOR ${h}U ${String(m).padStart(2, "0")}M`;
+/** The board's retention law, stamped on the chrome — material persists 7 days. */
+export const WANTED_RETENTION_LAW = "MATERIAAL BLY 7 DAE LANK STAAN · SIFTERTEKS · SPOORLOOS";
+export const WANTED_UNTRACEABLE_LAW = "GEEN NAAM · GEEN TOESTEL · GEEN SPOOR — SELFONS HULLE KAN NIKS KOPPEL NIE";
 export const WANTED_CASE_NO = (s: string) => `SAAK #187-${s}`;
 export const WANTED_SEALED_META = "TOEGEPIN · AES-256-GCM · SLEUTEL OP JOU TOESTEL";
 export const WANTED_WIPE_CTA = "VERBRAND ALLES";
@@ -491,6 +497,37 @@ export const VAULT_IMPORT_DONE = (n: number) => `${n} blok${n === 1 ? "" : "ke"}
 export const VAULT_BAD_PASS = "Wagwoord te kort — 8 tekens, boetie, of dit werk nie.";
 export const VAULT_BAD_FILE = "Daai lêer is goof of die wagwoord pas nie — die kluis eet hom nie.";
 export const VAULT_WORKING = "Die kluis werk…";
+
+// ------------------------------------------------------------------ fboek
+// FBOEK — the house's recruiting ground on Facebook. The old POESE slot is
+// DEAD — in its place stands the official FAST GUNS group: one link, loud,
+// unmissable, straight into the werf outside the wire.
+
+export const FB_URL = "https://www.facebook.com/groups/1145507374803204";
+export const NAV_TAB_FB = "Fboek";
+export const FB_TITLE = "FBOEK";
+export const FB_SUB = [
+  "DIE HUIS SE BUITEGROND · KOM STAAN IN DIE GROEP",
+  "WAAR DIE WERF GROOTGEMAAK WORD · SLEGS REGTE OUENS",
+] as const;
+export const FB_CARD_TITLE = "FAST GUNS — DIE AMPTELIKE GROEP";
+export const FB_CARD_TAG = "187 GOEDGEKEUR · DIELIK DEUR DRACH SELF";
+export const FB_CTA = ["TREE AAN BY DIE GROEP", "MOER IN — REG NOU"] as const;
+export const FB_OPENING = "Maak Fboek oop — sien jou aan die ander kant, ouen.";
+export const FB_PITCH = [
+  "Hier binne praat ons met sleutels en siflettertjies. Daar buite, in die groep, skree ons HARD. Post die merke, die beelde, die geroep — bring die hele fokken werf bymekaar.",
+  "Die groep is waar nuwe bloed aanklop. Elke ouen wat aansluit maak die huis groter, harder en moeiliker om dood te maak.",
+] as const;
+export const FB_POINTS_HEAD = "HOEOM JY IN DIE GROEP HOORT";
+export const FB_POINTS = [
+  "Nuwe merke en aankondigings EERS op die groep",
+  "Beelde en clips wat NOOIT hier binne wys nie",
+  "Die hele leër op een plek — aanmeldings, uitroepe, als",
+  "Drach self loop daar rond — kom sê hallo of hou jou bek",
+] as const;
+export const FB_LAW =
+  "Die groep is BUITE die kluis — daar is geen E2EE op Facebook nie. Hou die gevaarlike kak hier binne; daar buite dra jy net die merk en roep die res.";
+export const FB_BACK = "TERUG NA DIE WERF";
 
 // ----------------------------------------------------------------- toasts
 
