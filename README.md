@@ -70,6 +70,13 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   7s picture show — skip by tap
   the soft keyboard), safe-area insets on every fixed bar, 44px+ touch
   targets, touch-action to kill tap delay, and an iOS-only floor on input
   font sizes so focus never zoom-hijacks the screen.
+- **App-shell navigation (task 19)** — one tab state, two bodies: on phones
+  a floating pill **dock** (Mobbin-grade: blur glass, active tab floods
+  white, unread badge on Werwe, safe-area aware, hidden inside a focused
+  chat) carries WERWE / WANTED / KAART / LIVE; on desktop a persistent
+  **SideRail** turns FAST GUNS into a real desktop app — brand block, live
+  counters, callsign card pinned at the bottom, and tool boards filling the
+  content pane beside the rail instead of covering the screen.
 - **Inspect-element lockdown** — right-click, devtools shortcuts and
   view-source routes are blocked; an overlay slams the page if docked
   devtools are detected. (A deterrent — no client-side trick can defeat a

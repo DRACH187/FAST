@@ -20,7 +20,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
@@ -254,7 +253,10 @@ type WantedScreenProps = {
 // --------------------------------------------------------------- component
 
 export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken }: WantedScreenProps) {
-  const [mounted, setMounted] = useState(false);
+  /* Task 19: mounted starts at `open` — see map-screen note. The shell
+     mounts this board only while its tab is active, so the board fetches
+     the moment it appears. */
+  const [mounted, setMounted] = useState(open);
   const [shownOpen, setShownOpen] = useState(open);
   const [entries, setEntries] = useState<BoardEntry[]>([]);
   const [filter, setFilter] = useState<StatusFilter>(STATUS_ALL);
@@ -754,9 +756,16 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
 
   if (!open || !mounted) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[92] bg-black" role="dialog" aria-label="WANTED board">
-      <ScreenShell as="div" className="flex h-dvh flex-col">
+  /* Task 19: shell tab view — full screen on phones, pane panel on desktop
+     (the desktop rail stays visible beside it). No portal: the content pane
+     is the positioning ancestor on desktop. */
+  return (
+    <div
+      className="fixed inset-0 z-[92] bg-black lg:absolute lg:inset-0 lg:z-auto"
+      role="region"
+      aria-label="WANTED board"
+    >
+      <ScreenShell as="div" className="flex h-dvh flex-col lg:h-full">
         {/* ---------------------------------------------------------- header */}
         {/* safe-area top: PWA standalone must clear the notch/status bar */}
         <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
@@ -884,7 +893,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               </p>
             </div>
           ) : (
-            <div ref={gridRef} className="mx-auto grid w-full max-w-6xl gap-3 px-3 pb-24 pt-1 sm:grid-cols-2 sm:gap-4 sm:px-4 lg:grid-cols-3">
+            <div ref={gridRef} className="mx-auto grid w-full max-w-6xl gap-3 px-3 pb-[calc(var(--fast-dock-clear)+3rem)] pt-1 sm:grid-cols-2 sm:gap-4 sm:px-4 lg:grid-cols-3 lg:pb-10">
               {filtered.map((entry) => (
                 <WantedCard
                   key={entry.wire.id}
@@ -904,7 +913,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         </div>
 
         {/* --------------------------------------------------------- footer */}
-        <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md">
+        <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[calc(var(--fast-dock-clear)-0.5rem)] pt-2 backdrop-blur-md lg:pb-2">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 px-1 sm:px-4">
             <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
               {updatedAt ? `Gesink ${timeAgo(updatedAt)}` : "Wag vir eerste sink"} · outo 60s
@@ -1164,8 +1173,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           onClose={() => setDetailId(null)}
         />
       )}
-    </div>,
-    document.body
+    </div>
   );
 }
 

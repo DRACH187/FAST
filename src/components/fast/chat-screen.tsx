@@ -244,7 +244,7 @@ export function ChatScreen({
   const live = session.presence.length;
 
   return (
-    <div ref={kbRef} className="flex h-dvh flex-col overflow-hidden">
+    <div ref={kbRef} className="flex h-full flex-col overflow-hidden">
     <ScreenShell
       as="main"
       className="fast-grain relative flex min-h-0 flex-1 flex-col bg-black"

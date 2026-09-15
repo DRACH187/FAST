@@ -8,7 +8,6 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
@@ -53,7 +52,9 @@ export function LiveScreen({
   onClose: () => void;
   myFp: string;
 }) {
-  const [mounted, setMounted] = useState(false);
+  /* Task 19: mounted starts at `open` — see map-screen note. The shell
+     mounts this board only while its tab is active. */
+  const [mounted, setMounted] = useState(open);
   const { online, count, error } = useLivePresence();
   const listRef = useRef<HTMLUListElement>(null);
   // 5s re-render so the "online Xs" labels stay honest
@@ -103,9 +104,14 @@ export function LiveScreen({
     return a.since - b.since;
   });
 
-  return createPortal(
-    <div className="fixed inset-0 z-[92] bg-black" role="dialog" aria-label="Live operatives">
-      <ScreenShell as="div" className="flex h-dvh flex-col">
+  /* Task 19: shell tab view — full screen on phones, pane panel on desktop. */
+  return (
+    <div
+      className="fixed inset-0 z-[92] bg-black lg:absolute lg:inset-0 lg:z-auto"
+      role="region"
+      aria-label="Live operatives"
+    >
+      <ScreenShell as="div" className="flex h-dvh flex-col lg:h-full">
         <header className="sticky top-0 z-20 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
           <div className="flex h-14 items-center gap-2 px-3">
             <button
@@ -147,7 +153,7 @@ export function LiveScreen({
           </div>
         </header>
 
-        <div className="mx-auto w-full max-w-md flex-1 overflow-y-auto px-3 pb-24 pt-3 sm:max-w-xl lg:max-w-2xl">
+        <div className="mx-auto w-full max-w-md flex-1 overflow-y-auto px-3 pb-[calc(var(--fast-dock-clear)+3.5rem)] pt-3 sm:max-w-xl lg:max-w-2xl lg:pb-6">
           {sorted.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
               <SignalHigh className="size-8 text-neutral-600" aria-hidden />
@@ -210,13 +216,12 @@ export function LiveScreen({
           )}
         </div>
 
-        <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md">
+        <footer className="sticky bottom-0 border-t border-neutral-900 bg-black/85 px-3 pb-[calc(var(--fast-dock-clear)-0.5rem)] pt-2 backdrop-blur-md lg:pb-2">
           <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
             naam is publiek · {LIVE_NO_GPS}
           </p>
         </footer>
       </ScreenShell>
-    </div>,
-    document.body
+    </div>
   );
 }

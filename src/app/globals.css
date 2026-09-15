@@ -46,6 +46,10 @@
 /* Strict monochrome design system — black, white and grey. Nothing else. */
 :root {
   --radius: 0.75rem;
+  /* Vertical space the floating mobile dock occupies (pill + margin + safe
+     area). Screens that sit under the dock pad their footers with this so
+     nothing is ever buried. On desktop the dock does not exist. */
+  --fast-dock-clear: calc(6rem + env(safe-area-inset-bottom));
   --background: #000000;
   --foreground: #fafafa;
   --card: #0a0a0a;
@@ -83,6 +87,12 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+  }
+  /* Desktop law: the floating dock only exists under the lg breakpoint. */
+  @media (min-width: 1024px) {
+    :root {
+      --fast-dock-clear: 0.5rem;
+    }
   }
   html,
   body {

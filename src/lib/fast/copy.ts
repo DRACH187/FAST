@@ -120,6 +120,20 @@ export const CALLSIGN_INVALID = [
 export const BOSS_KEY_PROMPT =
   "“DRACH” is beskermde grond. Sonder die boss-sleutel kry jy fokol behalwe 'n moer — voetsek, moegoe.";
 
+// ----------------------------------------------------------------- nav
+// The shell navigation — one dock on phones, one rail on desktop. Labels are
+// house slang: the werf list, the dead-list, the map and the live roll.
+
+export const NAV_LABEL = "Primary";
+export const NAV_TAB_SESSIONS = "Werwe";
+export const NAV_TAB_WANTED = "Wanted";
+export const NAV_TAB_MAP = "Kaart";
+export const NAV_TAB_LIVE = "Live";
+export const NAV_RAIL_TAG = "187 · VOORTLEWEND";
+export const NAV_RAIL_PROFILE = (name: string) => `Profiel — ${name}`;
+export const NAV_RAIL_LAW = "Elke werf vee homself uit ná 5 uur";
+export const NAV_RAIL_OPEN = "OOP";
+
 // -------------------------------------------------------------------- hub
 
 export const HUB_TAGLINES = [

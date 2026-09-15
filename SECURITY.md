@@ -314,3 +314,12 @@ explicit. Recorded changes and their honest scope:
   `touch-action: manipulation` on all tappables (kills the 300ms tap
   delay), an iOS-only 16px input-font floor (Safari's focus-zoom guard),
   safe-area insets verified intact on every fixed bar, 44px+ hit targets.
+- **Navigation shell (task 19) — no security regression.** The app moved to
+  an app-shell tab model (floating dock on phones, persistent SideRail on
+  desktop). WANTED / KAART / LIVE switched from portal overlays to pane
+  views inside the shell — same endpoints, same authorization, same
+  zero-knowledge payloads; only DOM placement changed. The desktop rail
+  exposes callsign, role and presence counters only (all already public to
+  the device holder); it renders no key material. The auto-lock pulse now
+  also rides rail/dock interactions, keeping the dead-man's switch honest
+  while the user navigates.

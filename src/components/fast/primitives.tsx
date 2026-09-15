@@ -342,9 +342,9 @@ export function WipeChip({
       {compact ? (
         <Timer className="size-3" aria-hidden />
       ) : unknown ? null : imminent ? (
-        "WIPES"
+        "WIPES\u00A0"
       ) : (
-        "WIPES IN"
+        "WIPES IN\u00A0"
       )}
       {t}
     </span>

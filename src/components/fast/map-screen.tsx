@@ -15,7 +15,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { ArrowLeft, Globe2, MapPin, Satellite, WifiOff } from "lucide-react";
 import { ScreenShell } from "@/components/fast/motion";
 import {
@@ -43,7 +42,10 @@ const MAP_FILTERS: Record<"dark" | "sat", string> = {
 // --------------------------------------------------------------- component
 
 export function MapScreen({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [mounted, setMounted] = useState(false);
+  /* Task 19: mounted starts at `open` — the shell mounts this view only
+     while its tab is active, so `open` can be true from the very first
+     render (the old overlay flow always entered with open=false). */
+  const [mounted, setMounted] = useState(open);
   const [shownOpen, setShownOpen] = useState(open);
   const [theme, setTheme] = useState<"dark" | "sat">("dark");
   const [online, setOnline] = useState(true);
@@ -89,9 +91,16 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
 
   if (!open || !mounted) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[90] bg-black" role="dialog" aria-label="Surroundings map">
-      <ScreenShell as="div" className="flex h-dvh flex-col">
+  /* Task 19: this is a shell tab view now — full screen on phones, a pane
+     panel on desktop (the rail stays visible beside it). No portal: the
+     content pane is the positioning ancestor on desktop. */
+  return (
+    <div
+      className="fixed inset-0 z-[90] bg-black lg:absolute lg:inset-0 lg:z-auto"
+      role="region"
+      aria-label="Surroundings map"
+    >
+      <ScreenShell as="div" className="flex h-dvh flex-col lg:h-full">
         {/* ---------------------------------------------------------- header */}
         <header className="sticky top-0 z-20 shrink-0 border-b border-neutral-900 bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
           <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
@@ -161,8 +170,8 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
             </button>
           </div>
 
-          {/* country reset */}
-          <div className="absolute bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-3 flex flex-col gap-1.5">
+          {/* country reset — above the map chrome, above the dock */}
+          <div className="absolute bottom-[calc(var(--fast-dock-clear)+0.75rem)] left-3 flex flex-col gap-1.5 lg:bottom-6">
             <button
               onClick={resetView}
               className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-neutral-700 bg-black/80 px-3 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-300 backdrop-blur-sm outline-none transition-colors hover:border-neutral-400 hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500"
@@ -173,7 +182,6 @@ export function MapScreen({ open, onClose }: { open: boolean; onClose: () => voi
           </div>
         </section>
       </ScreenShell>
-    </div>,
-    document.body
+    </div>
   );
 }

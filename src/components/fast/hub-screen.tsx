@@ -8,11 +8,8 @@ import {
   ArrowRight,
   ChevronRight,
   Copy,
-  Crosshair,
   KeyRound,
   Lock,
-  Map as MapIcon,
-  MessagesSquare,
   Plus,
   Radio,
   Search,
@@ -24,7 +21,6 @@ import {
 import { toast } from "@/components/fast/toast";
 import { REDUCED_MOTION, ScreenShell, pressFeedback, staggerAnimChildren, useHouseLine } from "@/components/fast/motion";
 import { FastButton, FastInput, FastModal, WipeChip } from "@/components/fast/primitives";
-import { ProfileSheet } from "@/components/fast/profile-sheet";
 import { useLivePresence } from "@/lib/fast/live";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import {
@@ -107,13 +103,13 @@ type HubProps = {
   onClose: (code: string) => void;
   /** Delete/replace the saved nickname — returns to the callsign login. */
   onSwitchCallsign: () => void;
-  onOpenMap: () => void;
-  onOpenWanted: () => void;
   onOpenLive: () => void;
   /** BOSS move: open a fresh E2EE session and doorbell the target fps.
    *  `opts.private` = a 1:1 DRACH invite whose doorbell hangs up to 2h so
    *  even an OFFLINE member gets rung the moment they next surface. */
   onBossSummon: (targets: string[], opts?: { private?: boolean }) => Promise<string>;
+  /** Open the profile sheet (owned by the shell since task 19). */
+  onOpenProfile: () => void;
 };
 
 export function HubScreen({
@@ -127,8 +123,7 @@ export function HubScreen({
   onDelete,
   onClose,
   onSwitchCallsign,
-  onOpenMap,
-  onOpenWanted,
+  onOpenProfile,
   onOpenLive,
   onBossSummon,
 }: HubProps) {
@@ -138,7 +133,6 @@ export function HubScreen({
   const [deleteCode, setDeleteCode] = useState("");
   const [leaveCode, setLeaveCode] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
-  const [profileOpen, setProfileOpen] = useState(false);
   // boss-only roll of every callsign that ever stepped in
   const [rosterOpen, setRosterOpen] = useState(false);
   const [rosterLoading, setRosterLoading] = useState(false);
@@ -281,9 +275,12 @@ export function HubScreen({
   }, [onBossSummon, onOpen, rosterRows, summonBusy, summonPick]);
 
   return (
-    <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col">
+    <ScreenShell
+      as="main"
+      className="fast-grain flex h-full flex-col overflow-x-hidden overflow-y-auto"
+    >
       <div ref={shellRef} className="contents">
-        <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-8 px-5 pb-32 pt-[max(1.5rem,calc(env(safe-area-inset-top)+1rem))] sm:max-w-2xl sm:gap-9 lg:max-w-3xl">
+        <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-8 px-5 pb-[calc(var(--fast-dock-clear)+1rem)] pt-[max(1.5rem,calc(env(safe-area-inset-top)+1rem))] sm:max-w-2xl sm:gap-9 lg:max-w-4xl lg:pb-10">
           {/* BRAND — sticky: the logo rides at the top of the hub at all times */}
           <header
             data-anim
@@ -317,7 +314,7 @@ export function HubScreen({
                 <button
                   onClick={(e) => {
                     pressFeedback(e.currentTarget);
-                    setProfileOpen(true);
+                    onOpenProfile();
                   }}
                   aria-label={`Profile — signed in as ${callsign.nickname}`}
                   className="flex min-h-[38px] min-w-0 items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1.5 outline-none transition-colors hover:border-neutral-500"
@@ -415,7 +412,7 @@ export function HubScreen({
             {sessions.length === 0 ? (
               <EmptyState line={emptyLine} />
             ) : (
-              <ul className="grid gap-2.5">
+              <ul className="grid gap-2.5 lg:grid-cols-2">
                 {sessions.map((s) => (
                   <SessionRow
                     key={s.code}
@@ -449,8 +446,8 @@ export function HubScreen({
           </section>
         </div>
 
-        {/* sticky footer */}
-        <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-28 pt-2 sm:max-w-2xl lg:max-w-3xl">
+        {/* sticky footer — clearance synced to the floating dock on phones */}
+        <footer data-anim className="mx-auto mt-auto w-full max-w-md px-5 pb-[calc(var(--fast-dock-clear)+1rem)] pt-2 sm:max-w-2xl lg:max-w-4xl lg:pb-6">
           <div className="flex flex-col items-center gap-1.5 border-t border-neutral-900 pt-4 text-center">
             <p className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-500">
               {footerLine}
@@ -462,27 +459,7 @@ export function HubScreen({
         </footer>
       </div>
 
-      {/* bottom tab bar — thumb-reachable, 44px+ targets, always visible */}
-      <nav
-        aria-label="Primary"
-        className="fixed inset-x-0 bottom-0 z-30 border-t border-neutral-900 bg-black/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md"
-      >
-        <div className="mx-auto grid max-w-md grid-cols-4 sm:max-w-2xl lg:max-w-3xl">
-          <TabButton icon={MessagesSquare} label="Werwe" active onClick={() => undefined} />
-          <TabButton icon={Crosshair} label="Wanted" onClick={onOpenWanted} />
-          <TabButton icon={MapIcon} label="Kaart" onClick={onOpenMap} />
-          <TabButton icon={Radio} label="Live" onClick={onOpenLive} />
-        </div>
-      </nav>
-
-      {/* created code — share it while it lives */}
-      {/* profile — callsign save/delete */}
-      <ProfileSheet
-        open={profileOpen}
-        onClose={() => setProfileOpen(false)}
-        callsign={callsign}
-        onSwitch={onSwitchCallsign}
-      />
+      {/* profile — owned by the shell since task 19 */}
 
       <FastModal open={created !== null} onClose={() => setCreated(null)} label="Session created">
         <div className="flex flex-col items-center gap-5 text-center">
@@ -800,38 +777,6 @@ function EverCount() {
     };
   }, []);
   return <span>{total > 0 ? `${total} EVER` : "EVER"}</span>;
-}
-
-/** Bottom-nav tab — icon over label, 44px+ hit target, monochrome states. */
-function TabButton({
-  icon: Icon,
-  label,
-  active = false,
-  onClick,
-}: {
-  icon: typeof Radio;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      className={`flex min-h-[60px] flex-col items-center justify-center gap-1 outline-none transition-colors focus-visible:bg-neutral-900 ${
-        active ? "text-white" : "text-neutral-500 hover:text-neutral-200"
-      }`}
-    >
-      <Icon className="size-5" aria-hidden />
-      {/* 320px worst case: ~80px-wide tab — tighter tracking + nowrap keeps
-          the longest label on one line, never clipped */}
-      <span className="whitespace-nowrap font-mono text-[9px] font-bold uppercase tracking-[0.16em]">{label}</span>
-      <span
-        aria-hidden
-        className={`h-0.5 w-6 rounded-full ${active ? "bg-white" : "bg-transparent"}`}
-      />
-    </button>
-  );
 }
 
 /** Utility row (wipe). AMERICANS ring on, because it's interactive. */
