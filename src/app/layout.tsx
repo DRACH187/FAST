@@ -62,6 +62,10 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: "cover",
+  // MOBILE LAW: when the soft keyboard opens, the visual viewport SHRINKS so
+  // the chat composer and hub dock stay visible above it — instead of the
+  // keyboard floating over the input like a cop over a witness.
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

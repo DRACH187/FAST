@@ -10,6 +10,7 @@ import {
   Copy,
   Crosshair,
   KeyRound,
+  Lock,
   Map as MapIcon,
   MessagesSquare,
   Plus,
@@ -27,6 +28,7 @@ import { ProfileSheet } from "@/components/fast/profile-sheet";
 import { useLivePresence } from "@/lib/fast/live";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import {
+  ROSTER_ALLTIME,
   ROSTER_EMPTY,
   ROSTER_NOTE,
   ROSTER_OFFLINE,
@@ -40,12 +42,16 @@ import {
   SUMMON_ALL_CTA,
   SUMMON_BUSY,
   SUMMON_CANCEL,
-  SUMMON_CTA,
-  SUMMON_CONFIRM,
   SUMMON_CONFIRM_ALL,
   SUMMON_DONE,
   SUMMON_GO,
   SUMMON_NOTE,
+  SUMMON_OFFLINE_TAG,
+  SUMMON_PRIVATE_CONFIRM,
+  SUMMON_PRIVATE_CTA,
+  SUMMON_PRIVATE_DONE,
+  SUMMON_PRIVATE_NOTE,
+  SUMMON_PRIVATE_SHORT,
   HUB_CODE_LABEL,
   HUB_CONFIRM_DELETE,
   HUB_DELETE,
@@ -104,8 +110,10 @@ type HubProps = {
   onOpenMap: () => void;
   onOpenWanted: () => void;
   onOpenLive: () => void;
-  /** BOSS move: open a fresh E2EE session and doorbell the target fps. */
-  onBossSummon: (targets: string[]) => Promise<string>;
+  /** BOSS move: open a fresh E2EE session and doorbell the target fps.
+   *  `opts.private` = a 1:1 DRACH invite whose doorbell hangs up to 2h so
+   *  even an OFFLINE member gets rung the moment they next surface. */
+  onBossSummon: (targets: string[], opts?: { private?: boolean }) => Promise<string>;
 };
 
 export function HubScreen({
@@ -138,8 +146,9 @@ export function HubScreen({
   type RosterRow = { nickname: string; role: "member" | "boss"; fp: string; online: boolean; firstSeen: string; lastSeen: string | null };
   const [rosterRows, setRosterRows] = useState<RosterRow[] | null>(null);
   const [rosterQuery, setRosterQuery] = useState("");
-  // summon confirmation state — one target or the whole online roll
-  const [summonPick, setSummonPick] = useState<{ mode: "one"; fp: string; nickname: string } | { mode: "all" } | null>(null);
+  const [rosterAllTime, setRosterAllTime] = useState<number | null>(null);
+  // summon confirmation state — one private 1:1 invite, or the whole online roll
+  const [summonPick, setSummonPick] = useState<{ mode: "one"; fp: string; nickname: string; online: boolean } | { mode: "all" } | null>(null);
   const [summonBusy, setSummonBusy] = useState(false);
   // one war cry per visit — fresh from the house voice
   const warCry = useHouseLine(HUB_TAGLINES);
@@ -229,6 +238,7 @@ export function HubScreen({
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         roll?: RosterRow[];
+        allTime?: number;
         error?: string;
       };
       if (!res.ok || data.ok !== true || !Array.isArray(data.roll)) {
@@ -236,6 +246,7 @@ export function HubScreen({
         setRosterRows(null);
       } else {
         setRosterRows(data.roll);
+        setRosterAllTime(typeof data.allTime === "number" ? data.allTime : null);
       }
     } catch {
       setRosterError("Netwerk onbereikbaar");
@@ -245,7 +256,9 @@ export function HubScreen({
     }
   }, [callsign, identityFp]);
 
-  /** THE BOSS MOVE: new E2EE room, doorbell the targets, step in and hold it. */
+  /** THE BOSS MOVE: new E2EE room, doorbell the targets, step in and hold it.
+   *  A private pick rings one doorbell with a 2h hang time — the invited
+   *  member walks into a room that only he and the boss hold keys for. */
   const execSummon = useCallback(async () => {
     if (!summonPick || summonBusy) return;
     setSummonBusy(true);
@@ -254,10 +267,11 @@ export function HubScreen({
         summonPick.mode === "one"
           ? [summonPick.fp]
           : (rosterRows ?? []).filter((r) => r.online && r.role !== "boss").map((r) => r.fp);
-      const code = await onBossSummon(targets);
+      const isPrivate = summonPick.mode === "one";
+      const code = await onBossSummon(targets, isPrivate ? { private: true } : undefined);
       setSummonPick(null);
       setRosterOpen(false);
-      toast.success(SUMMON_DONE(code));
+      toast.success(isPrivate ? SUMMON_PRIVATE_DONE(code) : SUMMON_DONE(code));
       onOpen(code); // boss holds the room — keys wrap out from this device
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Ontbieding geblok — skree weer");
@@ -593,6 +607,12 @@ export function HubScreen({
                   <>
                     <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
                       {ROSTER_TOTAL(rosterRows.length)} · {rosterRows.filter((r) => r.online).length} {ROSTER_ONLINE}
+                      {rosterAllTime !== null && (
+                        <>
+                          {" · "}
+                          <span className="text-neutral-500">{ROSTER_ALLTIME(rosterAllTime)}</span>
+                        </>
+                      )}
                     </p>
 
                     {/* search the roll */}
@@ -623,17 +643,18 @@ export function HubScreen({
                             <RosterLine
                               key={r.nickname}
                               row={r}
-                              summonable={r.role !== "boss"}
+                              inviteable={r.role !== "boss"}
                               summonBusy={summonBusy}
                               picked={summonPick?.mode === "one" && summonPick.fp === r.fp}
-                              onSummon={() => setSummonPick({ mode: "one", fp: r.fp, nickname: r.nickname })}
+                              onSummon={() => setSummonPick({ mode: "one", fp: r.fp, nickname: r.nickname, online: true })}
                             />
                           ))}
                         </ul>
                       )}
                     </div>
 
-                    {/* OFFLINE — history only */}
+                    {/* OFFLINE — the private doorbell hangs: ring them anyway,
+                        their phone lights up the moment they next surface */}
                     {offlineRows.length > 0 && (
                       <div className="flex flex-col gap-2">
                         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-600">
@@ -641,7 +662,14 @@ export function HubScreen({
                         </span>
                         <ul className="flex flex-col gap-2">
                           {offlineRows.map((r) => (
-                            <RosterLine key={r.nickname} row={r} summonable={false} summonBusy={false} picked={false} onSummon={() => undefined} />
+                            <RosterLine
+                              key={r.nickname}
+                              row={r}
+                              inviteable={r.role !== "boss"}
+                              summonBusy={summonBusy}
+                              picked={summonPick?.mode === "one" && summonPick.fp === r.fp}
+                              onSummon={() => setSummonPick({ mode: "one", fp: r.fp, nickname: r.nickname, online: false })}
+                            />
                           ))}
                         </ul>
                       </div>
@@ -664,6 +692,9 @@ export function HubScreen({
                     <p className="rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-neutral-400">
                       {SUMMON_NOTE}
                     </p>
+                    <p className="rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-neutral-400">
+                      {SUMMON_PRIVATE_NOTE}
+                    </p>
                   </>
                 );
               })()
@@ -674,16 +705,24 @@ export function HubScreen({
           {summonPick && !summonBusy && (
             <div className="sticky bottom-0 flex flex-col gap-2 rounded-xl border border-neutral-700 bg-neutral-950 p-3">
               <p className="text-center text-sm font-bold text-neutral-100">
-                {summonPick.mode === "one" ? SUMMON_CONFIRM(summonPick.nickname) : SUMMON_CONFIRM_ALL((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length)}
+                {summonPick.mode === "one" ? SUMMON_PRIVATE_CONFIRM(summonPick.nickname) : SUMMON_CONFIRM_ALL((rosterRows ?? []).filter((r) => r.online && r.role !== "boss").length)}
               </p>
+              {summonPick.mode === "one" && !summonPick.online && (
+                <p className="text-center font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-neutral-500">
+                  {SUMMON_OFFLINE_TAG}
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <FastButton variant="ghost" onClick={() => setSummonPick(null)} className="w-full">
                   {SUMMON_CANCEL}
                 </FastButton>
                 <FastButton onClick={() => void execSummon()} className="w-full font-mono text-xs uppercase tracking-[0.18em]">
-                  {SUMMON_GO}
+                  {summonPick.mode === "one" ? SUMMON_PRIVATE_CTA : SUMMON_GO}
                 </FastButton>
               </div>
+              {summonPick.mode === "one" && (
+                <p className="text-[11px] font-semibold leading-relaxed text-neutral-500">{SUMMON_PRIVATE_NOTE}</p>
+              )}
             </div>
           )}
           {summonBusy && (
@@ -824,16 +863,19 @@ function ActionRow({ icon: Icon, label, hint, onClick, disabled }: ActionRowProp
   );
 }
 
-/** One line on the boss's roll — online rows carry the ONTBIE doorbell. */
+/** One line on the boss's roll — every member carries the PRIVAAT invite.
+ *  Online rows ring now; offline rows hang a 2h doorbell that fires the
+ *  moment the member next surfaces. The boss himself cannot be invited —
+ *  he IS the house. */
 function RosterLine({
   row,
-  summonable,
+  inviteable,
   summonBusy,
   picked,
   onSummon,
 }: {
   row: { nickname: string; role: "member" | "boss"; online: boolean; firstSeen: string; lastSeen: string | null };
-  summonable: boolean;
+  inviteable: boolean;
   summonBusy: boolean;
   picked: boolean;
   onSummon: () => void;
@@ -849,25 +891,32 @@ function RosterLine({
         aria-hidden
         className={`size-2 shrink-0 ${row.online ? "animate-fast-pulse rounded-full bg-white" : "rounded-full bg-neutral-700"}`}
       />
-      <span
-        className={`min-w-0 flex-1 truncate text-neutral-100 ${
-          boss ? "drach-font text-lg leading-none text-white" : "font-mono text-sm font-bold uppercase tracking-[0.14em]"
-        }`}
-      >
-        {row.nickname}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          className={`truncate text-neutral-100 ${
+            boss ? "drach-font text-lg leading-none text-white" : "font-mono text-sm font-bold uppercase tracking-[0.14em]"
+          }`}
+        >
+          {row.nickname}
+        </span>
+        {!row.online && !boss && (
+          <span className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.14em] text-neutral-600">
+            {SUMMON_OFFLINE_TAG}
+          </span>
+        )}
       </span>
       <span className="hidden font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600 sm:inline">
         {rosterFmt.format(new Date(row.firstSeen))}
       </span>
-      {summonable ? (
+      {inviteable ? (
         <button
           onClick={onSummon}
           disabled={summonBusy}
-          aria-label={`Summon ${row.nickname} into a new session`}
-          className="flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-neutral-700 px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-200 outline-none transition-colors hover:border-white hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-40"
+          aria-label={`Invite ${row.nickname} to a private chat with DRACH`}
+          className="flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-lg border border-neutral-700 px-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-200 outline-none transition-colors hover:border-white hover:text-white focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:opacity-40"
         >
-          <Radio className="size-3.5" aria-hidden />
-          {SUMMON_CTA}
+          {row.online ? <Radio className="size-3.5" aria-hidden /> : <Lock className="size-3.5" aria-hidden />}
+          {SUMMON_PRIVATE_SHORT}
         </button>
       ) : (
         <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.16em] text-neutral-500">

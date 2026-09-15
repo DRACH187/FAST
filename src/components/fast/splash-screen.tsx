@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { REDUCED_MOTION, useHouseLine } from "@/components/fast/motion";
+import { REDUCED_MOTION } from "@/components/fast/motion";
 import { SPLASH_CREDIT, SPLASH_SKIP, SPLASH_TAGLINE, SPLASH_TICKER } from "@/lib/fast/copy";
 
 gsap.registerPlugin(useGSAP);
@@ -17,9 +17,18 @@ gsap.registerPlugin(useGSAP);
  * in, the house war cry, and the maker credit. Film grain + vignette keep
  * it theatre. No progress bars — the block doesn't ask, it announces.
  * Click / tap / Enter to skip.
+ *
+ * OWNER ORDER: the picture show runs a full SEVEN seconds — act 1 slams
+ * the brand in (0–2.5s), act 2 holds the frame like the stares before a
+ * hit: slow push-in, rotating war cries, a second muzzle volley and
+ * another pulse of rings. The skip stays — confidence, not a cage.
  */
 
 const LOGO_CLAMP = "clamp(190px, min(58vw, 40vh), 360px)";
+/** Act 2 rotation cadence + total picture-show length (owner order: 7s). */
+const CRY_ROTATE_MS = 2200;
+const CRY_ROTATE_START_MS = 3000;
+const SPLASH_HOLD_MS = 7000;
 
 const CREDIT_LINE_1 = "MADE BY";
 const WORDMARK = "FAST GUNS";
@@ -27,6 +36,7 @@ const SYMBOL = "187";
 
 export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const root = useRef<HTMLDivElement>(null);
+  const stack = useRef<HTMLDivElement>(null);
   const logo = useRef<HTMLDivElement>(null);
   const glow = useRef<HTMLDivElement>(null);
   const stamp = useRef<HTMLDivElement>(null);
@@ -38,9 +48,21 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
   const barBottom = useRef<HTMLDivElement>(null);
   const vignette = useRef<HTMLDivElement>(null);
   const done = useRef(false);
-  // one war cry per splash — deterministic on the server, fresh after mount
-  const tickerLine = useHouseLine(SPLASH_TICKER);
-  const taglineText = `${SPLASH_TAGLINE} · ${tickerLine}`;
+  // act 2: the war cry rotates every beat — one cry per look, never a repeat
+  const [cryIdx, setCryIdx] = useState(0);
+  const rotateIv = useRef<number | null>(null);
+
+  useEffect(() => {
+    const start = window.setTimeout(() => {
+      rotateIv.current = window.setInterval(() => {
+        setCryIdx((i) => (i + 1 + Math.floor(Math.random() * (SPLASH_TICKER.length - 1))) % SPLASH_TICKER.length);
+      }, CRY_ROTATE_MS);
+    }, CRY_ROTATE_START_MS);
+    return () => {
+      window.clearTimeout(start);
+      if (rotateIv.current) window.clearInterval(rotateIv.current);
+    };
+  }, []);
 
   const finish = useCallback(() => {
     if (done.current) return;
@@ -54,7 +76,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
     gsap
       .timeline({ onComplete })
       .to(
-        [logo.current, wordmark.current, tagline.current, credit.current, stamp.current],
+        [stack.current, stamp.current],
         { scale: 1.06, opacity: 0, filter: "blur(12px)", duration: 0.5, ease: "power2.in", stagger: 0.04 },
         0
       )
@@ -172,12 +194,68 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
         repeat: -1,
         ease: "sine.inOut",
       });
+
+      // ------------------------------ ACT 2 — the hold (2.5s → 7s) ------
+      // the whole stack creeps closer, like the block leaning in
+      gsap.to(stack.current, {
+        scale: 1.07,
+        y: -6,
+        duration: 4.4,
+        delay: 2.4,
+        ease: "sine.inOut",
+      });
+
+      // second muzzle volley mid-hold — the piece is still hot
+      gsap.fromTo(
+        glow.current,
+        { opacity: 0.18, scale: 0.85 },
+        { opacity: 0.7, scale: 1.1, duration: 0.12, ease: "power2.out", delay: 4.3 }
+      );
+      gsap.fromTo(
+        glow.current,
+        { opacity: 0.2, scale: 0.9 },
+        { opacity: 0.55, scale: 1.08, duration: 0.12, ease: "power2.out", delay: 4.52 }
+      );
+
+      // another pair of shock rings late in the hold
+      gsap.fromTo(
+        root.current.querySelector("[data-ring-a]"),
+        { scale: 0.55, opacity: 0.45 },
+        { scale: 1.35, opacity: 0, duration: 1.8, ease: "power2.out", repeat: 1, delay: 3.3 }
+      );
+      gsap.fromTo(
+        root.current.querySelector("[data-ring-b]"),
+        { scale: 0.55, opacity: 0.3 },
+        { scale: 1.35, opacity: 0, duration: 1.8, ease: "power2.out", delay: 4.7 }
+      );
+
+      // the ghost 187 stamp exhales — barely, once, like something alive
+      gsap.to(stamp.current, {
+        scale: 1.04,
+        duration: 2.6,
+        delay: 2.6,
+        yoyo: true,
+        repeat: 1,
+        ease: "sine.inOut",
+      });
     },
     { scope: root }
   );
 
+  // war-cry swaps flicker the tagline like a struck neon sign
   useEffect(() => {
-    const hold = window.setTimeout(finish, 4200);
+    if (cryIdx === 0) return;
+    const el = tagline.current;
+    if (!el || REDUCED_MOTION) return;
+    gsap.fromTo(
+      el,
+      { opacity: 0, y: 6, filter: "blur(4px)" },
+      { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.5, ease: "power2.out" }
+    );
+  }, [cryIdx]);
+
+  useEffect(() => {
+    const hold = window.setTimeout(finish, SPLASH_HOLD_MS);
     return () => window.clearTimeout(hold);
   }, [finish]);
 
@@ -243,7 +321,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
 
       {/* the logo — dead-center, brand stacked beneath it */}
       <div className="absolute inset-0 grid place-items-center">
-        <div className="flex flex-col items-center will-change-transform">
+        <div ref={stack} className="flex flex-col items-center will-change-transform">
           <div ref={logo} className="will-change-transform">
             <Image
               src="/fast-logo.png"
@@ -271,7 +349,7 @@ export function SplashScreen({ onComplete }: { onComplete: () => void }) {
           </div>
           <div ref={tagline} className="mt-3 px-6 text-center opacity-0">
             <span className="font-mono text-[10px] font-black uppercase text-neutral-400 sm:text-[11px]">
-              {taglineText}
+              {SPLASH_TAGLINE} · {SPLASH_TICKER[cryIdx]}
             </span>
           </div>
           <div ref={credit} className="mt-4 flex flex-col items-center gap-1.5 px-6 text-center opacity-0">

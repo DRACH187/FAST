@@ -251,3 +251,36 @@ export function purgeSession(code: string) {
 export function vaultIsEmpty(): boolean {
   return vault.sessionKeys.size === 0;
 }
+
+/**
+ * Security-panel counters — the profile sheet displays the live state of
+ * the RAM vault so the user can SEE the zero-persistence law working.
+ * Only counts cross this boundary, never key material.
+ */
+export function securityFacts(): { keys: number; photos: number } {
+  return { keys: vault.sessionKeys.size, photos: vault.photoBytes.size };
+}
+
+/**
+ * DEAD-MAN'S SWITCH burn (auto-lock): zero and drop EVERY secret this tab
+ * holds — session keys, ratchet counters, decrypted photo bytes, identity
+ * key pairs, signing keys, the stashed gate passcode. Called by the
+ * 15-minute idle auto-lock; afterwards the tab is exactly as clean as a
+ * fresh boot and the only way back in is the 187 gate.
+ */
+export function wipeAll(): void {
+  for (const code of [...vault.sessionKeys.keys()]) purgeSession(code);
+  // belt-and-braces: zero any photo bytes still referenced, then clear
+  for (const bytes of vault.photoBytes.values()) bytes.fill(0);
+  vault.photoBytes.clear();
+  vault.photosBySession.clear();
+  vault.pending.clear();
+  vault.seen.clear();
+  vault.signPubs.clear();
+  vault.counters.clear();
+  vault.keyReceivedAt.clear();
+  vault.sessionKeys.clear();
+  vault.identity = null;
+  vault.signer = null;
+  vault.gatePasscode = null;
+}

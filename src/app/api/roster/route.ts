@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { json, missingConfigResponse, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import { listRoster } from "@/lib/fast/identity-store";
+import { memberTotal } from "@/lib/fast/server-roll";
 
 /**
  * DIE WERF ROL — the BOSS-only roll of every callsign that ever claimed or
@@ -54,6 +55,8 @@ export async function POST(req: Request) {
     ok: true,
     total: roll.length,
     online: roll.filter((r) => r.online).length,
+    /** all-time 187-door count (RAM roll) — the boss sees the full scope */
+    allTime: memberTotal(),
     roll: roll.map((r) => ({
       nickname: r.nickname,
       role: r.role,

@@ -32,45 +32,57 @@ export default function Page() {
     <div className="min-h-dvh bg-black text-neutral-100 flex flex-col">
       {mgr.phase === "splash" && <SplashScreen onComplete={() => mgr.setPhase("gate")} />}
 
-      {mgr.phase === "gate" && <GateScreen onUnlock={mgr.unlock} />}
+      {mgr.phase === "gate" && (
+        <div key="gate" className="fast-fade">
+          <GateScreen onUnlock={mgr.unlock} />
+        </div>
+      )}
 
       {mgr.phase === "callsign" && (
-        <CallsignScreen fingerprint={mgr.identityFp} onReady={mgr.setCallsign} />
+        <div key="callsign" className="fast-fade">
+          <CallsignScreen fingerprint={mgr.identityFp} onReady={mgr.setCallsign} />
+        </div>
       )}
 
       {mgr.phase === "app" &&
         (active ? (
-          <ChatScreen
-            session={active}
-            myFp={mgr.identityFp}
-            callsign={mgr.callsign}
-            onBack={() => mgr.setActiveCode(null)}
-            onSend={(text) => mgr.sendMessage(active.code, text)}
-            onSendPhoto={(bytes) => mgr.sendPhoto(active.code, bytes)}
-            onOpenMap={openMap}
-            onOpenWanted={() => setWantedOpen(true)}
-            onOpenLive={() => setLiveOpen(true)}
-            onDelete={(code) => mgr.deleteSession(code)}
-          />
+          <div key={`chat-${active.code}`} className="fast-fade">
+            <ChatScreen
+              session={active}
+              myFp={mgr.identityFp}
+              callsign={mgr.callsign}
+              onBack={() => mgr.setActiveCode(null)}
+              onSend={(text) => mgr.sendMessage(active.code, text)}
+              onSendPhoto={(bytes) => mgr.sendPhoto(active.code, bytes)}
+              onOpenMap={openMap}
+              onOpenWanted={() => setWantedOpen(true)}
+              onOpenLive={() => setLiveOpen(true)}
+              onDelete={(code) => mgr.deleteSession(code)}
+            />
+          </div>
         ) : (
-          <HubScreen
-            identityFp={mgr.identityFp}
-            callsign={mgr.callsign}
-            sessions={mgr.sessions}
-            busy={mgr.connecting}
-            onOpen={(code) => void mgr.openSession(code)}
-            onStart={mgr.startSession}
-            onJoin={async (code) => {
-              await mgr.joinSession(code);
-            }}
-            onDelete={mgr.deleteSession}
-            onClose={mgr.closeSession}
-            onSwitchCallsign={mgr.switchCallsign}
-            onOpenMap={openMap}
-            onOpenWanted={() => setWantedOpen(true)}
-            onOpenLive={() => setLiveOpen(true)}
-            onBossSummon={(targets) => mgr.bossSummon(targets)}
-          />
+          <div key="hub" className="fast-fade">
+            <HubScreen
+              identityFp={mgr.identityFp}
+              callsign={mgr.callsign}
+              sessions={mgr.sessions}
+              busy={mgr.connecting}
+              onOpen={(code) => void mgr.openSession(code)}
+              onStart={mgr.startSession}
+              onJoin={async (code) => {
+                await mgr.joinSession(code);
+              }}
+              onDelete={mgr.deleteSession}
+              onClose={mgr.closeSession}
+              onSwitchCallsign={mgr.switchCallsign}
+              onOpenMap={openMap}
+              onOpenWanted={() => setWantedOpen(true)}
+              onOpenLive={() => setLiveOpen(true)}
+              onBossSummon={(targets, opts) =>
+                mgr.bossSummon(targets, opts?.private ? { ttlMinutes: 120 } : undefined)
+              }
+            />
+          </div>
         ))}
 
       <MapScreen open={mapOpen} onClose={() => setMapOpen(false)} />

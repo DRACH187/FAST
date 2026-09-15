@@ -10,12 +10,37 @@
  */
 
 import { useEffect, useState } from "react";
-import { Crown, Download, Save, Trash2, Users, X } from "lucide-react";
+import { Crown, Download, Save, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { FastButton, FastModal } from "@/components/fast/primitives";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import { canInstall, isStandalone, onInstallAvailability, promptInstall } from "@/components/fast/offline-vault";
-import { PROFILE_DELETE, PROFILE_DELETED, PROFILE_FOOTER, PROFILE_INSTALL, PROFILE_ROLL_LABEL, PROFILE_TITLE, pick } from "@/lib/fast/copy";
+import {
+  getIdentity,
+  getSigner,
+  securityFacts,
+} from "@/lib/crypto/keyvault";
+import { hasWantedKeyMaterial } from "@/lib/crypto/wanted-crypto";
+import {
+  PROFILE_DELETE,
+  PROFILE_DELETED,
+  PROFILE_FOOTER,
+  PROFILE_INSTALL,
+  PROFILE_ROLL_LABEL,
+  PROFILE_TITLE,
+  SEC_AUTOLOCK,
+  SEC_E2EE,
+  SEC_KEYS,
+  SEC_MEDIA_LAW,
+  SEC_PHOTOS,
+  SEC_SIGNER,
+  SEC_STORAGE,
+  SEC_SUB,
+  SEC_TITLE,
+  SEC_WANTED_IDLE,
+  SEC_WANTED_KEY,
+  pick,
+} from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 
 type ProfileProps = {
@@ -33,6 +58,9 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
   const [memberTotal, setMemberTotal] = useState(cachedMemberTotal);
   const [deleteLabel] = useState(() => pick(PROFILE_DELETE));
   const [footerLine] = useState(() => pick(PROFILE_FOOTER));
+  // live RAM-vault facts for the SEKURITEIT panel — read fresh on each render
+  // while the sheet is open (pure counters; nothing secret ever crosses)
+  const facts = securityFacts();
   const boss = callsign?.role === "boss";
 
   useEffect(() => {
@@ -167,6 +195,32 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
             </span>
           </div>
 
+          {/* SEKURITEIT — the vault shows its own proof: everything on this
+              device, nothing anywhere else, media sealed before it leaves */}
+          <div className="flex flex-col gap-3 rounded-2xl border border-neutral-900 bg-black px-4 py-4">
+            <p className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-400">
+              <ShieldCheck className="size-3.5" aria-hidden />
+              {SEC_TITLE}
+            </p>
+            <p className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+              {SEC_SUB}
+            </p>
+            <ul className="flex flex-col gap-1.5">
+              <SecRow label={SEC_E2EE(getIdentity()?.curve === "ECDH-P256" ? "ECDH P-256" : "X25519")} />
+              <SecRow
+                label={SEC_SIGNER(
+                  getSigner()?.curve === "ECDSA-P256" ? "ECDSA P-256" : getSigner() ? "ED25519" : "RUS"
+                )}
+              />
+              <SecRow label={SEC_KEYS(facts.keys)} />
+              <SecRow label={SEC_PHOTOS(facts.photos)} />
+              <SecRow label={hasWantedKeyMaterial() ? SEC_WANTED_KEY : SEC_WANTED_IDLE} />
+              <SecRow label={SEC_AUTOLOCK} />
+              <SecRow label={SEC_MEDIA_LAW} strong />
+              <SecRow label={SEC_STORAGE} strong />
+            </ul>
+          </div>
+
           {/* house footer */}
           <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-600">
             {footerLine}
@@ -197,5 +251,19 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
         </div>
       </FastModal>
     </>
+  );
+}
+
+/** One honest line in the SEKURITEIT panel — mono, hard, no decoration. */
+function SecRow({ label, strong = false }: { label: string; strong?: boolean }) {
+  return (
+    <li
+      className={`flex items-center gap-2 font-mono text-[9px] font-bold uppercase leading-relaxed tracking-[0.14em] ${
+        strong ? "text-neutral-200" : "text-neutral-400"
+      }`}
+    >
+      <span aria-hidden className="size-1 shrink-0 rounded-full bg-neutral-600" />
+      {label}
+    </li>
   );
 }

@@ -279,3 +279,38 @@ Consequences, recorded honestly because the repository is PUBLIC:
 5. Implementation location: `OWNER_FALLBACKS` in `src/lib/server-env.ts`,
    applied only when `process.env` is missing/empty; the 503 config guard in
    `server-guard.ts` now only fires on genuinely invalid credentials.
+
+**Task-18 hardening pass (mobile + security + boss private line).** Owner
+order: better mobile support, a stronger security system, DRACH sees ALL
+members and can pull any of them into a PRIVATE chat, media encryption made
+explicit. Recorded changes and their honest scope:
+
+- **Private boss invites with a hanging doorbell.** `POST /api/summons`
+  accepts an optional `ttlMinutes` (3–120, clamped server-side). A 1:1
+  DRACH invite pins its doorbell for up to **2 hours**, so an OFFLINE
+  member is rung the moment they next heartbeat. The summons is still a
+  one-line doorbell (fingerprint + code + timestamp, RAM-only): no content,
+  no names, no metadata beyond what was already there. Authorization is
+  unchanged — a verified boss attestation is required, members get 403.
+- **Dead-man's switch (client auto-lock).** 15 minutes without a real
+  interaction burns the entire client-side vault (session keys, ratchet
+  counters, decrypted photo bytes, identity + signing keys, the stashed
+  gate passcode, the WANTED board key) AND deletes the offline vault blobs,
+  then drops the tab at the gate. Threat model: a seized or borrowed device
+  showing a live session. Scope: client RAM + local IndexedDB only — the
+  server never held keys, so nothing more can be wiped from there; its
+  ciphertext ages out on the 5h/24h TTLs as before.
+- **Media padding (traffic-analysis blunting).** Photo envelopes now carry
+  `[4-byte length | bytes | 0.5–8KB random filler]` inside the AES-GCM
+  seal, so the ciphertext length no longer equals the image size. Photos
+  are ephemeral (60s RAM TTL) so there is no backward-compatibility debt.
+- **Encrypted media made VISIBLE.** Every chat photo bubble and WANTED
+  exhibit carries an explicit seal badge (`AES-256 · GE-ENKRIPT`); the
+  profile sheet now has a SEKURITEIT panel showing live vault facts
+  (curve, signer, keys/photos in RAM, auto-lock status) — counts only,
+  never key material.
+- **Mobile hardening.** `interactiveWidget: resizes-content` (the soft
+  keyboard shrinks the viewport instead of covering the composer),
+  `touch-action: manipulation` on all tappables (kills the 300ms tap
+  delay), an iOS-only 16px input-font floor (Safari's focus-zoom guard),
+  safe-area insets verified intact on every fixed bar, 44px+ hit targets.

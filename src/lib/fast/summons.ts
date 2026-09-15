@@ -9,15 +9,20 @@
  * session code, a timestamp. NO message content, NO callsigns, NO IPs — the
  * summons is a doorbell, not a letter. Everything dies with the process.
  *
- * Delivery is at-least-once: entries ride every heartbeat until TTL, and the
- * client dedupes by code. TTL is short (3 min) — a summons is a NOW thing.
+ * Delivery is at-least-once: entries ride every heartbeat until their TTL
+ * (3 min for an all-hands, up to 2 h for a private boss invite), and the
+ * client dedupes by code.
  */
 
-const TTL_MS = 3 * 60 * 1000;
+const DEFAULT_TTL_MS = 3 * 60 * 1000;
+/** Private-invite doorbell: hangs up to 2h so an OFFLINE member gets rung
+ *  the moment they next heartbeat. A private chat invite is not a NOW
+ *  thing — it is a "when you surface, come see the boss" thing. */
+export const MAX_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_TARGETS = 200;
 const MAX_PER_TARGET = 8;
 
-type SummonRec = { code: string; at: number };
+type SummonRec = { code: string; at: number; ttl: number };
 
 /* globalThis pinning: one table per process, survives module reloads. */
 const g = globalThis as unknown as { __fastSummons?: Map<string, SummonRec[]> };
@@ -26,7 +31,7 @@ g.__fastSummons = table;
 
 function sweep(now: number): void {
   for (const [fp, list] of table) {
-    const kept = list.filter((s) => now - s.at < TTL_MS);
+    const kept = list.filter((s) => now - s.at < s.ttl);
     if (kept.length === 0) table.delete(fp);
     else if (kept.length !== list.length) table.set(fp, kept);
   }
@@ -35,15 +40,18 @@ function sweep(now: number): void {
 /**
  * Pin a summons for every target. Idempotent per (target, code): a re-post
  * refreshes the timestamp instead of stacking duplicates.
+ * `ttlMs` clamps to [DEFAULT_TTL_MS, MAX_TTL_MS] — all-hands doorbells stay
+ * short (3 min), private invites may hang up to 2 hours.
  */
-export function postSummons(targets: string[], code: string): number {
+export function postSummons(targets: string[], code: string, ttlMs?: number): number {
+  const ttl = Math.min(MAX_TTL_MS, Math.max(DEFAULT_TTL_MS, Number(ttlMs) || DEFAULT_TTL_MS));
   const now = Date.now();
   sweep(now);
   let pinned = 0;
   for (const fp of targets) {
     if (typeof fp !== "string" || !/^[a-f0-9]{8,64}$/.test(fp)) continue;
     const list = (table.get(fp) ?? []).filter((s) => s.code !== code);
-    list.unshift({ code, at: now });
+    list.unshift({ code, at: now, ttl });
     table.set(fp, list.slice(0, MAX_PER_TARGET));
     pinned += 1;
     if (table.size > MAX_TARGETS) {

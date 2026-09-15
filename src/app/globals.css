@@ -128,6 +128,30 @@
     outline: 2px solid rgba(255, 255, 255, 0.35);
     outline-offset: 2px;
   }
+  /* ------- MOBILE SUPPORT LAW -------
+     1) touch-action: manipulation kills the ~300ms double-tap-zoom delay on
+        every tappable element — the app answers like a native one.
+     2) Buttons/labels stop long-press text selection popups on Android. */
+  button,
+  a,
+  label,
+  summary,
+  [role="button"] {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* iOS zoom guard: Safari zooms the page when an input's font is under
+     16px — which hijacks the whole screen on every small mono input.
+     On iOS ONLY, floor input/textarea fonts at 16px so focus never zooms.
+     Desktop and Android keep the design sizes untouched. */
+  @supports (-webkit-touch-callout: none) {
+    input,
+    textarea,
+    select {
+      font-size: max(16px, 1em) !important;
+    }
+  }
 }
 
 /* ------- fully transparent scrollbars (everywhere, webkit + firefox) -------
@@ -176,6 +200,27 @@
 }
 .animate-fast-pulse {
   animation: fast-pulse 1.6s ease-in-out infinite;
+}
+
+/* ------- phase transitions: screens slam in from black -------
+   OPACITY ONLY by law — a transform here would make the animated wrapper
+   the containing block for position:fixed children (camera overlay, dock)
+   and break them for the animation's lifetime. Fade hard, fade fast. */
+@keyframes fast-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fast-fade {
+  animation: fast-fade 0.38s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fast-fade {
+    animation: none;
+  }
 }
 
 /* ------- task 8-b: texture pass — film grain + vignette (pure CSS) ------- */

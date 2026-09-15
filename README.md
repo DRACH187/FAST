@@ -17,7 +17,7 @@ runs identically self-hosted.
 ## The flow
 
 ```
-SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
+SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   7s picture show — skip by tap
   └─> ACCESS GATE (passphrase)        constant-time check, rate limited, lockout
         └─> CALLSIGN LOGIN            nickname — saved/deleted permanently per device
               └─> SESSION HUB         start / join / delete sessions · ALL-TIME ROLL
@@ -50,6 +50,26 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
   the room within one heartbeat and the session key is wrapped to them
   straight from the boss's device. Summons are one-line doorbells (code +
   timestamp), RAM-only, 3-minute TTL.
+- **Private chat invites (DRACH only)** — every member on the boss's roll
+  (online OR offline) carries a PRIVAAT button: it opens a 1:1 E2EE session
+  with the boss and hangs a private doorbell with a **2-hour TTL**, so an
+  offline member's phone lights up the moment they next surface. Only the
+  boss and the invited member ever hold that room's key.
+- **Encrypted media law** — every image and video is sealed in the browser
+  before it leaves the device: chat photos ride per-photo AES-256-GCM
+  ratchet keys (with random filler padding so even the ciphertext SIZE is
+  blurred), WANTED-board exhibits (JPEG stills + MP4/WebM clips) ride the
+  PBKDF2 board key. The server stores nothing but noise, and media bubbles
+  wear the proof: `AES-256 · GE-ENKRIPT`.
+- **Dead-man's switch** — 15 minutes without a pulse (no touch, click, key
+  or scroll) burns EVERYTHING in the tab: session keys, ratchet state,
+  decrypted photos, the WANTED key, offline vault blobs — then drops the
+  device back at the 187 gate. A locked screen is a seized phone; the house
+  assumes the worst.
+- **Mobile-first build** — keyboard-aware viewport (the composer rides above
+  the soft keyboard), safe-area insets on every fixed bar, 44px+ touch
+  targets, touch-action to kill tap delay, and an iOS-only floor on input
+  font sizes so focus never zoom-hijacks the screen.
 - **Inspect-element lockdown** — right-click, devtools shortcuts and
   view-source routes are blocked; an overlay slams the page if docked
   devtools are detected. (A deterrent — no client-side trick can defeat a

@@ -31,12 +31,14 @@ import {
   stashPhoto,
   storeSessionKey,
   takePending,
+  wipeAll,
   type DecryptedMessage,
 } from "@/lib/crypto/keyvault";
 import { resetWantedKey } from "@/lib/crypto/wanted-crypto";
 import { api, type WireMessage } from "@/lib/fast/api";
 import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
+import { TOAST_AUTOLOCK } from "@/lib/fast/copy";
 import * as vault from "@/lib/fast/vault-db";
 import {
   clearCallsign,
@@ -66,6 +68,17 @@ export type SessionView = {
 };
 
 const CODE_RE = /^[A-Z]{6}$/;
+
+/**
+ * DEAD-MAN'S SWITCH: 15 minutes without a pulse (no pointer, key, touch or
+ * wheel) burns every secret this tab holds — session keys, ratchet state,
+ * decrypted photos, the WANTED key, the offline vault blobs — and drops the
+ * device back at the 187 gate. The server side dies on its own 5h TTL; this
+ * kills the CLIENT side the moment the device looks abandoned. A locked
+ * screen is a seized phone — the house assumes the worst.
+ */
+const AUTOLOCK_MS = 15 * 60 * 1000;
+const AUTOLOCK_TICK_MS = 20_000;
 
 /** 23-letter alphabet: unambiguous letters only (no I/L/O look-alikes). */
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -863,7 +876,7 @@ export function useSessionManager() {
    * Rolls the room back if the doorbell call fails.
    */
   const bossSummon = useCallback(
-    async (targets: string[]) => {
+    async (targets: string[], opts?: { ttlMinutes?: number }) => {
       const identity = identityRef.current;
       const stored = callsignRef.current;
       if (!identity || !stored || stored.role !== "boss") {
@@ -882,6 +895,7 @@ export function useSessionManager() {
             token: stored.token,
             code,
             targets: clean,
+            ...(opts?.ttlMinutes ? { ttlMinutes: Math.floor(opts.ttlMinutes) } : {}),
           }),
           cache: "no-store",
         });
@@ -1114,6 +1128,50 @@ export function useSessionManager() {
     const id = window.setInterval(() => void vault.sweepExpired(), 10 * 60 * 1000);
     return () => window.clearInterval(id);
   }, [phase]);
+
+  // ------------------------------------------------------- dead-man's switch
+
+  const lastPulse = useRef(Date.now());
+
+  /** Burn EVERYTHING and drop back at the 187 gate. */
+  const autolock = useCallback(() => {
+    transport.stopAll();
+    const codes = sessionsRef.current.map((s) => s.code);
+    for (const code of codes) {
+      purgeSession(code); // RAM: keys, counters, photos
+      void vault.forgetSession(code).catch(() => undefined); // offline blobs
+    }
+    for (const [, t] of photoTimers.current) clearTimeout(t);
+    photoTimers.current.clear();
+    wipeAll(); // identity, signer, passcode, everything left in RAM
+    resetWantedKey();
+    wrappedFor.current.clear();
+    restoreKick.current = false; // re-entry restores from a (now empty) vault
+    setSessions([]);
+    setActiveCode(null);
+    setHeartbeatActive(false);
+    setPhase("gate");
+    toast.error(TOAST_AUTOLOCK);
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "app") return;
+    lastPulse.current = Date.now();
+    const mark = () => {
+      lastPulse.current = Date.now();
+    };
+    // REAL interaction only — a tab quietly rotting in the background does
+    // not count as a pulse, and neither does merely glancing at it again.
+    const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
+    for (const e of events) window.addEventListener(e, mark, { passive: true });
+    const id = window.setInterval(() => {
+      if (Date.now() - lastPulse.current >= AUTOLOCK_MS) autolock();
+    }, AUTOLOCK_TICK_MS);
+    return () => {
+      for (const e of events) window.removeEventListener(e, mark);
+      window.clearInterval(id);
+    };
+  }, [phase, autolock]);
 
   // ------------------------------------------------- data-saving (vault-db)
 

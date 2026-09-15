@@ -280,13 +280,22 @@ export const ROSTER_SEARCH_PLACE = "SOEK DIE ROL";
 // boss summons — DRACH's doorbell into a live session
 export const SUMMON_CTA = "ONTBIE";
 export const SUMMON_ALL_CTA = "SKREE ALMAL AANLYN";
+export const SUMMON_PRIVATE_CTA = "PRIVAAT WERF";
+export const SUMMON_PRIVATE_SHORT = "PRIVAAT";
 export const SUMMON_CONFIRM = (n: string) => `Ontbied ${n} in 'n nuwe werf?`;
+export const SUMMON_PRIVATE_CONFIRM = (n: string) =>
+  `Privaat werf vir jou en ${n}? Net julle twee, deure toe, sleutels van jou af.`;
 export const SUMMON_CONFIRM_ALL = (n: number) => `Ontbied almal — ${n} ouen${n === 1 ? "" : "e"} — in 'n nuwe werf?`;
 export const SUMMON_GO = "ONTBIE NOU";
 export const SUMMON_CANCEL = "Uit";
 export const SUMMON_BUSY = "Ontbied…";
 export const SUMMON_DONE = (c: string) => `Die werf ${c} staan. Hou hom oop — sleutels kom van jou af.`;
+export const SUMMON_PRIVATE_DONE = (c: string) => `Privaat werf ${c} staan. ${c} — hou hom oop, hy kom alleen na jou toe.`;
 export const SUMMON_NOTE = "Elke ontbieding maak 'n NUWE ge-enkripte werf oop en lui die ouens se selfone. Hulle trap outomaties in — die sleutel kom net van jou toestel af, so bly in die werf.";
+export const SUMMON_PRIVATE_NOTE =
+  "Die privaat deurklokkie bly hang tot 2 UUR — kom die ouen af-lyn aanlyn, selfs more-aand, sy selfoon lui en hy trap in. Net jy en hy het die sleutel.";
+export const SUMMON_OFFLINE_TAG = "WEG — KLOK HOM TOG, DIT BLY HANG";
+export const ROSTER_ALLTIME = (n: number) => `${n} OUENS OIT DEUR DIE HEK`;
 
 // ----------------------------------------------------------------- splash
 
@@ -319,3 +328,28 @@ export const PROFILE_FOOTER = [
 export const TOAST_OFFLINE = "Jy is af-lyn, ouen. Werf bly loop uit die kluis — soos 'n rot in die donker.";
 export const TOAST_BACK_ONLINE = "Lyn is terug. VUUUUUR.";
 export const TOAST_COPIED = "Gekopieer. Moer dit waar jy wil.";
+
+// ----------------------------------------------------------------- lockdown
+
+export const TOAST_AUTOLOCK =
+  "15 minute sonder 'n puls. Werf gesluit, sleutels gebrand, foto's as. Moer die kode weer in.";
+export const LOCKDOWN_IDLE_BADGE = "OUTOSLUIT · 15 MIN SONDER 'N PULS";
+
+// ------------------------------------------------------------- security panel
+
+export const SEC_TITLE = "SEKURITEIT";
+export const SEC_SUB = "DIE GEHEIM · ALLES OP HIERDIE TOESTEL, NIKS ANDERS NIE";
+export const SEC_E2EE = (curve: string) => `E2EE ENGIN · AES-256-GCM · ${curve}`;
+export const SEC_SIGNER = (alg: string) => `BOODSKAP HANDTEKENING · ${alg}`;
+export const SEC_KEYS = (n: number) => `${n} SLEUTEL${n === 1 ? "" : "S"} IN RAM`;
+export const SEC_PHOTOS = (n: number) => `${n} FOTO${n === 1 ? "" : "'S"} IN RAM · BRAND MET KYK`;
+export const SEC_WANTED_KEY = "WANTED-SLEUTEL · PBKDF2 600K · AKTIEF";
+export const SEC_WANTED_IDLE = "WANTED-SLEUTEL · RUS";
+export const SEC_AUTOLOCK = "OUTOSLUIT · 15 MIN SONDER 'N PULS";
+export const SEC_STORAGE = "GEEN DATABASE · GEEN WOLK · GEEN KAK NIE";
+export const SEC_MEDIA_LAW = "ELKE BEELD EN VIDEO · GE-ENKRIPT VOORDAT DIT DIE TOESTEL VERLAAT";
+
+// ------------------------------------------------------------ media badges
+
+export const CHAT_MEDIA_SEALED = "AES-256 · GE-ENKRIPT";
+export const WANTED_MEDIA_BADGE = "AES-256-GCM";

@@ -21,6 +21,9 @@ export const runtime = "nodejs";
 
 const CODE_RE = /^[A-Z]{6}$/;
 const MAX_TARGETS = 100;
+/** Private-invite doorbell: up to 2 hours, so an OFFLINE member gets rung
+ *  the moment they next heartbeat. All-hands stays at the 3 min default. */
+const MAX_INVITE_TTL_MINUTES = 120;
 
 const bodySchema = z
   .object({
@@ -28,6 +31,8 @@ const bodySchema = z
     token: z.string().min(8).max(1024),
     code: z.string().regex(CODE_RE),
     targets: z.array(z.string().regex(/^[a-f0-9]{8,64}$/)).min(1).max(MAX_TARGETS),
+    /** optional private-invite hang time in minutes (clamped server-side) */
+    ttlMinutes: z.number().int().min(3).max(MAX_INVITE_TTL_MINUTES).optional(),
   })
   .strict();
 
@@ -44,7 +49,7 @@ export async function POST(req: Request) {
 
   const check = bodySchema.safeParse(parsed.body);
   if (!check.success) return json({ ok: false, error: "Invalid payload" }, 400);
-  const { fingerprint, token, code, targets } = check.data;
+  const { fingerprint, token, code, targets, ttlMinutes } = check.data;
 
   const attested = verifyAttestation(token, fingerprint);
   if (!attested) {
@@ -60,6 +65,6 @@ export async function POST(req: Request) {
     return json({ ok: false, error: "No one to summon." }, 400);
   }
 
-  const summoned = postSummons(targets_, code);
+  const summoned = postSummons(targets_, code, ttlMinutes ? ttlMinutes * 60_000 : undefined);
   return json({ ok: true, summoned });
 }

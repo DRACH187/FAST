@@ -28,7 +28,7 @@ import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/co
 import { CameraCapture } from "@/components/fast/camera-capture";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
-import { CHAT_EMPTY, CHAT_PLACEHOLDER, CHAT_TTL_TICKER, pick } from "@/lib/fast/copy";
+import { CHAT_EMPTY, CHAT_MEDIA_SEALED, CHAT_PLACEHOLDER, CHAT_TTL_TICKER, pick } from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
@@ -855,6 +855,16 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
           </span>
         </button>
       )}
+
+      {/* encryption proof — the pixels rode here sealed, AES-256-GCM, and the
+          server held nothing but noise the whole way */}
+      <span
+        className="flex items-center justify-center gap-1.5 border-t border-neutral-900 bg-black/80 px-3 py-1.5 font-mono text-[8px] font-bold uppercase tracking-[0.22em] text-neutral-500"
+        aria-hidden
+      >
+        <Lock className="size-2.5" aria-hidden />
+        {CHAT_MEDIA_SEALED}
+      </span>
 
       {/* burn countdown */}
       <span

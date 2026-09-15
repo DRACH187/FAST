@@ -455,6 +455,38 @@ export async function verifyEnvelopeSignature(
 }
 
 // ---------------------------------------------------------------------------
+// Media padding — blunt exact-size traffic analysis on photo/video blobs
+// ---------------------------------------------------------------------------
+
+/**
+ * Media wire layout: [4-byte BE plaintext length][plaintext][random filler].
+ * Raw photos arrive in their own ratchet envelopes; without this layer the
+ * sealed byte length IS the picture size. A 0.5–8KB random filler plus the
+ * 4-byte length header blunts small-file fingerprints and keeps the real
+ * length invisible in the ciphertext stream. Media is ephemeral (60s TTL in
+ * RAM), so there is no legacy format to stay compatible with.
+ */
+const MEDIA_PAD_MIN = 512;
+const MEDIA_PAD_MAX = 8192;
+
+function padMediaBytes(bytes: Uint8Array): Uint8Array {
+  const jitter =
+    MEDIA_PAD_MIN + (crypto.getRandomValues(new Uint32Array(1))[0] % (MEDIA_PAD_MAX - MEDIA_PAD_MIN + 1));
+  const out = new Uint8Array(4 + bytes.length + jitter);
+  new DataView(out.buffer).setUint32(0, bytes.length);
+  out.set(bytes, 4);
+  crypto.getRandomValues(out.subarray(4 + bytes.length));
+  return out;
+}
+
+function unpadMediaBytes(padded: Uint8Array): Uint8Array {
+  if (padded.length < 4) throw new Error("media blob truncated");
+  const n = new DataView(padded.buffer, padded.byteOffset, padded.byteLength).getUint32(0);
+  if (n > padded.length - 4) throw new Error("media blob corrupted");
+  return padded.slice(4, 4 + n);
+}
+
+// ---------------------------------------------------------------------------
 // Ephemeral photos — same ratchet family, RAW-BYTE payload, RAM-only lifetime
 // ---------------------------------------------------------------------------
 
@@ -507,7 +539,7 @@ export async function encryptPhoto(
 ): Promise<PhotoEnvelope> {
   const key = await derivePhotoKey(sessionKey, code, senderFp, counter);
   const ad = te.encode(`${code}|${senderFp}|${counter}|photo`);
-  const { iv, ciphertext } = await aesGcmSeal(key, bytes, ad);
+  const { iv, ciphertext } = await aesGcmSeal(key, padMediaBytes(bytes), ad);
   return { id: crypto.randomUUID(), counter, iv, data: ciphertext };
 }
 
@@ -522,5 +554,5 @@ export async function decryptPhoto(
 ): Promise<Uint8Array> {
   const key = await derivePhotoKey(sessionKey, code, senderFp, counter);
   const ad = te.encode(`${code}|${senderFp}|${counter}|photo`);
-  return aesGcmOpen(key, iv, data, ad);
+  return unpadMediaBytes(await aesGcmOpen(key, iv, data, ad));
 }
