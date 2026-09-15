@@ -133,6 +133,8 @@ export const NAV_RAIL_TAG = "187 · VOORTLEWEND";
 export const NAV_RAIL_PROFILE = (name: string) => `Profiel — ${name}`;
 export const NAV_RAIL_LAW = "Elke werf vee homself uit ná 5 uur";
 export const NAV_RAIL_OPEN = "OOP";
+export const NAV_RAIL_PANEL = "BEHEERKAMER";
+export const NAV_RAIL_PANEL_HINT = "DIE HELE WERF · NET VIR DRACH SE OË";
 
 // -------------------------------------------------------------------- hub
 
@@ -367,3 +369,72 @@ export const SEC_MEDIA_LAW = "ELKE BEELD EN VIDEO · GE-ENKRIPT VOORDAT DIT DIE 
 
 export const CHAT_MEDIA_SEALED = "AES-256 · GE-ENKRIPT";
 export const WANTED_MEDIA_BADGE = "AES-256-GCM";
+
+// ----------------------------------------------------- boss command panel
+// DRACH's admin room — the whole site in one glass, boss eyes only. Counts,
+// names, timestamps: die vorm van die oorlog, nooit 'n enkele woord nie.
+
+export const PANEL_TITLE = "BOSS BEHEERKAMER";
+export const PANEL_SUB = "DIE HELE WERF · ELKE OUEN · ELKE WERF · ALLES — NET VIR DRACH SE OË";
+export const PANEL_TAB_ROLL = "DIE ROL";
+export const PANEL_TAB_SESSIONS = "WERWE";
+export const PANEL_TAB_WANTED = "WANTED";
+export const PANEL_TAB_SYSTEM = "STELSEL";
+export const PANEL_REFRESH = "VARS MAAK";
+export const PANEL_REFRESHING = "TREK DIE OORLOGSKAART…";
+export const PANEL_ERROR = [
+  "Die kamer se lyne is dood — moer die knop weer, baas.",
+  "Data weg. Die werf skoonmekaar — probeer fokken weer.",
+] as const;
+export const PANEL_GENERATED = (t: string) => `KAART GEMAAK ${t}`;
+export const PANEL_LIVE_BADGE = "AAN";
+export const PANEL_DEAD_BADGE = "WEG";
+export const PANEL_BOSS_TAG = "BOSS";
+export const PANEL_MEMBER_TAG = "OUEN";
+
+// panel — DIE ROL tab
+export const PANEL_ROLL_ALLTIME = (n: number) => `${n} OUENS OIT DEUR DIE 187 HEK`;
+export const PANEL_ROLL_COUNT = (n: number) => `${n} CALLSIGNS OP HIERDIE INSTANSIE`;
+export const PANEL_ROLL_ONLINE = (n: number) => `${n} NOU AANLYN`;
+export const PANEL_ROLL_EMPTY = "Nog niemand het ingestap nie — die werf wag op sy eerste bloed.";
+export const PANEL_ROLL_SEEN = "GESIEN EERSTE";
+export const PANEL_ROLL_LAST = "LAAS GEKLOP";
+
+// panel — WERWE tab
+export const PANEL_SESSIONS_EMPTY = "Fokol werwe oop. Stilte voor die storm.";
+export const PANEL_SESSIONS_LIVE = (n: number) => `${n} WERF${n === 1 ? "" : "E"} NOU OOP`;
+export const PANEL_SESSIONS_MEMBERS = (n: number) => `${n} OUEN${n === 1 ? "" : "S"} IN DIE WERF`;
+export const PANEL_SESSIONS_MSGS = (n: number) => `${n} KOEËLS GELAND`;
+export const PANEL_SESSIONS_ENV = (n: number) => `${n} SLEUTEL-OMSLOE`;
+export const PANEL_SESSIONS_PHOTOS = (n: number) => `${n} FOTO'S IN RAM`;
+export const PANEL_SESSIONS_INROOMS = (n: number) => `${n} OUENS TOTAAL IN WERWE`;
+export const PANEL_STATUS_LIVE = "LOOP NOG";
+export const PANEL_STATUS_DEAD = "VERMOOR";
+export const PANEL_STATUS_EXPIRED = "SELF-UITGEBRAND · 5U";
+export const PANEL_CREATOR_BOUND = "SKEPPER GEBOUND";
+export const PANEL_CREATOR_LOOSE = "GEEN SKEPPER";
+export const PANEL_WIPE_LEFT = "VEE UIT OOR";
+
+// panel — WANTED tab
+export const PANEL_WANTED_POSTS = (n: number) => `${n} SAAK${n === 1 ? "" : "E"} OP DIE BLAD`;
+export const PANEL_WANTED_EXHIBITS = (n: number) => `${n} BEWYSSTUKKE GESEEL`;
+export const PANEL_WANTED_COMMENTS = (n: number) => `${n} SAKBOEK NOTES`;
+export const PANEL_WANTED_TOMB = (n: number) => `${n} GRAFSTENE · GEVERBRAND DEUR DIE BOSS`;
+export const PANEL_WANTED_BYTES = (mb: string) => `${mb} MB SIFTERTEKS IN RAM`;
+export const PANEL_WANTED_EMPTY = "Die doodslys is leeg — nog geen saake teen niemand nie.";
+export const PANEL_WANTED_LAW =
+  "ALLES OP DIE BLAD IS SIFTERTEKS · DIE BEDIENER EN DIE BOSS SIEN KAK — LETTERLIK FOKOL";
+
+// panel — STELSEL tab
+export const PANEL_SYS_UPTIME = (t: string) => `INSTANSIE WAKKER VIR ${t}`;
+export const PANEL_SYS_STARTED = (t: string) => `KOUÉ AANSKAKEL · ${t}`;
+export const PANEL_SYS_RAM = (mb: number) => `${mb} MB RAM IN GEBRUIK`;
+export const PANEL_SYS_NODE = (v: string) => `NODE ${v}`;
+export const PANEL_SYS_LIVE = (n: number) => `${n} HARTSLAE AANLYN`;
+export const PANEL_SYS_SUMMONS = (n: number) => `${n} ONTBIEDINGS HANG NOU`;
+export const PANEL_SYS_LIMITERS = (n: number) => `${n} RATE-LIMIT EMMERS AKTIEF`;
+export const PANEL_SYS_LOCKS = (n: number) => `${n} HEK-SLUITINGS · ${n === 1 ? "LYK" : "LYKE"} AGTER DIE HEK`;
+export const PANEL_SYS_CIRCUIT = (n: number) => `${n} VERSOEKE HIERDIE MINUUT`;
+export const PANEL_SYS_PLATFORM = (p: string) => `LOOP OP ${p.toUpperCase()}`;
+export const PANEL_SYS_LAW =
+  "ALLES IN RAM · GEEN DATABASE · ALLES STERF MET DIE PROSES · NIKS OIT GESIEN WAT NIE SIFTERTEKS WAS NIE";

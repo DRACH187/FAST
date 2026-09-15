@@ -8,6 +8,7 @@ import {
   ArrowRight,
   ChevronRight,
   Copy,
+  Crown,
   KeyRound,
   Lock,
   Plus,
@@ -48,6 +49,7 @@ import {
   SUMMON_PRIVATE_DONE,
   SUMMON_PRIVATE_NOTE,
   SUMMON_PRIVATE_SHORT,
+  PANEL_TITLE,
   HUB_CODE_LABEL,
   HUB_CONFIRM_DELETE,
   HUB_DELETE,
@@ -110,6 +112,8 @@ type HubProps = {
   onBossSummon: (targets: string[], opts?: { private?: boolean }) => Promise<string>;
   /** Open the profile sheet (owned by the shell since task 19). */
   onOpenProfile: () => void;
+  /** Open the BOSS COMMAND PANEL — every ouen, every werf, every count. */
+  onOpenBossPanel: () => void;
 };
 
 export function HubScreen({
@@ -124,6 +128,7 @@ export function HubScreen({
   onClose,
   onSwitchCallsign,
   onOpenProfile,
+  onOpenBossPanel,
   onOpenLive,
   onBossSummon,
 }: HubProps) {
@@ -428,6 +433,14 @@ export function HubScreen({
 
           {/* quieter utilities */}
           <section data-anim aria-label="More" className="flex flex-col gap-2">
+            {callsign?.role === "boss" && (
+              <ActionRow
+                icon={Crown}
+                label={PANEL_TITLE}
+                hint="Die hele fokken werf in een glas — elke ouen, elke werf, elke syfer"
+                onClick={onOpenBossPanel}
+              />
+            )}
             {callsign?.role === "boss" && (
               <ActionRow
                 icon={Users}

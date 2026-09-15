@@ -16,6 +16,31 @@ import { assertSecretsLoaded, attestSecret, drachKey, gatePasscode, keyedDigest 
  *   - strict JSON body reader (Content-Type + size ceiling BEFORE parse — §14)
  */
 
+/**
+ * BOSS COMMAND PANEL — abuse-control counters. Numbers only: limiter keys
+ * are HMAC digests and stay internal, failure rows stay internal. The boss
+ * sees the pulse of the defenses, never an address.
+ */
+export function securityStats(): {
+  limiterBuckets: number;
+  gateLocks: number;
+  gateLockoutsLive: number;
+  circuitCount: number;
+} {
+  const now = Date.now();
+  let gateLockoutsLive = 0;
+  for (const rec of failures.values()) {
+    if (rec.lockedUntil > now) gateLockoutsLive += 1;
+  }
+  const minute = Math.floor(now / 60_000);
+  return {
+    limiterBuckets: buckets.size,
+    gateLocks: failures.size,
+    gateLockoutsLive,
+    circuitCount: g.__fastCircuit?.minute === minute ? g.__fastCircuit.count : 0,
+  };
+}
+
 // ------------------------------------------------------------------ trusted IP
 
 const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;

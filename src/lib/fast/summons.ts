@@ -82,3 +82,15 @@ export function pendingSummons(fp: string): number {
   sweep(now);
   return table.get(fp)?.length ?? 0;
 }
+
+/**
+ * BOSS COMMAND PANEL — how many doorbells are hanging right now, across the
+ * whole site. Counts only: fingerprints stay internal, as always.
+ */
+export function summonStats(): { targets: number; pending: number } {
+  const now = Date.now();
+  sweep(now);
+  let pending = 0;
+  for (const list of table.values()) pending += list.length;
+  return { targets: table.size, pending };
+}

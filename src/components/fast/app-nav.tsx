@@ -21,7 +21,7 @@
  */
 
 import Image from "next/image";
-import { Crosshair, Map as MapIcon, MessagesSquare, Radio, ShieldCheck } from "lucide-react";
+import { Crown, Crosshair, Map as MapIcon, MessagesSquare, Radio, ShieldCheck } from "lucide-react";
 import { pressFeedback } from "@/components/fast/motion";
 import { useLivePresence } from "@/lib/fast/live";
 import type { CallsignIdentity } from "@/lib/fast/identity";
@@ -29,6 +29,8 @@ import {
   NAV_LABEL,
   NAV_RAIL_LAW,
   NAV_RAIL_OPEN,
+  NAV_RAIL_PANEL,
+  NAV_RAIL_PANEL_HINT,
   NAV_RAIL_PROFILE,
   NAV_RAIL_TAG,
   NAV_TAB_LIVE,
@@ -116,6 +118,8 @@ type SideRailProps = {
   onTab: (tab: AppTab) => void;
   callsign: CallsignIdentity | null;
   onOpenProfile: () => void;
+  /** Open the BOSS COMMAND PANEL (boss-only; ignored otherwise). */
+  onOpenBossPanel?: () => void;
   /** Open session count — painted next to the Werwe row. */
   openSessions?: number;
   unread?: number;
@@ -125,7 +129,7 @@ type SideRailProps = {
  * The desktop rail — the custom desktop layout's spine. Hidden under lg;
  * from lg up it is always mounted and the content pane obeys it.
  */
-export function SideRail({ tab, onTab, callsign, onOpenProfile, openSessions = 0, unread = 0 }: SideRailProps) {
+export function SideRail({ tab, onTab, callsign, onOpenProfile, onOpenBossPanel, openSessions = 0, unread = 0 }: SideRailProps) {
   const boss = callsign?.role === "boss";
   return (
     <aside
@@ -193,6 +197,32 @@ export function SideRail({ tab, onTab, callsign, onOpenProfile, openSessions = 0
           );
         })}
       </nav>
+
+      {/* boss ground — DRACH's command room, one row, always visible */}
+      {boss && onOpenBossPanel && (
+        <div className="mt-1 px-3">
+          <span className="mb-1.5 block px-2.5 font-mono text-[8px] font-bold uppercase tracking-[0.3em] text-neutral-600">
+            BOSS GROND
+          </span>
+          <button
+            onClick={(e) => {
+              pressFeedback(e.currentTarget);
+              onOpenBossPanel();
+            }}
+            aria-label={NAV_RAIL_PANEL}
+            title={NAV_RAIL_PANEL_HINT}
+            className="group flex min-h-[50px] w-full items-center gap-3 rounded-xl border border-neutral-700 bg-neutral-950 px-3.5 outline-none transition-colors duration-150 hover:border-white focus-visible:ring-2 focus-visible:ring-neutral-500"
+          >
+            <Crown className="size-[18px] shrink-0 text-white" aria-hidden />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="drach-font text-lg leading-tight text-white">{NAV_RAIL_PANEL}</span>
+              <span className="mt-0.5 truncate font-mono text-[8px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+                {NAV_RAIL_PANEL_HINT}
+              </span>
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* bottom block — who you are + the house law */}
       <div className="mt-auto flex flex-col gap-3 px-3 pb-[max(1.25rem,calc(env(safe-area-inset-bottom)+1rem))] pt-4">

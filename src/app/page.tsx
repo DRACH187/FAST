@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { DockNav, SideRail, type AppTab } from "@/components/fast/app-nav";
+import { BossPanel } from "@/components/fast/boss-panel";
 import { CallsignScreen } from "@/components/fast/callsign-screen";
 import { ChatScreen } from "@/components/fast/chat-screen";
 import { GateScreen } from "@/components/fast/gate-screen";
@@ -29,6 +30,7 @@ export default function Page() {
   const mgr = useSessionManager();
   const [tab, setTab] = useState<AppTab>("hub");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [bossPanelOpen, setBossPanelOpen] = useState(false);
   const active = mgr.activeSession;
 
   // Werwe on the dock/rail is the LIST — tapping it deliberately closes a
@@ -72,6 +74,7 @@ export default function Page() {
             onTab={handleTab}
             callsign={mgr.callsign}
             onOpenProfile={() => setProfileOpen(true)}
+            onOpenBossPanel={() => setBossPanelOpen(true)}
             openSessions={mgr.sessions.length}
             unread={unreadTotal}
           />
@@ -128,6 +131,7 @@ export default function Page() {
                   onClose={mgr.closeSession}
                   onSwitchCallsign={mgr.switchCallsign}
                   onOpenProfile={() => setProfileOpen(true)}
+                  onOpenBossPanel={() => setBossPanelOpen(true)}
                   onOpenLive={() => setTab("live")}
                   onBossSummon={(targets, opts) =>
                     mgr.bossSummon(targets, opts?.private ? { ttlMinutes: 120 } : undefined)
@@ -148,6 +152,14 @@ export default function Page() {
             onClose={() => setProfileOpen(false)}
             callsign={mgr.callsign}
             onSwitch={mgr.switchCallsign}
+          />
+
+          {/* boss command panel — DRACH's admin room, shell-owned like the profile */}
+          <BossPanel
+            open={bossPanelOpen}
+            onClose={() => setBossPanelOpen(false)}
+            identityFp={mgr.identityFp}
+            callsign={mgr.callsign}
           />
         </div>
       )}

@@ -380,6 +380,72 @@ export function listParticipants(code: string): RosterEntry[] {
     }));
 }
 
+// ------------------------------------------------------- boss introspection
+// BOSS COMMAND PANEL feed — operational METADATA ONLY. The zero-knowledge
+// law holds here too: no ciphertext, no key material, no message content
+// ever rides these lines. The boss sees the shape of the site (who is in
+// which room, how many bullets landed), never a single word of it.
+
+export type SessionInspect = {
+  code: string;
+  createdAt: string;
+  expiresAt: string;
+  lastActivity: string;
+  members: { nickname: string; role: string }[];
+  memberCount: number;
+  messages: number;
+  envelopes: number;
+  photos: number;
+  status: "live" | "terminated" | "expired";
+  creatorBound: boolean;
+};
+
+/** Every room this warm instance holds, most recently active first. */
+export function bossInspect(): SessionInspect[] {
+  gcGlobal();
+  const out: SessionInspect[] = [];
+  for (const s of sessions.values()) {
+    out.push({
+      code: s.code,
+      createdAt: s.createdAt.toISOString(),
+      expiresAt: new Date(s.createdAt.getTime() + SESSION_TTL_MS).toISOString(),
+      lastActivity: new Date(s.lastActivity).toISOString(),
+      members: [...s.participants.values()].map((p) => ({
+        nickname: p.nickname,
+        role: p.role,
+      })),
+      memberCount: s.participants.size,
+      messages: s.messages.length,
+      envelopes: s.envelopes.length,
+      photos: s.photos.length,
+      status: s.expired ? "expired" : s.terminated ? "terminated" : "live",
+      creatorBound: s.creatorFp !== null,
+    });
+  }
+  return out.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));
+}
+
+/** Site-wide chat totals for the boss's command panel. */
+export function bossChatTotals(): {
+  sessions: number;
+  liveSessions: number;
+  membersInRooms: number;
+  messages: number;
+} {
+  gcGlobal();
+  let liveSessions = 0;
+  let membersInRooms = 0;
+  let messages = 0;
+  for (const s of sessions.values()) {
+    if (!s.terminated) {
+      liveSessions += 1;
+      membersInRooms += s.participants.size;
+      messages += s.messages.length;
+    }
+  }
+  return { sessions: sessions.size, liveSessions, membersInRooms, messages };
+}
+
 // ---------------------------------------------------------------- presence
 
 export function touchPresence(code: string, fingerprint: string): string[] {
