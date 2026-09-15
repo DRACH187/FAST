@@ -175,6 +175,20 @@ export function storeSessionKey(code: string, key: Uint8Array) {
   }
 }
 
+/**
+ * OPEN VUUR rotation — FORCE a fresh room key over an existing one and reset
+ * the ratchet state to match the server's burned counters. Private sessions
+ * never rotate keys; the public room rotates on every wipe epoch.
+ */
+export function forceSessionKey(code: string, key: Uint8Array) {
+  vault.sessionKeys.set(code, key);
+  vault.keyReceivedAt.set(code, Date.now());
+  vault.counters.set(code, { next: 0, maxSeen: -1 });
+  vault.pending.delete(code);
+  vault.seen.delete(code);
+  burnSessionPhotos(code);
+}
+
 export function getSessionKey(code: string): Uint8Array | null {
   return vault.sessionKeys.get(code) ?? null;
 }

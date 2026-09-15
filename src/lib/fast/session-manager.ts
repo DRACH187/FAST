@@ -5,6 +5,7 @@ import {
   canonicalSignatureBytes,
   decryptMessage,
   decryptPhoto,
+  derivePublicRoomKey,
   encryptMessage,
   encryptPhoto,
   generateSessionKey,
@@ -18,6 +19,7 @@ import {
   burnPhoto,
   ensureIdentity,
   ensureSigner,
+  forceSessionKey,
   getSigner,
   getSessionKey,
   hasSessionKey,
@@ -38,7 +40,8 @@ import { resetWantedKey } from "@/lib/crypto/wanted-crypto";
 import { api, type WireMessage } from "@/lib/fast/api";
 import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
-import { SUMMON_INTO_DEAD_ROOM, TOAST_AUTOLOCK } from "@/lib/fast/copy";
+import { PUBLIC_WIPE_DONE, PUBLIC_WIPE_TOAST, SUMMON_INTO_DEAD_ROOM, TOAST_AUTOLOCK } from "@/lib/fast/copy";
+import { PUBLIC_ROOM, isPublicRoom } from "@/lib/fast/public-room";
 import * as vault from "@/lib/fast/vault-db";
 import {
   clearCallsign,
@@ -457,7 +460,9 @@ export function useSessionManager() {
       const fresh = messages.filter((w) => markSeen(code, w.id));
       if (fresh.length === 0) return;
       for (const w of fresh) observeCounter(code, w.counter);
-      void vault.saveWire(code, fresh); // data-saving: ciphertext at rest (no keys)
+      // data-saving: ciphertext at rest (no keys) — the public room is
+      // memory-only by law (its key rotates with every wipe epoch)
+      if (!isPublicRoom(code)) void vault.saveWire(code, fresh);
 
       const me = identityRef.current?.fingerprint;
       void (async () => {
@@ -594,6 +599,9 @@ export function useSessionManager() {
   const onTerminated = useCallback((data: { code: string; reason: "deleted" | "expired" }) => {
     if (!data || !CODE_RE.test(data.code)) return;
     const code = data.code;
+    // OPEN VUUR never dies — the server cannot terminate it, so a stray
+    // "terminated" for the public room is noise, not a burn order.
+    if (isPublicRoom(code)) return;
     const wasOpen = sessionsRef.current.some((s) => s.code === code);
     evictSessionLocal(code);
     if (wasOpen || sessionsRef.current.length > 0) {
@@ -604,6 +612,39 @@ export function useSessionManager() {
       }
     }
   }, [evictSessionLocal]);
+
+  /**
+   * OPEN VUUR wipe cycle — the server bumped the epoch (rolling 5h window or
+   * a boss wipe-now). Burn the local transcript, re-derive the room key for
+   * the new epoch, reset the ratchet, re-pull. Old ciphertext everywhere is
+   * dead: the key that opened it no longer exists.
+   */
+  const onEpoch = useCallback((data: { code: string; epoch: number; nextWipeAt: string }) => {
+    if (!isPublicRoom(data.code)) return;
+    void (async () => {
+      try {
+        const key = await derivePublicRoomKey(data.epoch > 0 ? data.epoch : 1);
+        forceSessionKey(PUBLIC_ROOM, key); // resets counters + dedupe + photos
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.code === PUBLIC_ROOM
+              ? {
+                  ...s,
+                  messages: [],
+                  unread: 0,
+                  hasKey: true,
+                  ...(data.nextWipeAt ? { expiresAt: data.nextWipeAt } : {}),
+                }
+              : s
+          )
+        );
+        transport.resync(PUBLIC_ROOM);
+        toast.alert(PUBLIC_WIPE_TOAST);
+      } catch {
+        /* derivation cannot realistically fail — stay quiet if it does */
+      }
+    })();
+  }, []);
 
   /**
    * Local enforcement of the 5h retention window: even if the server never
@@ -619,6 +660,7 @@ export function useSessionManager() {
     if (phase !== "app") return;
     const tick = () => {
       for (const s of sessionsRef.current) {
+        if (isPublicRoom(s.code)) continue; // its wipe is epoch-driven, not a death
         if (!s.expiresAt) continue;
         const at = Date.parse(s.expiresAt) - transport.getSkew(s.code);
         if (Number.isFinite(at) && Date.now() >= at) {
@@ -647,9 +689,10 @@ export function useSessionManager() {
       transport.on("keyrequest", onKeyRequest),
       transport.on("photo", onPhoto),
       transport.on("terminated", onTerminated),
+      transport.on("epoch", onEpoch),
     ];
     return () => offs.forEach((off) => off());
-  }, [phase, onPresence, onMessages, onKey, onKeyRequest, onPhoto, onTerminated]);
+  }, [phase, onPresence, onMessages, onKey, onKeyRequest, onPhoto, onTerminated, onEpoch]);
 
   // ---------------------------------------------------------------- actions
 
@@ -680,6 +723,103 @@ export function useSessionManager() {
     },
     [syncExpiry]
   );
+
+  /**
+   * OPEN VUUR — walk into the house's fully public room. No code, no invite:
+   * the server keeps the room alive permanently, and this device derives the
+   * room key from the house seed + the CURRENT wipe epoch. Every ouen who
+   * passed the 187 gate stands here; the server still sees fokol.
+   */
+  const openPublicRoom = useCallback(async () => {
+    const identity = await ensureIdentity();
+    identityRef.current = identity;
+    setIdentityFp(identity.fingerprint);
+
+    const existing = sessionsRef.current.find((s) => isPublicRoom(s.code));
+    if (existing) {
+      patchSession(PUBLIC_ROOM, { unread: 0 });
+      setActiveCode(PUBLIC_ROOM);
+      // transport may have dropped us (reload, autolock, dead loop) — rejoin
+      // and re-derive for the CURRENT epoch before showing the room
+      if (!registered.current.has(PUBLIC_ROOM) || !transport.isJoined(PUBLIC_ROOM)) {
+        try {
+          await registerAndJoinRoom(PUBLIC_ROOM);
+          const epoch = transport.getEpoch(PUBLIC_ROOM) || 1;
+          const key = await derivePublicRoomKey(epoch);
+          forceSessionKey(PUBLIC_ROOM, key);
+          patchSession(PUBLIC_ROOM, {
+            hasKey: true,
+            expiresAt: transport.getMeta(PUBLIC_ROOM)?.expiresAt ?? existing.expiresAt,
+          });
+          transport.resync(PUBLIC_ROOM);
+        } catch {
+          /* offline — the stale local view still shows */
+        }
+      }
+      return;
+    }
+
+    setConnecting(true);
+    try {
+      // the server auto-provisions the eternal room — no create semantics,
+      // no tarpit, no key envelopes; the key is DERIVED below
+      await registerAndJoinRoom(PUBLIC_ROOM, { create: false });
+      const epoch = transport.getEpoch(PUBLIC_ROOM) || 1;
+      const key = await derivePublicRoomKey(epoch);
+      forceSessionKey(PUBLIC_ROOM, key);
+      setSessions((prev) =>
+        prev.some((s) => s.code === PUBLIC_ROOM)
+          ? prev
+          : [
+              ...prev,
+              {
+                code: PUBLIC_ROOM,
+                createdAt: new Date().toISOString(),
+                expiresAt: transport.getMeta(PUBLIC_ROOM)?.expiresAt ?? null,
+                members: {},
+                roster: {},
+                presence: [identity.fingerprint],
+                messages: [],
+                hasKey: true,
+                unread: 0,
+              },
+            ]
+      );
+      syncExpiry(PUBLIC_ROOM);
+      setActiveCode(PUBLIC_ROOM);
+    } finally {
+      setConnecting(false);
+    }
+  }, [patchSession, registerAndJoinRoom, syncExpiry]);
+
+  /**
+   * BOSS sneller — burn the OPEN VUUR cycle RIGHT NOW for everyone. The
+   * server rotates the epoch; this device re-derives the fresh room key and
+   * keeps the poll loop alive so the new fire is visible immediately.
+   */
+  const bossWipePublic = useCallback(async () => {
+    const identity = identityRef.current;
+    const stored = callsignRef.current;
+    if (!identity || !stored || stored.role !== "boss") {
+      throw new Error("Boss ground only.");
+    }
+    const body = await transport.terminate(PUBLIC_ROOM, identity.fingerprint, stored.token);
+    if (!body.wiped) throw new Error("Die oop werf het geweier.");
+    const epoch = body.epoch && body.epoch > 0 ? body.epoch : 1;
+    const key = await derivePublicRoomKey(epoch);
+    forceSessionKey(PUBLIC_ROOM, key);
+    registered.current.delete(PUBLIC_ROOM);
+    await registerAndJoinRoom(PUBLIC_ROOM);
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.code === PUBLIC_ROOM
+          ? { ...s, messages: [], unread: 0, hasKey: true, expiresAt: transport.getMeta(PUBLIC_ROOM)?.expiresAt ?? s.expiresAt }
+          : s
+      )
+    );
+    transport.resync(PUBLIC_ROOM);
+    toast.success(PUBLIC_WIPE_DONE);
+  }, [registerAndJoinRoom]);
 
   const startSession = useCallback(async () => {
     const code = generateCode();
@@ -798,6 +938,18 @@ export function useSessionManager() {
   );
 
   const deleteSession = useCallback(async (code: string) => {
+    // OPEN VUUR: there is no "delete for everyone" — the house square stays.
+    // A boss attestation converts the burn into a wipe-cycle ROTATION; a
+    // member's delete just closes the door on their own device.
+    if (isPublicRoom(code)) {
+      const stored = callsignRef.current;
+      if (stored?.role === "boss") {
+        await bossWipePublic();
+      } else {
+        closeSession(code);
+      }
+      return;
+    }
     const identity = identityRef.current;
     // evict locally FIRST: the deleter's own device never receives the
     // terminated event (its poll loop stops with the terminate call), so
@@ -814,7 +966,7 @@ export function useSessionManager() {
     } catch {
       /* room may already be gone — local wipe still applies */
     }
-  }, [evictSessionLocal]);
+  }, [evictSessionLocal, bossWipePublic, closeSession]);
 
   // ------------------------------------------------------------- BOSS SUMMONS
 
@@ -1063,7 +1215,9 @@ export function useSessionManager() {
         throw err;
       }
 
-      void vault.saveWire(code, [wire]);
+      // data-saving (vault-db) — ciphertext only, never keys; the public
+      // room stays memory-only because its key rotates with every epoch
+      if (!isPublicRoom(code)) void vault.saveWire(code, [wire]);
     },
     [appendMessages]
   );
@@ -1230,6 +1384,7 @@ export function useSessionManager() {
       if (stored.length === 0) return;
 
       for (const row of stored) {
+        if (isPublicRoom(row.code)) continue; // never persisted, never restored
         if (sessionsRef.current.some((s) => s.code === row.code)) continue;
         const identity = identityRef.current;
         if (!identity) return;
@@ -1324,18 +1479,21 @@ export function useSessionManager() {
     })();
   }, [phase, restoreFromVault]);
 
-  // debounce-persist session metadata whenever it changes
+  // debounce-persist session metadata whenever it changes (OPEN VUUR is
+  // memory-only: no vault row, no cached wire, nothing to resurrect)
   useEffect(() => {
     if (phase !== "app") return;
     const t = window.setTimeout(() => {
       void vault.saveSessions(
-        sessions.map((s) => ({
-          code: s.code,
-          createdAt: s.createdAt,
-          unread: s.unread,
-          heldKey: s.hasKey,
-          savedAt: Date.now(),
-        }))
+        sessions
+          .filter((s) => !isPublicRoom(s.code))
+          .map((s) => ({
+            code: s.code,
+            createdAt: s.createdAt,
+            unread: s.unread,
+            heldKey: s.hasKey,
+            savedAt: Date.now(),
+          }))
       );
     }, 350);
     return () => window.clearTimeout(t);
@@ -1355,6 +1513,8 @@ export function useSessionManager() {
     startSession,
     joinSession,
     openSession,
+    openPublicRoom,
+    bossWipePublic,
     closeSession,
     switchCallsign,
     deleteSession,

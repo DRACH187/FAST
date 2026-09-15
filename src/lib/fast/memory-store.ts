@@ -24,6 +24,8 @@
 const CODE_RE = /^[A-Z]{6}$/;
 const FP_RE = /^[a-f0-9]{8,64}$/;
 
+import { PUBLIC_ROOM, PUBLIC_WIPE_MS, isPublicRoom } from "@/lib/fast/public-room";
+
 const MAX_SESSIONS = 400;
 const MAX_MESSAGES_PER_SESSION = 600;
 const MAX_ENVELOPES_PER_SESSION = 400;
@@ -103,6 +105,10 @@ type SessionRec = {
   /** true once the 5h retention window elapsed — distinct from user delete */
   expired: boolean;
   lastActivity: number;
+  /** OPEN VUUR only — wipe cycle counter + cycle start (ms epoch time).
+   *  Every rotation burns the transcript AND rotates the derived room key. */
+  epoch: number;
+  epochStart: number;
 };
 
 // code -> session — globalThis-pinned: one store per process, shared across
@@ -143,29 +149,63 @@ function gcSession(s: SessionRec) {
   s.lastActivity = now;
 }
 
-/** Has the 5-hour retention window elapsed for this session? */
+/**
+ * Has the 5-hour retention window elapsed for this session? The public room
+ * never "expires" — it ROTATES (see maybeRotatePublic): the room is eternal,
+ * its content and its key are not.
+ */
 function isExpired(s: SessionRec): boolean {
+  if (isPublicRoom(s.code)) return false;
   return Date.now() - s.createdAt.getTime() > SESSION_TTL_MS;
+}
+
+/**
+ * OPEN VUUR wipe cycle — every PUBLIC_WIPE_MS the whole transcript, the key
+ * envelopes and the anti-replay counters burn, the epoch bumps, and every
+ * client re-derives the room key for the new epoch. Nothing survives.
+ */
+function maybeRotatePublic(s: SessionRec): void {
+  if (!isPublicRoom(s.code)) return;
+  const now = Date.now();
+  if (now - s.epochStart >= PUBLIC_WIPE_MS) rotatePublicEpoch(s, now);
+}
+
+/** Burn the cycle NOW (used by both the rolling window and a boss wipe). */
+function rotatePublicEpoch(s: SessionRec, now = Date.now()): void {
+  s.messages = [];
+  s.envelopes = [];
+  s.photos = [];
+  s.keyRequests = new Map();
+  s.counters = new Map();
+  s.epoch += 1;
+  s.epochStart = now;
+  s.lastActivity = now;
 }
 
 function gcGlobal() {
   const now = Date.now();
   // hard-kill anything past the 5h retention window regardless of capacity
   for (const [code, s] of sessions) {
-    if (!s.terminated && isExpired(s)) expireSession(s);
+    if (isPublicRoom(code)) {
+      if (!s.terminated) maybeRotatePublic(s);
+    } else if (!s.terminated && isExpired(s)) {
+      expireSession(s);
+    }
     if (s.terminated && now - s.lastActivity > 60_000) {
       sessions.delete(code);
       presence.delete(code);
     }
   }
   if (sessions.size <= MAX_SESSIONS) return;
-  // drop the least recently active sessions (terminated first)
-  const entries = [...sessions.values()].sort((a, b) => {
-    if (a.terminated !== b.terminated) return a.terminated ? -1 : 1;
-    return a.lastActivity - b.lastActivity;
-  });
+  // drop the least recently active sessions (terminated first, OPEN VUUR exempt)
+  const entries = [...sessions.values()]
+    .filter((s) => !isPublicRoom(s.code))
+    .sort((a, b) => {
+      if (a.terminated !== b.terminated) return a.terminated ? -1 : 1;
+      return a.lastActivity - b.lastActivity;
+    });
   const excess = sessions.size - MAX_SESSIONS;
-  for (let i = 0; i < excess; i++) {
+  for (let i = 0; i < excess && i < entries.length; i++) {
     sessions.delete(entries[i].code);
     presence.delete(entries[i].code);
   }
@@ -192,12 +232,24 @@ function expireSession(s: SessionRec) {
 
 function getSession(code: string): SessionRec | null {
   if (!CODE_RE.test(code)) return null;
-  const s = sessions.get(code) ?? null;
+  let s = sessions.get(code) ?? null;
+  // OPEN VUUR is immortal: missing or previously terminated rooms simply
+  // rise again with a fresh epoch — the house's public square never dies.
+  if (isPublicRoom(code) && (!s || s.terminated)) {
+    const freshEpoch = s ? s.epoch + 1 : 1;
+    provisionSession(code);
+    s = sessions.get(code) ?? null;
+    if (s) {
+      s.epoch = freshEpoch;
+      s.epochStart = Date.now();
+    }
+  }
   if (s && !s.terminated) {
     if (isExpired(s)) {
       expireSession(s);
       return s; // still addressable this tick so clients learn "expired"
     }
+    maybeRotatePublic(s);
     gcSession(s);
   }
   return s;
@@ -207,14 +259,47 @@ export function isExpiredSession(code: string): boolean {
   return sessions.get(code)?.expired ?? false;
 }
 
-/** Age metadata for countdown UIs (all ISO strings). */
+/** Age metadata for countdown UIs (all ISO strings). The public room's
+ *  deadline is its ROLLING wipe (epoch start + window), not a creation TTL. */
 export function sessionMeta(code: string): { createdAt: string; expiresAt: string } | null {
   const s = sessions.get(code);
   if (!s) return null;
+  if (isPublicRoom(code)) {
+    return {
+      createdAt: new Date(s.epochStart).toISOString(),
+      expiresAt: new Date(s.epochStart + PUBLIC_WIPE_MS).toISOString(),
+    };
+  }
   return {
     createdAt: s.createdAt.toISOString(),
     expiresAt: new Date(s.createdAt.getTime() + SESSION_TTL_MS).toISOString(),
   };
+}
+
+/** The public room's wipe-cycle state (epoch + rolling deadline). */
+export function publicRoomState(code: string): {
+  epoch: number;
+  epochStart: string;
+  nextWipeAt: string;
+} | null {
+  const s = getSession(code);
+  if (!s || !isPublicRoom(code)) return null;
+  return {
+    epoch: s.epoch,
+    epochStart: new Date(s.epochStart).toISOString(),
+    nextWipeAt: new Date(s.epochStart + PUBLIC_WIPE_MS).toISOString(),
+  };
+}
+
+/**
+ * BOSS ONLY — burn the OPEN VUUR cycle on demand: transcript as, counters
+ * as, epoch bumped, key rotated for every device on the next sync.
+ */
+export function forcePublicWipe(code: string): { ok: boolean; epoch: number } {
+  const s = getSession(code);
+  if (!s || !isPublicRoom(code)) return { ok: false, epoch: 0 };
+  rotatePublicEpoch(s);
+  return { ok: true, epoch: s.epoch };
 }
 
 export function sessionExists(code: string): boolean {
@@ -236,7 +321,7 @@ export function provisionSession(
   gcGlobal();
   const existing = sessions.get(code);
   if (existing && !existing.terminated) {
-    if (existing.creatorFp === null && opts.creatorFp) {
+    if (existing.creatorFp === null && opts.creatorFp && !isPublicRoom(code)) {
       existing.creatorFp = opts.creatorFp;
     }
     existing.lastActivity = Date.now();
@@ -245,7 +330,7 @@ export function provisionSession(
   sessions.set(code, {
     code,
     createdAt: new Date(),
-    creatorFp: opts.creatorFp ?? null,
+    creatorFp: isPublicRoom(code) ? null : opts.creatorFp ?? null,
     participants: new Map(),
     messages: [],
     envelopes: [],
@@ -255,6 +340,8 @@ export function provisionSession(
     terminated: false,
     expired: false,
     lastActivity: Date.now(),
+    epoch: 1,
+    epochStart: Date.now(),
   });
   return { created: true };
 }
@@ -273,6 +360,7 @@ export function adoptCreator(code: string, fingerprint: string): boolean {
 }
 
 export function deleteSession(code: string): boolean {
+  if (isPublicRoom(code)) return false; // the public square cannot be deleted
   const s = sessions.get(code);
   if (!s) return false;
   sessions.delete(code);
@@ -283,8 +371,11 @@ export function deleteSession(code: string): boolean {
 /**
  * Soft-terminate: the room stays addressable so EVERY member's next poll
  * learns `terminated: true` and evicts itself, then the record is reaped.
+ * OPEN VUUR refuses termination — it is the house's eternal public square;
+ * the boss's wipe is a ROTATION (forcePublicWipe), never a death.
  */
 export function terminateSession(code: string): boolean {
+  if (isPublicRoom(code)) return false;
   const s = getSession(code);
   if (!s) return false;
   s.terminated = true;
@@ -308,6 +399,11 @@ export function isParticipant(code: string, fingerprint: string): boolean {
  * mutation so expiry never depends on gc timing).
  */
 export function enforceTtl(code: string): void {
+  if (isPublicRoom(code)) {
+    const s = sessions.get(code);
+    if (s && !s.terminated) maybeRotatePublic(s);
+    return;
+  }
   const s = sessions.get(code);
   if (s && !s.terminated && isExpired(s)) expireSession(s);
 }
@@ -405,6 +501,10 @@ export type SessionInspect = {
   photos: number;
   status: "live" | "terminated" | "expired";
   creatorBound: boolean;
+  /** OPEN VUUR — the eternal public square */
+  isPublic: boolean;
+  /** public room only — current wipe cycle */
+  epoch: number;
 };
 
 /** Every room this warm instance holds, most recently active first. */
@@ -412,10 +512,13 @@ export function bossInspect(): SessionInspect[] {
   gcGlobal();
   const out: SessionInspect[] = [];
   for (const s of sessions.values()) {
+    const pub = isPublicRoom(s.code);
     out.push({
       code: s.code,
-      createdAt: s.createdAt.toISOString(),
-      expiresAt: new Date(s.createdAt.getTime() + SESSION_TTL_MS).toISOString(),
+      createdAt: pub ? new Date(s.epochStart).toISOString() : s.createdAt.toISOString(),
+      expiresAt: pub
+        ? new Date(s.epochStart + PUBLIC_WIPE_MS).toISOString()
+        : new Date(s.createdAt.getTime() + SESSION_TTL_MS).toISOString(),
       lastActivity: new Date(s.lastActivity).toISOString(),
       members: [...s.participants.values()].map((p) => ({
         nickname: p.nickname,
@@ -427,6 +530,8 @@ export function bossInspect(): SessionInspect[] {
       photos: s.photos.length,
       status: s.expired ? "expired" : s.terminated ? "terminated" : "live",
       creatorBound: s.creatorFp !== null,
+      isPublic: pub,
+      epoch: s.epoch,
     });
   }
   return out.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity));

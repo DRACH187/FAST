@@ -13,6 +13,7 @@ import {
   verifyAttestation,
 } from "@/lib/server-guard";
 import * as store from "@/lib/fast/memory-store";
+import { isPublicRoom } from "@/lib/fast/public-room";
 
 /**
  * FAST unified session sync (Layer 2/3 over HTTP)
@@ -167,6 +168,20 @@ export async function POST(req: Request, { params }: Ctx) {
 
   // ------------------------------------------------------------- mutations
   if (action === "terminate") {
+    // OPEN VUUR never dies. A boss attestation turns "terminate" into a
+    // wipe-cycle ROTATION: transcript burns, epoch bumps, key rotates. Every
+    // non-boss is told where the door is.
+    if (isPublicRoom(code)) {
+      const attested = verifyAttestation(body.attestation, fp);
+      if (!attested || attested.role !== "boss") {
+        return json(
+          { ok: false, error: "Die oop werf ken net een sneller — die baas s'n." },
+          403
+        );
+      }
+      const wipe = store.forcePublicWipe(code);
+      return json({ ok: true, alive: true, wiped: true, epoch: wipe.epoch });
+    }
     // H3: termination is a privileged operation. Requires a server-signed
     // attestation for the acting fingerprint, and the actor must be the
     // room creator or an attested boss. Everything else -> 403.
@@ -211,7 +226,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const attested = verifyAttestation(body.attestation, fp);
     if (create || store.sessionExists(code)) {
       const provisioned = store.provisionSession(code, { creatorFp: create ? fp : undefined });
-      if (!provisioned.created && create && store.sessionCreator(code) === null) {
+      if (!provisioned.created && create && store.sessionCreator(code) === null && !isPublicRoom(code)) {
         store.adoptCreator(code, fp);
       }
       const put = store.upsertParticipant(code, fp, body.publicKey, {
@@ -355,8 +370,14 @@ type DeltaResponse = {
   terminated?: boolean;
   /** true when the termination came from the 5h retention window */
   expired?: boolean;
+  /** OPEN VUUR: true when a boss rotation (wipe-now) executed */
+  wiped?: boolean;
   createdAt?: string;
   expiresAt?: string;
+  /** OPEN VUUR wipe-cycle state — rides every payload so clients can rotate
+   *  their derived room key the instant the epoch moves */
+  epoch?: number;
+  nextWipeAt?: string;
   serverNow?: string;
   cursor?: { msg: number; env: number; photo: number };
   presence?: string[];
@@ -386,6 +407,7 @@ function syncPayload(
   const signKeys = participants
     .filter((p) => p.signPub !== null)
     .map((p) => ({ fingerprint: p.fingerprint, signPub: p.signPub as string }));
+  const pubState = isPublicRoom(code) ? store.publicRoomState(code) : null;
   const payload: DeltaResponse = {
     ok: true,
     alive: true,
@@ -393,6 +415,7 @@ function syncPayload(
     expired: store.isExpiredSession(code) || undefined,
     createdAt: meta?.createdAt,
     expiresAt: meta?.expiresAt,
+    ...(pubState ? { epoch: pubState.epoch, nextWipeAt: pubState.nextWipeAt } : {}),
     serverNow: new Date().toISOString(),
     cursor,
     presence,

@@ -199,6 +199,46 @@ export function generateSessionKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32));
 }
 
+// ---------------------------------------------------------------------------
+// OPEN VUUR — the public room's DERIVED key
+// ---------------------------------------------------------------------------
+
+/**
+ * The public room never distributes a key. Every device derives the same
+ * AES-256 room key straight from the house seed + the room's current wipe
+ * EPOCH (HKDF-SHA256). When the server burns the room every 5 hours the
+ * epoch bumps and EVERY device derives a fresh key — ciphertext archived
+ * from an older epoch is mathematically dead, permanently.
+ *
+ * The derived key is exported to raw bytes so it plugs straight into the
+ * standard encryptMessage/decryptMessage ratchet used by private sessions.
+ */
+const PUBLIC_ROOM_SEED = "fastguns/open-vuur/187/house-seed/v1";
+
+export async function derivePublicRoomKey(epoch: number): Promise<Uint8Array> {
+  const base = await subtle.importKey(
+    "raw",
+    te.encode(PUBLIC_ROOM_SEED) as unknown as ArrayBuffer,
+    "HKDF",
+    false,
+    ["deriveKey"]
+  );
+  const key = await subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: te.encode(`fast-open-vuur|wipe-cycle|${epoch}`) as unknown as ArrayBuffer,
+      info: te.encode("open-vuur|room-key|aes-256-gcm|v1") as unknown as ArrayBuffer,
+    },
+    base,
+    { name: "AES-GCM", length: 256 },
+    true, // exportable ONLY inside this function — raw bytes leave, the handle never persists
+    ["encrypt", "decrypt"]
+  );
+  const raw = await subtle.exportKey("raw", key);
+  return new Uint8Array(raw);
+}
+
 /**
  * Wrap the raw session key for one recipient using a FRESH ephemeral key pair.
  * The ephemeral private key is destroyed the moment the wrap completes —

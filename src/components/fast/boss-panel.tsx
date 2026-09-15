@@ -64,6 +64,7 @@ import {
   PANEL_STATUS_EXPIRED,
   PANEL_STATUS_LIVE,
   PANEL_SUB,
+  PUBLIC_ROOM_NAME,
   PANEL_SYS_CIRCUIT,
   PANEL_SYS_LAW,
   PANEL_SYS_LIVE,
@@ -116,6 +117,10 @@ type PanelSessionRow = {
   photos: number;
   status: "live" | "terminated" | "expired";
   creatorBound: boolean;
+  /** OPEN VUUR — the eternal public square */
+  isPublic?: boolean;
+  /** public room only — current wipe cycle */
+  epoch?: number;
 };
 type PanelData = {
   generatedAt: string;
@@ -503,7 +508,15 @@ function SessionInspectCard({ row, now }: { row: PanelSessionRow; now: number })
   return (
     <div className="rounded-xl border border-neutral-900 bg-black px-3 py-2.5">
       <div className="flex items-center gap-2">
-        <span className="font-mono text-lg font-black tracking-[0.22em] text-white">{row.code}</span>
+        <span className="font-mono text-lg font-black tracking-[0.22em] text-white">
+          {row.isPublic ? PUBLIC_ROOM_NAME : row.code}
+        </span>
+        {row.isPublic && (
+          <span className="flex items-center gap-1 rounded-full border border-neutral-600 px-2 py-0.5 font-mono text-[8px] font-bold uppercase tracking-[0.16em] text-neutral-100">
+            <Flame className="size-2.5" aria-hidden />
+            OOP · WIS {row.epoch ?? "—"}
+          </span>
+        )}
         <span className="flex-1" />
         {statusChip}
       </div>

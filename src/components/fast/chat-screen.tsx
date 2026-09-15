@@ -50,8 +50,13 @@ import {
   INVITE_SUB,
   INVITE_TITLE,
   INVITE_TTL_LABEL,
+  PUBLIC_ROOM_NAME,
+  PUBLIC_WIPE_NOTE,
+  PUBLIC_WIPE_NOW,
+  PUBLIC_WIPE_NOW_CONFIRM,
   pick,
 } from "@/lib/fast/copy";
+import { isPublicRoom } from "@/lib/fast/public-room";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 import type { DecryptedMessage } from "@/lib/crypto/keyvault";
@@ -339,7 +344,14 @@ export function ChatScreen({
             />
             <div className="flex min-w-0 flex-col leading-tight">
               <span className="truncate font-mono text-base font-black tracking-[0.22em] text-white">
-                {session.code}
+                {isPublicRoom(session.code) ? (
+                  <span className="inline-flex items-center gap-2">
+                    {PUBLIC_ROOM_NAME}
+                    <Flame className="size-4 shrink-0 text-neutral-200" aria-hidden />
+                  </span>
+                ) : (
+                  session.code
+                )}
               </span>
               <span className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">
                 <span className="flex items-center gap-0.5" aria-hidden>
@@ -375,24 +387,28 @@ export function ChatScreen({
           >
             {(close) => (
               <>
-                <FastMenuItem
-                  icon={Copy}
-                  label="Copy code"
-                  onSelect={() => {
-                    close();
-                    setCodeOpen(true);
-                  }}
-                />
-                <FastMenuItem
-                  icon={Ticket}
-                  label="Nooi-string — laat hom in"
-                  onSelect={() => {
-                    close();
-                    setInviteOut(null);
-                    setInviteOpen(true);
-                    void mintHere();
-                  }}
-                />
+                {!isPublicRoom(session.code) && (
+                  <FastMenuItem
+                    icon={Copy}
+                    label="Copy code"
+                    onSelect={() => {
+                      close();
+                      setCodeOpen(true);
+                    }}
+                  />
+                )}
+                {!isPublicRoom(session.code) && (
+                  <FastMenuItem
+                    icon={Ticket}
+                    label="Nooi-string — laat hom in"
+                    onSelect={() => {
+                      close();
+                      setInviteOut(null);
+                      setInviteOpen(true);
+                      void mintHere();
+                    }}
+                  />
+                )}
                 <FastMenuItem
                   icon={MapIcon}
                   label="Kaart — wie loop wat"
@@ -418,14 +434,16 @@ export function ChatScreen({
                   }}
                 />
                 <div className="mx-1.5 my-1 h-px bg-neutral-800" />
-                <FastMenuItem
-                  icon={Trash2}
-                  label="Verbrand vir almal"
-                  onSelect={() => {
-                    close();
-                    setDeleteOpen(true);
-                  }}
-                />
+                {(!isPublicRoom(session.code) || callsign?.role === "boss") && (
+                  <FastMenuItem
+                    icon={Trash2}
+                    label={isPublicRoom(session.code) ? PUBLIC_WIPE_NOW : "Verbrand vir almal"}
+                    onSelect={() => {
+                      close();
+                      setDeleteOpen(true);
+                    }}
+                  />
+                )}
               </>
             )}
           </FastPopover>
@@ -717,22 +735,29 @@ export function ChatScreen({
       </FastModal>
 
       {/* delete confirm — two clean, separated ways out: burn it for EVERY
-          member (server enforces creator/boss) or just leave on this device */}
+          member (server enforces creator/boss; on OPEN VUUR a boss burn is a
+          wipe-cycle rotation) or just leave on this device */}
       <FastModal
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        label={`Wipe ${session.code} for everyone`}
+        label={`Wipe ${isPublicRoom(session.code) ? PUBLIC_ROOM_NAME : session.code} for everyone`}
       >
         <div className="flex flex-col gap-4 text-center">
           <div>
             <h2 className="flex items-center justify-center gap-2 text-base font-bold text-neutral-100">
               <ShieldAlert className="size-5 text-neutral-200" aria-hidden />
-              {CHAT_BURN_TITLE(session.code)}
+              {isPublicRoom(session.code)
+                ? PUBLIC_WIPE_NOW_CONFIRM
+                : CHAT_BURN_TITLE(session.code)}
             </h2>
-            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">{CHAT_BURN_SUB}</p>
-            <p className="mt-3 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
-              {CHAT_BURN_META(session.messages.length, session.presence.length)}
+            <p className="mt-2 text-sm font-semibold leading-relaxed text-neutral-400">
+              {isPublicRoom(session.code) ? PUBLIC_WIPE_NOTE : CHAT_BURN_SUB}
             </p>
+            {!isPublicRoom(session.code) && (
+              <p className="mt-3 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+                {CHAT_BURN_META(session.messages.length, session.presence.length)}
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             <FastButton
@@ -744,7 +769,7 @@ export function ChatScreen({
               }}
               className="w-full font-mono text-sm uppercase tracking-[0.24em]"
             >
-              {CHAT_BURN_GO}
+              {isPublicRoom(session.code) ? PUBLIC_WIPE_NOW : CHAT_BURN_GO}
             </FastButton>
             <div className="rounded-xl border border-neutral-900 bg-black px-3.5 py-3">
               <FastButton

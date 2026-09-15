@@ -47,8 +47,14 @@ import {
   INVITE_HINT,
   INVITE_REDEEMED,
   PANEL_TITLE,
+  PUBLIC_CARD_CTA,
+  PUBLIC_CARD_LAW,
+  PUBLIC_CARD_TITLE,
+  PUBLIC_ROOM_NAME,
+  PUBLIC_SUB,
   pick,
 } from "@/lib/fast/copy";
+import { isPublicRoom } from "@/lib/fast/public-room";
 import type { CallsignIdentity } from "@/lib/fast/identity";
 import type { SessionView } from "@/lib/fast/session-manager";
 
@@ -94,6 +100,8 @@ type HubProps = {
   onOpenProfile: () => void;
   /** Open the BOSS COMMAND PANEL — every ouen, every werf, every count. */
   onOpenBossPanel: () => void;
+  /** Walk into OPEN VUUR — the house's fully public, rotating-key werf. */
+  onOpenPublicRoom: () => Promise<void>;
 };
 
 export function HubScreen({
@@ -109,11 +117,13 @@ export function HubScreen({
   onSwitchCallsign,
   onOpenProfile,
   onOpenBossPanel,
+  onOpenPublicRoom,
   onOpenLive,
   onBossSummon,
 }: HubProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const [joinCode, setJoinCode] = useState("");
+  const [publicCta] = useState(() => pick(PUBLIC_CARD_CTA));
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteCode, setDeleteCode] = useState("");
   // wipe v2: pick the victim werf off a list, or type a remote code
@@ -359,6 +369,42 @@ export function HubScreen({
             </p>
           </section>
 
+          {/* OPEN VUUR — the house's fully public werf: one tap, no code,
+              every ouen in, E2EE with a rotating key, wiped every 5h */}
+          <section data-anim aria-label="Open Vuur public room" className="flex flex-col gap-2">
+            <button
+              onClick={(e) => {
+                pressFeedback(e.currentTarget);
+                void onOpenPublicRoom();
+              }}
+              disabled={busy}
+              aria-label={`${PUBLIC_CARD_TITLE} — ${PUBLIC_SUB}`}
+              className="group w-full rounded-2xl border border-neutral-700 bg-neutral-950 px-5 py-5 text-left outline-none transition-all duration-200 hover:border-white focus-visible:border-white active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50"
+            >
+              <span className="flex items-center gap-4">
+                <span className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-neutral-700 bg-black transition-colors group-hover:border-white">
+                  <Flame className="size-6 text-white" aria-hidden />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="gang-font text-2xl leading-none text-white">{PUBLIC_CARD_TITLE}</span>
+                  <span className="mt-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-neutral-500">
+                    {PUBLIC_SUB}
+                  </span>
+                </span>
+                <ArrowRight
+                  className="size-5 shrink-0 text-neutral-500 transition-transform duration-200 group-hover:translate-x-0.5"
+                  aria-hidden
+                />
+              </span>
+              <span className="mt-3 block text-xs font-semibold leading-relaxed text-neutral-400">
+                {PUBLIC_CARD_LAW}
+              </span>
+              <span className="mt-2.5 block font-mono text-[10px] font-bold uppercase tracking-[0.24em] text-neutral-200">
+                {publicCta}
+              </span>
+            </button>
+          </section>
+
           {/* open sessions */}
           <section data-anim aria-label="Open sessions" className="flex flex-col gap-3">
             <h2 className="font-mono text-xs font-bold uppercase tracking-[0.32em] text-neutral-400">
@@ -491,7 +537,7 @@ export function HubScreen({
                 {HUB_WIPE_PICK}
               </span>
               <ul className="flex max-h-56 flex-col gap-2 overflow-y-auto">
-                {sessions.map((s) => (
+                {sessions.filter((s) => !isPublicRoom(s.code)).map((s) => (
                   <li key={s.code}>
                     <button
                       type="button"
@@ -757,8 +803,11 @@ function SessionRow({
       >
         <span className="flex items-center gap-3">
           <span className="font-mono text-xl font-black tracking-[0.26em] text-white">
-            {session.code}
+            {isPublicRoom(session.code) ? PUBLIC_ROOM_NAME : session.code}
           </span>
+          {isPublicRoom(session.code) && (
+            <Flame className="size-4 shrink-0 text-neutral-300" aria-hidden />
+          )}
           <span className="flex-1" />
           {session.unread > 0 && (
             <span className="flex min-w-6 items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-black text-black">
@@ -810,14 +859,17 @@ function SessionRow({
         <X className="size-4" aria-hidden />
       </button>
       {/* burn for everyone — jumps straight into the wipe modal with this
-          werf pre-picked (server still enforces creator/boss authority) */}
-      <button
-        onClick={onBurn}
-        aria-label={HUB_ROW_BURN(session.code)}
-        className="absolute -left-1.5 -top-1.5 flex size-7 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-400 outline-none transition-colors after:absolute after:-inset-2.5 after:rounded-full after:content-[''] hover:border-white hover:text-white focus-visible:border-neutral-300 focus-visible:text-white"
-      >
-        <Flame className="size-4" aria-hidden />
-      </button>
+          werf pre-picked (server still enforces creator/boss authority);
+          OPEN VUUR has no burn-from-the-row: the square never dies */}
+      {!isPublicRoom(session.code) && (
+        <button
+          onClick={onBurn}
+          aria-label={HUB_ROW_BURN(session.code)}
+          className="absolute -left-1.5 -top-1.5 flex size-7 items-center justify-center rounded-full border border-neutral-700 bg-black text-neutral-400 outline-none transition-colors after:absolute after:-inset-2.5 after:rounded-full after:content-[''] hover:border-white hover:text-white focus-visible:border-neutral-300 focus-visible:text-white"
+        >
+          <Flame className="size-4" aria-hidden />
+        </button>
+      )}
     </li>
   );
 }

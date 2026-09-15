@@ -51,8 +51,13 @@ type DeltaBody = {
   terminated?: boolean;
   /** true when the termination came from the 5h retention window */
   expired?: boolean;
+  /** OPEN VUUR boss wipe-now executed */
+  wiped?: boolean;
   createdAt?: string;
   expiresAt?: string;
+  /** OPEN VUUR wipe-cycle state */
+  epoch?: number;
+  nextWipeAt?: string;
   serverNow?: string;
   cursor?: Cursors;
   presence?: string[];
@@ -81,6 +86,8 @@ export type TransportEvents = {
   keyrequest: { code: string; fingerprints: string[]; members: Record<string, string> };
   photo: { code: string; photos: WirePhoto[] };
   terminated: { code: string; reason: "deleted" | "expired" };
+  /** OPEN VUUR — the room's wipe epoch moved: burn local state, rotate keys */
+  epoch: { code: string; epoch: number; nextWipeAt: string };
 };
 
 type EventName = keyof TransportEvents;
@@ -98,6 +105,7 @@ class Transport {
     keyrequest: new Set(),
     photo: new Set(),
     terminated: new Set(),
+    epoch: new Set(),
   };
 
   private cursors = new Map<string, Cursors>();
@@ -106,6 +114,7 @@ class Transport {
   private backoff = new Map<string, number>();
   private dead = new Map<string, number>();
   private seenPresence = new Map<string, string>(); // code -> last presence signature
+  private epochSeen = new Map<string, number>(); // code -> last wipe epoch
   private info = new Map<
     string,
     { fp: string; publicKey: string; creator: boolean; attestation?: string }
@@ -126,6 +135,11 @@ class Transport {
   /** Retention window for a session (from the last sync payload). */
   getMeta(code: string): SessionMeta | null {
     return this.meta.get(code) ?? null;
+  }
+
+  /** The room's wipe epoch as last reported by the server (0 = unknown). */
+  getEpoch(code: string): number {
+    return this.epochSeen.get(code) ?? 0;
   }
 
   /** serverNow - localNow, so clients can correct countdowns for clock skew. */
@@ -160,6 +174,9 @@ class Transport {
 
     if (!body.alive) throw new Error("Session not found (404)");
 
+    if (typeof body.epoch === "number") {
+      this.epochSeen.set(code, body.epoch);
+    }
     this.info.set(code, {
       fp: fingerprint,
       publicKey,
@@ -183,8 +200,9 @@ class Transport {
   async terminate(code: string, fingerprint: string, attestation?: string) {
     this.stop(code);
     // H3: termination is creator/boss-only — the attestation rides along so
-    // the server can authorize the actor
-    await this.rpc(code, {
+    // the server can authorize the actor. On OPEN VUUR a boss terminate is a
+    // wipe-cycle ROTATION, and the response carries the new epoch.
+    return await this.rpc(code, {
       action: "terminate",
       fingerprint,
       attestation: typeof attestation === "string" ? attestation.slice(0, 1024) : "",
@@ -209,6 +227,7 @@ class Transport {
     this.backoff.delete(code);
     this.dead.delete(code);
     this.seenPresence.delete(code);
+    this.epochSeen.delete(code);
     this.meta.delete(code);
     this.skew.delete(code);
   }
@@ -328,6 +347,15 @@ class Transport {
     if (body.serverNow) {
       const at = Date.parse(body.serverNow);
       if (Number.isFinite(at)) this.skew.set(code, at - Date.now());
+    }
+
+    // OPEN VUUR wipe cycle — the epoch moved, every device rotates NOW
+    if (typeof body.epoch === "number" && body.epoch !== this.epochSeen.get(code)) {
+      this.epochSeen.set(code, body.epoch);
+      this.cursors.set(code, { msg: 0, env: 0, photo: 0 }); // burned with the room
+      this.handlers.epoch.forEach((h) =>
+        h({ code, epoch: body.epoch as number, nextWipeAt: body.nextWipeAt ?? "" })
+      );
     }
 
     if (body.terminated) {

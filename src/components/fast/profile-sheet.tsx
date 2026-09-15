@@ -9,12 +9,13 @@
  * offline support) and shows the all-time roll of members ever.
  */
 
-import { useEffect, useState } from "react";
-import { Crown, Download, Save, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Crown, Database, Download, FileDown, FileUp, Save, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { toast } from "@/components/fast/toast";
-import { FastButton, FastModal } from "@/components/fast/primitives";
+import { FastButton, FastInput, FastModal } from "@/components/fast/primitives";
 import { cachedMemberTotal, fetchMemberTotal } from "@/lib/fast/member-ledger";
 import { canInstall, isStandalone, onInstallAvailability, promptInstall } from "@/components/fast/offline-vault";
+import { exportVault, importVault, vaultStats } from "@/lib/fast/vault-db";
 import {
   getIdentity,
   getSigner,
@@ -43,6 +44,18 @@ import {
   SEC_TITLE,
   SEC_WANTED_IDLE,
   SEC_WANTED_KEY,
+  VAULT_BAD_FILE,
+  VAULT_BAD_PASS,
+  VAULT_EXPORT,
+  VAULT_EXPORT_DONE,
+  VAULT_IMPORT,
+  VAULT_IMPORT_DONE,
+  VAULT_LAW,
+  VAULT_PASS_LABEL,
+  VAULT_STATS,
+  VAULT_STATS_IDLE,
+  VAULT_SUB,
+  VAULT_TITLE,
   pick,
 } from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
@@ -66,6 +79,79 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
   // while the sheet is open (pure counters; nothing secret ever crosses)
   const facts = securityFacts();
   const boss = callsign?.role === "boss";
+
+  // DATA-KLUIS — advanced data saving: sealed offline cache telemetry plus
+  // passphrase-sealed export/import. Only counts and sizes cross this line.
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [vaultInfo, setVaultInfo] = useState<{ blobs: number; usedBytes: number | null } | null>(null);
+  const [vaultPass, setVaultPass] = useState("");
+  const [vaultBusy, setVaultBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    void vaultStats().then((s) => {
+      if (alive) setVaultInfo({ blobs: s.blobs, usedBytes: s.usedBytes });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+
+  const fmtSize = (n: number | null): string => {
+    if (n == null) return "GROOTTE ONBEKEND";
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(n / 1_000))} KB`;
+  };
+
+  const doVaultExport = async () => {
+    if (vaultBusy) return;
+    if (vaultPass.length < 8) {
+      toast.error(VAULT_BAD_PASS);
+      return;
+    }
+    setVaultBusy(true);
+    try {
+      const res = await exportVault(vaultPass);
+      if (!res.ok) {
+        toast.error(VAULT_BAD_PASS);
+        return;
+      }
+      const blob = new Blob([res.json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `fastguns-vault-${new Date().toISOString().slice(0, 10)}.fgv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(VAULT_EXPORT_DONE);
+      setVaultPass("");
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const doVaultImport = async (file: File) => {
+    if (vaultBusy) return;
+    if (vaultPass.length < 8) {
+      toast.error(VAULT_BAD_PASS);
+      return;
+    }
+    setVaultBusy(true);
+    try {
+      const text = await file.text();
+      const res = await importVault(text, vaultPass);
+      if (!res.ok) {
+        toast.error(VAULT_BAD_FILE);
+        return;
+      }
+      toast.success(VAULT_IMPORT_DONE(res.blobs));
+      setVaultPass("");
+      void vaultStats().then((s) => setVaultInfo({ blobs: s.blobs, usedBytes: s.usedBytes }));
+    } finally {
+      setVaultBusy(false);
+    }
+  };
 
   // connection truth — read post-hydration so SSR and the first client paint
   // agree, then the row states the transport's real situation in mono
@@ -200,6 +286,62 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
                 </FastButton>
               </>
             )}
+          </div>
+
+          {/* DATA-KLUIS — advanced data saving: sealed cache + export/import */}
+          <div className="flex flex-col gap-2.5 rounded-2xl border border-neutral-900 bg-black px-4 py-4">
+            <p className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-400">
+              <Database className="size-3.5" aria-hidden />
+              {VAULT_TITLE}
+            </p>
+            <p className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+              {VAULT_SUB}
+            </p>
+            <p className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-200">
+              {vaultInfo ? VAULT_STATS(vaultInfo.blobs, fmtSize(vaultInfo.usedBytes)) : VAULT_STATS_IDLE}
+            </p>
+            <FastInput
+              value={vaultPass}
+              onChange={(e) => setVaultPass(e.target.value)}
+              placeholder={VAULT_PASS_LABEL}
+              type="password"
+              autoComplete="off"
+              maxLength={128}
+              className="min-h-[46px] font-mono text-xs"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <FastButton
+                onClick={() => void doVaultExport()}
+                disabled={vaultBusy}
+                className="min-h-[48px] font-mono text-[10px] uppercase tracking-[0.16em]"
+              >
+                <FileDown className="size-4" aria-hidden />
+                {VAULT_EXPORT}
+              </FastButton>
+              <FastButton
+                variant="outline"
+                onClick={() => fileRef.current?.click()}
+                disabled={vaultBusy}
+                className="min-h-[48px] font-mono text-[10px] uppercase tracking-[0.16em]"
+              >
+                <FileUp className="size-4" aria-hidden />
+                {VAULT_IMPORT}
+              </FastButton>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".fgv,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void doVaultImport(f);
+              }}
+            />
+            <p className="font-mono text-[8px] font-bold uppercase leading-relaxed tracking-[0.16em] text-neutral-600">
+              {VAULT_LAW}
+            </p>
           </div>
 
           {/* all-time roll */}
