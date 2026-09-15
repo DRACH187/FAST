@@ -453,6 +453,20 @@ export function bossChatTotals(): {
   return { sessions: sessions.size, liveSessions, membersInRooms, messages };
 }
 
+/**
+ * Which LIVE rooms a fingerprint holds a slot in right now — the boss
+ * directory's "STAAN NOU IN" line. Codes only (metadata); never a word of
+ * what was said.
+ */
+export function roomsOfFp(fp: string): string[] {
+  if (!FP_RE.test(fp)) return [];
+  const out: string[] = [];
+  for (const s of sessions.values()) {
+    if (!s.terminated && s.participants.has(fp)) out.push(s.code);
+  }
+  return out.sort();
+}
+
 // ---------------------------------------------------------------- presence
 
 export function touchPresence(code: string, fingerprint: string): string[] {

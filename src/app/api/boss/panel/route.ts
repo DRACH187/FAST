@@ -11,6 +11,7 @@ import { listLive, listRoster } from "@/lib/fast/identity-store";
 import { memberTotal } from "@/lib/fast/server-roll";
 import { bossChatTotals, bossInspect, bossReplayBlocks } from "@/lib/fast/memory-store";
 import { summonStats } from "@/lib/fast/summons";
+import { inviteStats } from "@/lib/fast/invites";
 import { wantedBoardStats } from "@/lib/fast/wanted-board";
 
 /**
@@ -127,6 +128,7 @@ export async function POST(req: Request) {
       freshestPostAt: wanted.freshestPostAt,
     },
     summons,
+    invites: inviteStats(),
     system: {
       uptimeSec,
       startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(),

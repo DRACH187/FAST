@@ -1132,11 +1132,16 @@ export function useSessionManager() {
 
   /** Delete/replace the saved nickname: wipe the local record, return to login. */
   const switchCallsign = useCallback(() => {
+    // SECURITY LAW: a name change means a DIFFERENT person may be standing
+    // on this device. Every local session — keys, photo bytes, vault rows —
+    // burns BEFORE the callsign screen shows. Nothing may survive the swap.
+    for (const s of sessionsRef.current) evictSessionLocal(s.code);
+    sessionsRef.current = [];
     clearCallsign();
     callsignRef.current = null;
     setCallsignState(null);
     setPhase("callsign");
-  }, []);
+  }, [evictSessionLocal]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.code === activeCode) ?? null,

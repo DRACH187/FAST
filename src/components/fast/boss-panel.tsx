@@ -27,6 +27,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Ticket,
   Timer,
   Users,
 } from "lucide-react";
@@ -54,6 +55,8 @@ import {
   PANEL_SESSIONS_ENV,
   PANEL_SESSIONS_INROOMS,
   PANEL_SESSIONS_LIVE,
+  PANEL_SYS_FORGED,
+  PANEL_SYS_INVITES,
   PANEL_SESSIONS_MEMBERS,
   PANEL_SESSIONS_MSGS,
   PANEL_SESSIONS_PHOTOS,
@@ -139,6 +142,7 @@ type PanelData = {
     freshestPostAt: string | null;
   };
   summons: { targets: number; pending: number };
+  invites: { active: number; redemptions: number; forged: number };
   system: {
     uptimeSec: number;
     startedAt: string;
@@ -593,6 +597,12 @@ function SystemTab({ data }: { data: PanelData }) {
         <Stat icon={ShieldAlert} value={String(sys.replayBlocks)} label={PANEL_SYS_REPLAY(sys.replayBlocks)} />
         <Stat icon={EyeOff} value={String(sys.probeWatch)} label={PANEL_SYS_PROBES(sys.probeWatch)} />
         <Stat icon={Timer} value={`${sys.probeTarpits}ms`} label={PANEL_SYS_TARPIT(sys.probeTarpits)} />
+        <Stat
+          icon={Ticket}
+          value={String(data.invites.active)}
+          label={PANEL_SYS_INVITES(data.invites.active, data.invites.redemptions)}
+        />
+        <Stat icon={ShieldAlert} value={String(data.invites.forged)} label={PANEL_SYS_FORGED(data.invites.forged)} />
       </StatRow>
 
       <div className="flex flex-col gap-1.5 rounded-xl border border-neutral-900 bg-black px-3.5 py-3 font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.16em] text-neutral-400">

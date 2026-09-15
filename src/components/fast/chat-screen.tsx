@@ -20,12 +20,14 @@ import {
   Radio,
   SendHorizontal,
   ShieldAlert,
+  Ticket,
   Trash2,
 } from "lucide-react";
 import { toast } from "@/components/fast/toast";
 import { REDUCED_MOTION, ScreenShell, pressFeedback } from "@/components/fast/motion";
 import { FastButton, FastModal, FastMenuItem, FastPopover, WipeChip } from "@/components/fast/primitives";
 import { CameraCapture } from "@/components/fast/camera-capture";
+import { mintInvite, revokeInvites, type MintedInvite } from "@/lib/fast/invite-client";
 import { clearDraft, loadDraft, saveDraft } from "@/lib/fast/vault-db";
 import { burnPhoto, peekPhoto } from "@/lib/crypto/keyvault";
 import {
@@ -39,6 +41,15 @@ import {
   CHAT_MEDIA_SEALED,
   CHAT_PLACEHOLDER,
   CHAT_TTL_TICKER,
+  INVITE_DONE,
+  INVITE_EXPIRES_NOTE,
+  INVITE_LAW,
+  INVITE_MINT_FAIL,
+  INVITE_REVOKED,
+  INVITE_REVOKE,
+  INVITE_SUB,
+  INVITE_TITLE,
+  INVITE_TTL_LABEL,
   pick,
 } from "@/lib/fast/copy";
 import type { CallsignIdentity } from "@/lib/fast/identity";
@@ -104,6 +115,9 @@ export function ChatScreen({
   const [sending, setSending] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteOut, setInviteOut] = useState<MintedInvite | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [newBelow, setNewBelow] = useState(false);
@@ -123,6 +137,44 @@ export function ChatScreen({
     const id = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
+
+  /** NOOI-STRING — mint a signed invite for THIS room (one use, 4h life).
+   *  The server checks the attestation AND a live participant slot; the
+   *  string opens the door, never the keys. */
+  const mintHere = useCallback(async () => {
+    if (!callsign || inviteBusy) return;
+    setInviteBusy(true);
+    try {
+      const out = await mintInvite(myFp, callsign.token, session.code, {
+        maxUses: 1,
+        ttlMinutes: 240,
+      });
+      setInviteOut(out);
+      toast.success(INVITE_DONE);
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message === "dead"
+          ? "Die werf le nie meer nie."
+          : INVITE_MINT_FAIL
+      );
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [callsign, inviteBusy, myFp, session.code]);
+
+  const revokeHere = useCallback(async () => {
+    if (!callsign || inviteBusy) return;
+    setInviteBusy(true);
+    try {
+      const killed = await revokeInvites(myFp, callsign.token, session.code);
+      setInviteOut(null);
+      toast.success(INVITE_REVOKED(killed));
+    } catch {
+      toast.error(INVITE_MINT_FAIL);
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [callsign, inviteBusy, myFp, session.code]);
 
   // Mobile keyboards: size the chat to the VISUAL viewport so the composer
   // always sits above the keyboard (iOS Safari keeps the layout viewport
@@ -329,6 +381,16 @@ export function ChatScreen({
                   onSelect={() => {
                     close();
                     setCodeOpen(true);
+                  }}
+                />
+                <FastMenuItem
+                  icon={Ticket}
+                  label="Nooi-string — laat hom in"
+                  onSelect={() => {
+                    close();
+                    setInviteOut(null);
+                    setInviteOpen(true);
+                    void mintHere();
                   }}
                 />
                 <FastMenuItem
@@ -583,6 +645,74 @@ export function ChatScreen({
               Hierdie werf vee homself uit ná 5 uur
             </p>
           </div>
+        </div>
+      </FastModal>
+
+      {/* nooi-string — signed, expiring, one-use invite for THIS room */}
+      <FastModal open={inviteOpen} onClose={() => setInviteOpen(false)} label="Invite string">
+        <div className="flex flex-col gap-4">
+          <div className="text-center">
+            <h2 className="gang-font text-3xl text-white">{INVITE_TITLE}</h2>
+            <p className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              {INVITE_SUB}
+            </p>
+          </div>
+
+          {inviteBusy && !inviteOut && (
+            <p className="py-6 text-center font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-500">
+              Smeer die string…
+            </p>
+          )}
+
+          {inviteOut ? (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  pressFeedback(e.currentTarget);
+                  void navigator.clipboard.writeText(inviteOut.invite);
+                  toast.success("Gekopieer. Moer dit stuur.");
+                }}
+                aria-label="Copy the invite string"
+                className="flex w-full items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-black px-4 py-4 text-left outline-none transition-colors hover:border-neutral-500"
+              >
+                <span className="break-all font-mono text-[12px] font-bold leading-relaxed tracking-[0.05em] text-neutral-100">
+                  {inviteOut.invite}
+                </span>
+                <Copy className="size-5 shrink-0 text-neutral-400" aria-hidden />
+              </button>
+              <div className="flex flex-col gap-2">
+                <p className="text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-400">
+                  {INVITE_TTL_LABEL(
+                    inviteOut.expiresAt
+                      ? `${Math.max(1, Math.round((Date.parse(inviteOut.expiresAt) - Date.now()) / 60_000))} MIN`
+                      : "—"
+                  )}{' '}· WERF {inviteOut.code}
+                </p>
+                <p className="rounded-xl border border-neutral-900 bg-black px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-neutral-400">
+                  {INVITE_LAW}
+                </p>
+                <p className="text-center font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-600">
+                  {INVITE_EXPIRES_NOTE}
+                </p>
+                <FastButton
+                  variant="ghost"
+                  disabled={inviteBusy}
+                  onClick={() => void revokeHere()}
+                  className="w-full font-mono text-[10px] uppercase tracking-[0.18em]"
+                >
+                  {INVITE_REVOKE}
+                </FastButton>
+              </div>
+            </>
+          ) : (
+            !inviteBusy && (
+              <FastButton onClick={() => void mintHere()} className="w-full font-mono text-xs uppercase tracking-[0.18em]">
+                <Ticket className="size-4" aria-hidden />
+                SMEER DIE STRING
+              </FastButton>
+            )
+          )}
         </div>
       </FastModal>
 

@@ -424,7 +424,8 @@ export const SUMMON_GO = "ONTBIE NOU";
 export const SUMMON_CANCEL = "Uit";
 export const SUMMON_BUSY = "Ontbied…";
 export const SUMMON_DONE = (c: string) => `Die werf ${c} staan. Hou hom oop — sleutels kom van jou af.`;
-export const SUMMON_PRIVATE_DONE = (c: string) => `Privaat werf ${c} staan. ${c} — hou hom oop, hy kom alleen na jou toe.`;
+export const SUMMON_PRIVATE_DONE = (c: string, n?: string) =>
+  `Privaat werf ${c} staan.${n ? ` ${n} se foon lui —` : ""} hou hom oop, hy kom alleen na jou toe.`;
 export const SUMMON_NOTE = "Elke ontbieding maak 'n NUWE ge-enkripte werf oop en lui die ouens se selfone. Hulle trap outomaties in — die sleutel kom net van jou toestel af, so bly in die werf.";
 export const SUMMON_PRIVATE_NOTE =
   "Die privaat deurklokkie bly hang tot 2 UUR — kom die ouen af-lyn aanlyn, selfs more-aand, sy selfoon lui en hy trap in. Net jy en hy het die sleutel.";
@@ -443,6 +444,65 @@ export const SUMMON_INTO_ALL_CONFIRM = (n: number, c: string) =>
 export const SUMMON_INTO_DONE = (c: string) => `Hulle is geklooi — werf ${c} wag. Sleutels kom net van jou af.`;
 export const SUMMON_OFFLINE_INTO_TAG = "WEG — DIE KLOK BLY HANG TOT HY OPDAAK";
 export const SUMMON_INTO_DEAD_ROOM = "Daai werf se sleutel is van hierdie toestel weg — kies 'n ander of maak 'n nuwe werf.";
+
+// ------------------------------------------------------- boss directory (23)
+// DIE GRIP — DRACH's live directory: every ouen the house ever saw, one
+// profile card each. Tap a profile, hit PRAAT NOU, and a private E2EE werf
+// opens with a 2h doorbell on the target — now, or the moment they surface.
+
+export const DIR_TITLE = "DIE GRIP";
+export const DIR_SUB = "ELKE OUEN · AANLYN OF LAAS GEKLOP · TIK 'N PROFIEL, MAAK 'N WERF OOP";
+export const DIR_ROW_LABEL = "DIE GRIP — GRYP HULLE";
+export const DIR_ROW_HINT = "Elke ouen op een plek — tik 'n profiel en praat met hom, whenever jy wil";
+export const DIR_EMPTY = "Fokol ouens op die grip. Die rol wag vir sy eerste bloed.";
+export const DIR_SEARCH_PLACE = "SOEK DIE GRIP";
+export const DIR_OFFLINE_NONE = "Die hele rol is aanlyn. Mooi so, baas.";
+export const DIR_PROFILE_STATUS = "STATUS";
+export const DIR_SEEN_FIRST = "EERSTE KEER GEKLOP";
+export const DIR_SEEN_LAST = "LAAS GEKLOP";
+export const DIR_STANDING_IN = "STAAN NOU IN";
+export const DIR_STANDING_NONE = "STAAN NERGENS — HY LE LAAG EN LUISTER";
+export const DIR_TALK_CTA = "PRAAT NOU — PRIVAAT WERF";
+export const DIR_TALK_NOTE =
+  "Een tik: 'n nuwe ge-enkripte werf maak oop, sy selfoon lui, en jy staan al daar. Die sleutel kom net van jou toestel af.";
+export const DIR_CONSCRIPT_CTA = "GOOI HOM IN 'N WERF";
+export const DIR_INVITE_CTA = "NOOI MET 'N STRING";
+export const DIR_CLOSE_PROFILE = "MAAK TOE";
+export const DIR_SELF_TAG = "DIT IS JY, BAAS — JY IS DIE HUIS";
+export const DIR_BOSS_TAG = "DIE BOSS SELF — HY WORD NIE ONTBIE NIE, HY ONTBIE";
+export const DIR_OFFLINE_LAST = (t: string) => `WEG · LAAS GEKLOP ${t}`;
+export const DIR_ONLINE_SINCE = (t: string) => `AANLYN VANAF ${t}`;
+export const DIR_LAW =
+  "Naam, rol, tyd, watter werwe — niks meer nie. Geen e-pos, geen IP, geen sleutel, geen woord van geen gesprek nie. Hierdie pype hou NIKS vas nie.";
+
+// ------------------------------------------------------------ nooi-strings
+// Secure invite strings: HMAC-signed by the server, TTL-bound, burn-on-use,
+// revocable. The string opens the DOOR — never the keys. Every newcomer
+// still gets the session key wrapped from a member's device, oog tot oog.
+
+export const INVITE_TITLE = "NOOI-STRING";
+export const INVITE_SUB = "GESIGN · VERVALLENDE · EENMALIGE TOEGANG — SONDER DIE SLEUTEL";
+export const INVITE_BUSY = "SMEER DIE STRING…";
+export const INVITE_DONE = "String gesmee. Stuur hom aan wie die werf moet sien.";
+export const INVITE_USES_LABEL = "GEBRUIKE VOOR HY BRAND";
+export const INVITE_USES_CHIP = (n: number) => (n === 1 ? "1 KEER — DAN BRAND HY" : `${n} KEER`);
+export const INVITE_TTL_LABEL = (t: string) => `STERF OOR ${t}`;
+export const INVITE_LAW =
+  "Die string maak net die deur oop — die sleutel kom NOOIT saam nie. Elke instapper kry sy sleutel nog steeds van 'n lid se toestel af, oog tot oog, of hy sien fokol.";
+export const INVITE_EXPIRES_NOTE = "Die string vrek op sy eie horlosie — verby die tyd, geen kode, geen toegang, fokol.";
+export const INVITE_REVOKE = "TREK ALLE STRINGS TRUG";
+export const INVITE_REVOKED = (n: number) => `${n} string${n === 1 ? "" : "s"} vir hierdie werf is as.`;
+export const INVITE_HINT = "OF PLAK 'N NOOI-STRING IN — FG187.…";
+export const INVITE_REDEEMING = "Die string word gelees…";
+export const INVITE_REDEEMED = (c: string) => `String geldig — werf ${c} maak oop.`;
+export const INVITE_BAD = "Daai string is goof — niemand hierdie kant het hom gesmee nie.";
+export const INVITE_BURNED = "Daai string is al gebrand. Eenmalig beteken eenmalig, ouen.";
+export const INVITE_DEAD = "Die werf agter daai string bestaan nie meer nie — al is sy stringe ook.";
+export const INVITE_EXPIRED = "Daai string se tyd is verby. Vra vir 'n vars een.";
+export const INVITE_PICK_ROOM = "VIR WATTER WERF";
+export const INVITE_NEEDS_ROOM = "Jy hou geen oop werf met 'n sleutel op hierdie toestel nie — maak eers een oop.";
+export const INVITE_MINT_FAIL = "Die string wou nie smee nie — probeer fokken weer.";
+export const INVITE_SELF_ROOM = "HIERDIE WERF";
 
 // ------------------------------------------------------------ deletion v2
 // Deleting a chat is now a PICK, not a memory test: tap the werf off a list,
@@ -603,6 +663,8 @@ export const PANEL_SYS_CIRCUIT = (n: number) => `${n} VERSOEKE HIERDIE MINUUT`;
 export const PANEL_SYS_REPLAY = (n: number) => `${n} REPLAY-AANVALLE GEBLOK`;
 export const PANEL_SYS_PROBES = (n: number) => `${n} WERF-PROEERS IN DIE WAGHOK`;
 export const PANEL_SYS_TARPIT = (n: number) => `${n}ms TARPIT AAN PROEERS GEGEE`;
+export const PANEL_SYS_INVITES = (n: number, r: number) => `${n} NOOI-STRINGS LEWEND · ${r} KEER INGEPLOEG`;
+export const PANEL_SYS_FORGED = (n: number) => `${n} VERVALSTE STRINGS GEVANG`;
 export const PANEL_SYS_PLATFORM = (p: string) => `LOOP OP ${p.toUpperCase()}`;
 export const PANEL_SYS_LAW =
   "ALLES IN RAM · GEEN DATABASE · ALLES STERF MET DIE PROSES · NIKS OIT GESIEN WAT NIE SIFTERTEKS WAS NIE";
