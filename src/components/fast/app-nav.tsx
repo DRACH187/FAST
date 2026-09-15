@@ -9,6 +9,7 @@
  *    Mobbin-grade: icon + label per tab, the active tab floods white with
  *    black ink, springy press feedback, blur glass, 52px+ touch targets,
  *    never wider than 24rem so thumbs stay in reach on a 320px screen.
+ *    Five houses: sessions, the dead-list, the wall of hate, the map, live.
  *    The chat view deliberately hides it (a chat is a focused room with its
  *    own way out — same pattern iMessage/WhatsApp/Telegram ship).
  *
@@ -21,7 +22,15 @@
  */
 
 import Image from "next/image";
-import { Crown, Crosshair, Map as MapIcon, MessagesSquare, Radio, ShieldCheck } from "lucide-react";
+import {
+  Crown,
+  Crosshair,
+  Map as MapIcon,
+  MessagesSquare,
+  Radio,
+  ShieldCheck,
+  Skull,
+} from "lucide-react";
 import { pressFeedback } from "@/components/fast/motion";
 import { useLivePresence } from "@/lib/fast/live";
 import type { CallsignIdentity } from "@/lib/fast/identity";
@@ -35,15 +44,17 @@ import {
   NAV_RAIL_TAG,
   NAV_TAB_LIVE,
   NAV_TAB_MAP,
+  NAV_TAB_POESE,
   NAV_TAB_SESSIONS,
   NAV_TAB_WANTED,
 } from "@/lib/fast/copy";
 
-export type AppTab = "hub" | "wanted" | "map" | "live";
+export type AppTab = "hub" | "wanted" | "map" | "live" | "poese";
 
 const NAV_ITEMS = [
   { id: "hub", icon: MessagesSquare, label: NAV_TAB_SESSIONS },
   { id: "wanted", icon: Crosshair, label: NAV_TAB_WANTED },
+  { id: "poese", icon: Skull, label: NAV_TAB_POESE },
   { id: "map", icon: MapIcon, label: NAV_TAB_MAP },
   { id: "live", icon: Radio, label: NAV_TAB_LIVE },
 ] as const satisfies ReadonlyArray<{ id: AppTab; icon: typeof Radio; label: string }>;

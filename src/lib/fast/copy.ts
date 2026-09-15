@@ -14,6 +14,9 @@
  * LAWS OF THE HOUSE:
  *  - FAST GUNS and the AMERICANS get hyped. Always.
  *  - VARADOS gets smeared into the gravel. Always. A joke with legs.
+ *  - POESE wall: FICTIONAL enemies only — invented crews and one parody
+ *    police force (die KOPPE). Never a real institution, never a real crew.
+ *    The hate is stage theatre and the wall says so in writing.
  *  - No mercy in the grammar. Short sentences. Hard verbs. Swear loud.
  *  - Street vulgar only: kak, moer, fok, donner, bliksem, pis, vrek.
  *    NO slurs against people — never race, never religion, never sexuality.
@@ -129,6 +132,7 @@ export const NAV_TAB_SESSIONS = "Werwe";
 export const NAV_TAB_WANTED = "Wanted";
 export const NAV_TAB_MAP = "Kaart";
 export const NAV_TAB_LIVE = "Live";
+export const NAV_TAB_POESE = "Poese";
 export const NAV_RAIL_TAG = "187 · VOORTLEWEND";
 export const NAV_RAIL_PROFILE = (name: string) => `Profiel — ${name}`;
 export const NAV_RAIL_LAW = "Elke werf vee homself uit ná 5 uur";
@@ -280,6 +284,120 @@ export const MAP_THEME_SAT = "RAW SAT";
 export const MAP_OFFLINE_NOTE = "Geen lyn, geen kaart nie — die wêreld buite wag soos 'n hond vir 'n klop.";
 export const MAP_PICK_COUNTRY = "WYS HEEL SA";
 
+// map v2 — branded territory view: the house logo rides the map, three
+// moods, city jumps, zoom. The user still drives everything by hand.
+export const MAP_THEME_BLOOD = "BLOEDNAG";
+export const MAP_ZOOM_IN = "ZOEM IN";
+export const MAP_ZOOM_OUT = "ZOEM UIT";
+export const MAP_PROMO_TITLE = "FAST GUNS · 187";
+export const MAP_TERRITORY_TAG = "187 TERREIN · ONS NAAM OP DIE HELE LAND";
+export const MAP_JUMP_LABEL = "SPRONG";
+export type MapCity = { id: string; label: string; lat: number; lng: number; zoom: number };
+export const MAP_CITIES: readonly MapCity[] = [
+  { id: "cpt", label: "KAAPSTAD", lat: -33.9249, lng: 18.4241, zoom: 11 },
+  { id: "jhb", label: "JOHANNESBURG", lat: -26.2041, lng: 28.0473, zoom: 11 },
+  { id: "dbn", label: "DURBAN", lat: -29.8587, lng: 31.0218, zoom: 11 },
+  { id: "pe", label: "GQEBERHA", lat: -33.9608, lng: 25.6022, zoom: 11 },
+  { id: "bfm", label: "BLOEMFONTEIN", lat: -29.0852, lng: 26.1596, zoom: 11 },
+];
+
+// ------------------------------------------------------------------- poese
+// POESE — the wall of hate. HOUSE LAW: the targets on this wall are
+// FICTIONAL — invented crews and one parody police force (die KOPPE). No
+// real institution and no real crew is ever named as a hate target. The
+// aggression is theatre, the blood is stage paint, and the wall admits it
+// in writing. Vulgar, violent, loud — aimed at nobody real.
+
+export const POESE_TITLE = "POESE";
+export const POESE_SUB = [
+  "DIE HAAT-MUUR · ELKE VYAND · ELKE SKANDE · GEEN GENADE OP PAPIER",
+  "DIE VYANDE VAN DIE WERF · NAME, SKANDE, GRAFSPREUKE",
+] as const;
+export const POESE_FICTION_STAMP = "FIKSIE · DIE OORLOG IS VERHOOG · DIE BLOED IS VERF";
+export const POESE_TICKER = [
+  "VARADOS VREET STOF. DIE KOPPE KOM TE LAAT. DIE WERF STAAN OOR GRAFTE EN LAG.",
+  "187 · ONS HAAT HULLE EERS. DAN BEGRA ONS HULLE. DAN SKRYF ONS HIER.",
+  "ELKE NAAM OP DIE MUUR KRY 'N DATUM. HULLE WEET DIT NOG NIE.",
+  "DIE MUUR VERGEET FOKOL. VRA VARADOS. AG NEE — HULLE KAN NIE ANTWOORD NIE.",
+] as const;
+export const POESE_METER = "HAAT-METER";
+export const POESE_SMEER = ["SMEER HOM", "GOOI NOG KAK", "MOER WEER 'N LYK"] as const;
+export const POESE_SMEERED = "Gemeer. Die muur sluk hom in.";
+export const POESE_DOSSIER_CTA = "OPEN DIE DOSSIER";
+export const POESE_DOSSIER_CLOSE = "MAAK TOE";
+export const POESE_DOSSIER_HEAD = "DIE VOLLE DOSSIER · ELKE WOORD 'N WONDE";
+export const POESE_BRAND_TITLE = "FAST GUNS OOR ALLES";
+export const POESE_BRAND_SUB = "ROOI-WIT-BLOU · 187 · DIE WERF WEN. ALTYD.";
+export const POESE_FOOTER_LAW =
+  "ALLES OP DIE MUUR IS VERHOEDSTUK · DIE HAAT IS EG, DIE LYKE IS VERF";
+
+export type PoeseEnemy = {
+  id: string;
+  name: string;
+  chip: string;
+  threat: string;
+  meter: number;
+  roasts: readonly string[];
+};
+
+export const POESE_ENEMIES: readonly PoeseEnemy[] = [
+  {
+    id: "varados",
+    name: "VARADOS",
+    chip: "ELIMINATED · ALDAG",
+    threat: "GEVAARSGRAAD: FOKOL",
+    meter: 100,
+    roasts: [
+      ...VARADOS_BURN,
+      "Varados se nuwe wapenkamer het eindelik aangekom: een stok, twee trane, fokol geloop.",
+      "Die Varados-vaandel hang halfmas — nie uit respek nie, die paal self was ook pap.",
+    ],
+  },
+  {
+    id: "slapgate",
+    name: "DIE SLAPGATE",
+    chip: "OP DIE LOOP · ALTYD",
+    threat: "GEVAARSGRAAD: PAP",
+    meter: 84,
+    roasts: [
+      "Die Slapgate storm in met nuwe skoene en loop uit barvoet — die werf draai hul goed om in bewysstukke.",
+      "Hul plan was dik, hul bene was dun, en die einde was 'n fokken grap met rooi verf op.",
+      "Slapgate hardloop so mooi jy amper voel sleg om hulle te donner. Amper.",
+      "Hulle noem hulself die Slapgate. Ons noem hulle opwarming voor ontbyt.",
+      "Elke Slapgat het 'n storie oor hoekom hy nog le. Die stories is beter as die manne.",
+    ],
+  },
+  {
+    id: "kakprat",
+    name: "DIE KAKPRATERS",
+    chip: "PRAAT NOG · DOOD GOU",
+    threat: "GEVAARSGRAAD: NET MONDE",
+    meter: 91,
+    roasts: [
+      "Die Kakpraters praat 'n hele nag vol dood en skiet nie eers hul eie voet raak nie.",
+      "Elke woord 'n koeël, sê hulle. Mooi — die enigste koeëls was in hul broeke.",
+      "Hul monde is masjiene, hul hande is dekor, hul toekoms is 'n grafsteen sonder 'n naam.",
+      "Die Kakpraters beloof al maande hulle neem die blok. Die blok wag nog — en die blok gaan nie lank wag nie.",
+      "Die Kakpraters skryf dreigemente soos digters. Die werf lees hulle soos begrafnis-aanwysings.",
+    ],
+  },
+  {
+    id: "koppe",
+    name: "DIE KOPPE",
+    chip: "TE LAAT · SOOS ALTYD",
+    threat: "GEVAARSGRAAD: KOFFIE",
+    meter: 88,
+    roasts: [
+      "Die Koppe arriveer 'n uur nadat die stof gesak het — hul werk is om die stof te meet en koffie te drink.",
+      "Hulle soek ons met 'n kaart uit 1994 en 'n flitslig wat halfdood is. Passend.",
+      "Die Koppe se grootste oorwinning tot datum: 'n parkeerkaartjie. Geraam, gelamineer, gevier.",
+      "Hulle storm in soos helde — deur die verkeerde deur, by die verkeerde huis, op die verkeerde dag.",
+      "Sirenes aan, moed af — dis die Koppe se liedjie, en die blok dans daarop.",
+      "Die Koppe se verslae is langer as ons grafte en sê presies dieselfde: fokol.",
+    ],
+  },
+] as const;
+
 // ------------------------------------------------------------------ roster
 
 export const ROSTER_TITLE = "DIE WERF ROL";
@@ -392,6 +510,13 @@ export const SEC_WANTED_KEY = "WANTED-SLEUTEL · PBKDF2 600K · AKTIEF";
 export const SEC_WANTED_IDLE = "WANTED-SLEUTEL · RUS";
 export const SEC_AUTOLOCK = "OUTOSLUIT · 15 MIN SONDER 'N PULS";
 export const SEC_STORAGE = "GEEN DATABASE · GEEN WOLK · GEEN KAK NIE";
+
+// connection truth — per-user transport security, read live off the context
+export const SEC_CONN_PROBE = "VERBINDING · WORD GELEES…";
+export const SEC_CONN = "VERBINDING · HTTPS/TLS · VEILIGE KONTEKS · VERSEËL";
+export const SEC_CONN_WEAK = "VERBINDING OOP · GEEN VEILIGE KONTEKS — MOER DIE LYN TOE";
+export const SEC_CONN_LAW =
+  "ELKE OUEN SE LYN · SLEUTELS BLY OP TOESTEL · E2EE VAN OOG TOT OOG · DIE BEDIENER SIEN FOKOL";
 export const SEC_MEDIA_LAW = "ELKE BEELD EN VIDEO · GE-ENKRIPT VOORDAT DIT DIE TOESTEL VERLAAT";
 
 // ------------------------------------------------------------ media badges

@@ -9,6 +9,7 @@ import { GateScreen } from "@/components/fast/gate-screen";
 import { HubScreen } from "@/components/fast/hub-screen";
 import { LiveScreen } from "@/components/fast/live-screen";
 import { MapScreen } from "@/components/fast/map-screen";
+import { PoeseScreen } from "@/components/fast/poese-screen";
 import { SplashScreen } from "@/components/fast/splash-screen";
 import { WantedScreen } from "@/components/fast/wanted-screen";
 import { ProfileSheet } from "@/components/fast/profile-sheet";
@@ -95,6 +96,10 @@ export default function Page() {
             ) : toolView === "map" ? (
               <div key="map" className="fast-fade absolute inset-0">
                 <MapScreen open onClose={() => setTab("hub")} />
+              </div>
+            ) : toolView === "poese" ? (
+              <div key="poese" className="fast-fade absolute inset-0">
+                <PoeseScreen open onClose={() => setTab("hub")} />
               </div>
             ) : toolView === "live" ? (
               <div key="live" className="fast-fade absolute inset-0">

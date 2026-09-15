@@ -29,6 +29,10 @@ import {
   PROFILE_ROLL_LABEL,
   PROFILE_TITLE,
   SEC_AUTOLOCK,
+  SEC_CONN,
+  SEC_CONN_LAW,
+  SEC_CONN_PROBE,
+  SEC_CONN_WEAK,
   SEC_E2EE,
   SEC_KEYS,
   SEC_MEDIA_LAW,
@@ -62,6 +66,20 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
   // while the sheet is open (pure counters; nothing secret ever crosses)
   const facts = securityFacts();
   const boss = callsign?.role === "boss";
+
+  // connection truth — read post-hydration so SSR and the first client paint
+  // agree, then the row states the transport's real situation in mono
+  const [conn, setConn] = useState<"probe" | "secure" | "open">("probe");
+  useEffect(() => {
+    if (!open) return;
+    const probe = window.setTimeout(() => {
+      const secure =
+        window.isSecureContext &&
+        (location.protocol === "https:" || location.hostname === "localhost");
+      setConn(secure ? "secure" : "open");
+    }, 0);
+    return () => window.clearTimeout(probe);
+  }, [open]);
 
   useEffect(() => {
     const off = onInstallAvailability((available) => {
@@ -206,6 +224,11 @@ export function ProfileSheet({ open, onClose, callsign, onSwitch }: ProfileProps
               {SEC_SUB}
             </p>
             <ul className="flex flex-col gap-1.5">
+              <SecRow
+                label={conn === "probe" ? SEC_CONN_PROBE : conn === "secure" ? SEC_CONN : SEC_CONN_WEAK}
+                strong={conn === "secure"}
+              />
+              <SecRow label={SEC_CONN_LAW} />
               <SecRow label={SEC_E2EE(getIdentity()?.curve === "ECDH-P256" ? "ECDH P-256" : "X25519")} />
               <SecRow
                 label={SEC_SIGNER(
