@@ -151,7 +151,7 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
         if (stageRef.current) shakeElement(stageRef.current.querySelector("[data-cells]") as HTMLElement);
         setValue("");
         fieldRef.current?.focus();
-        toast.error(err instanceof Error ? err.message : "Access denied");
+        toast.error(err instanceof Error ? err.message : "Toegang geweier — voetsek");
       } finally {
         setBusy(false);
         inflight.current = false;

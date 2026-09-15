@@ -87,7 +87,7 @@ export function CallsignScreen({
       }
       onReady(res.identity, res.nickPass ?? "");
     } catch {
-      toast.error("Network unreachable — try again");
+      toast.error("Netwerk dood — probeer weer, boetie");
     } finally {
       setBusy(false);
     }

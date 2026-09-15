@@ -168,7 +168,7 @@ export function HubScreen({
       const code = await onStart();
       setCreated(code);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Kon die werf nie oopmaak nie");
+      toast.error(err instanceof Error ? err.message : "Die deur sit vas — moer weer");
     }
   }, [onStart]);
 
@@ -180,7 +180,7 @@ export function HubScreen({
         setJoinCode("");
         toast.success(HUB_SESSION_JOINED);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Kon nie by die werf intrek nie");
+        toast.error(err instanceof Error ? err.message : "Die werf wil jou nie in hê nie — probeer weer");
       }
     },
     [onJoin]
@@ -203,7 +203,7 @@ export function HubScreen({
       setDeleteCode("");
       toast.success(HUB_SESSION_DELETED);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Kon die werf nie moer nie");
+      toast.error(err instanceof Error ? err.message : "Uitmoer het gemors — vuur weer");
     }
   }, [deleteCode, onDelete]);
 
@@ -260,7 +260,7 @@ export function HubScreen({
       toast.success(SUMMON_DONE(code));
       onOpen(code); // boss holds the room — keys wrap out from this device
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Ontbieding geblok — probeer weer");
+      toast.error(err instanceof Error ? err.message : "Ontbieding geblok — skree weer");
     } finally {
       setSummonBusy(false);
     }
@@ -428,7 +428,7 @@ export function HubScreen({
             <ActionRow
               icon={Trash2}
               label="MOER ’N WERF UIT"
-              hint="Vee dit vir elke ouen uit — almal, alles, klaar"
+              hint="Vee dit vir elke ouen uit — almal, alles, klaar, geen genade"
               onClick={() => setDeleteOpen(true)}
               disabled={busy}
             />
@@ -487,7 +487,7 @@ export function HubScreen({
             <Copy className="size-5 shrink-0 text-neutral-400" aria-hidden />
           </button>
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-bold text-neutral-300">Wie die kode het, kom in. Wie nie, bly buite.</p>
+            <p className="text-sm font-bold text-neutral-300">Wie die kode het, kom in. Wie nie, kak af en bly buite.</p>
             <p className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-500">
               Hierdie werf vee homself uit ná 5 uur
             </p>

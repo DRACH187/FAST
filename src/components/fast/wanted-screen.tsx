@@ -540,7 +540,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         cap?: string;
       };
       if (!res.ok || data.ok !== true) {
-        toast.error(typeof data.error === "string" ? data.error : "Kon nie plaas nie");
+        toast.error(typeof data.error === "string" ? data.error : "Die merk wou nie hang nie — vuur weer");
         return;
       }
       // the MANAGE capability is this device's only delete/attach authority
@@ -576,7 +576,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
       toast.success(
         exhibitsDropped > 0
           ? "Die saak hang — sommige bewysstukke was te vet vir die pyplyn"
-          : "Die saak hang. Laat hulle kom kyk."
+          : "Die saak hang. Laat hulle kom skrik."
       );
       setComposeOpen(false);
       setDraft(EMPTY_DRAFT);
@@ -610,7 +610,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
         if (!res.ok || data.ok !== true) {
-          toast.error(typeof data.error === "string" ? data.error : "Kon nie brand nie");
+          toast.error(typeof data.error === "string" ? data.error : "Brand het gemors — probeer weer");
           return;
         }
         forgetCase(entry.wire.id);
@@ -648,7 +648,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; cap?: string };
         if (!res.ok || data.ok !== true) {
-          toast.error(typeof data.error === "string" ? data.error : "Kon nie skryf nie");
+          toast.error(typeof data.error === "string" ? data.error : "Die sakboek is toe — probeer weer");
           return;
         }
         if (typeof data.cap === "string" && typeof bodyCommentId === "string") {

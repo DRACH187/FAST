@@ -26,7 +26,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 const OVERLAY_TITLE = "DIE WERF IS TOE";
-const OVERLAY_SUB = "Ontwikkelaarsgereedskap is oop — maak dit toe om in te kom.";
+const OVERLAY_SUB = "Jy krap aan die werf se mure, boetie. Maak dit toe of bly buite in die koue.";
 
 export function Lockdown() {
   const [devtoolsOpen, setDevtoolsOpen] = useState(false);
@@ -86,7 +86,7 @@ export function Lockdown() {
           "%c187 · FAST GUNS · GEEN SPIONE HIER",
           "color:#fff;background:#000;font-weight:900;padding:6px 14px;letter-spacing:.3em"
         );
-        console.log("%cHierdie werf hou niks van jou toestel nie — en jy hou niks van syne nie. Voetsek.",
+        console.log("%cHierdie werf hou niks van jou toestel nie — en jy hou niks van syne nie. Fokken voetsek.",
           "color:#888;font-weight:700");
       } catch {
         /* hardened consoles */

@@ -196,7 +196,7 @@ export function ChatScreen({
       if (taRef.current) taRef.current.style.height = "auto";
       requestAnimationFrame(() => scrollToBottom(true));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Message not sent");
+      toast.error(err instanceof Error ? err.message : "Boodskap geblok — vuur weer");
     } finally {
       setSending(false);
     }
@@ -538,7 +538,7 @@ export function ChatScreen({
           onCapture={(bytes) => {
             setCameraOpen(false);
             void onSendPhoto(bytes).catch((err) =>
-              toast.error(err instanceof Error ? err.message : "Photo not sent")
+              toast.error(err instanceof Error ? err.message : "Foto geblok — laai en vuur weer")
             );
           }}
         />
@@ -592,7 +592,7 @@ export function ChatScreen({
               onClick={() => {
                 setDeleteOpen(false);
                 void onDelete(session.code).catch((err) =>
-                  toast.error(err instanceof Error ? err.message : "Kon nie brand nie")
+                  toast.error(err instanceof Error ? err.message : "Brand het gemors — probeer weer")
                 );
               }}
               className="w-full font-mono text-sm uppercase tracking-[0.24em]"
