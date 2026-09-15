@@ -74,15 +74,22 @@ declare global {
  * Register this device+callsign as a member of the all-time roll. Fire on
  * every successful callsign assertion — the server dedupes by digest, so
  * repeats only tick the visit counter, never the total.
+ *
+ * M5: the roll only admits ATTESTED members — fingerprint + server-signed
+ * token ride along so anonymous digests cannot mint rows.
  */
-export async function registerMember(nickname: string): Promise<number | null> {
+export async function registerMember(
+  nickname: string,
+  fingerprint?: string,
+  token?: string
+): Promise<number | null> {
   const hash = await memberHash(nickname);
-  if (!hash) return null;
+  if (!hash || !fingerprint || !token) return null;
   try {
     const res = await fetch("/api/members", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberHash: hash }),
+      body: JSON.stringify({ memberHash: hash, fingerprint, token }),
       cache: "no-store",
     });
     const data = (await res.json().catch(() => ({}))) as { ok?: boolean; total?: number };

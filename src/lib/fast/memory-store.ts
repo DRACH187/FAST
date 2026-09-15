@@ -48,6 +48,9 @@ export type WireBlob = {
   counter: number;
   iv: string;
   ciphertext: string;
+  /** client signature over the sealed envelope (fast.sig.v1) — opaque to the
+   *  server, verified by every receiving member (M1 sender authenticity) */
+  sig?: string;
   createdAt: string;
 };
 
@@ -71,10 +74,22 @@ export type PhotoBlob = {
   expiresAt: number;
 };
 
+type ParticipantRec = {
+  publicKey: string;
+  /** write-once E2EE-signing public key ("ed25519:" | "ecdsa-p256:" prefix + raw b64) */
+  signPub: string | null;
+  nickname: string;
+  role: string;
+  joinedAt: Date;
+};
+
 type SessionRec = {
   code: string;
   createdAt: Date;
-  participants: Map<string, { publicKey: string; nickname: string; role: string; joinedAt: Date }>;
+  /** the fingerprint that provisioned this room — the only member (besides
+   *  an attested boss) who may terminate it (H3 hardening) */
+  creatorFp: string | null;
+  participants: Map<string, ParticipantRec>;
   messages: (WireBlob & { seq: number })[];
   envelopes: (EnvelopeBlob & { seq: number })[];
   photos: (PhotoBlob & { seq: number })[];
@@ -85,10 +100,17 @@ type SessionRec = {
   lastActivity: number;
 };
 
-// code -> session
-const sessions = new Map<string, SessionRec>();
+// code -> session — globalThis-pinned: one store per process, shared across
+// route-module instances in dev exactly like every other FAST table.
+const gStore = globalThis as unknown as {
+  __fastSessions?: Map<string, SessionRec>;
+  __fastPresence?: Map<string, Map<string, number>>;
+};
+const sessions: Map<string, SessionRec> = gStore.__fastSessions ?? new Map();
+gStore.__fastSessions = sessions;
 // code -> (fp -> lastSeen ms) — ephemeral presence, never persisted
-const presence = new Map<string, Map<string, number>>();
+const presence: Map<string, Map<string, number>> = gStore.__fastPresence ?? new Map();
+gStore.__fastPresence = presence;
 
 // monotonic cursor for delta sync
 let seqCounter = 0;
@@ -194,21 +216,30 @@ export function sessionExists(code: string): boolean {
 }
 
 /**
- * Create the session if absent. Returns the record plus whether it was newly
- * provisioned (used by the creator's self-healing sync so a cold serverless
- * restart can never strand a room).
+ * Create the session if absent. `creatorFp` binds the provisioning device as
+ * the room's creator (H3): only the creator — or an attested boss — may
+ * terminate the room later. When an existing room has no bound creator (a
+ * pre-upgrade room, or a re-provision after a cold restart) the first
+ * creator-style re-assert adopts it; an EXISTING creator is never replaced.
  */
-export function provisionSession(code: string): { created: boolean } {
+export function provisionSession(
+  code: string,
+  opts: { creatorFp?: string } = {}
+): { created: boolean } {
   if (!CODE_RE.test(code)) throw new Error("Bad code");
   gcGlobal();
   const existing = sessions.get(code);
   if (existing && !existing.terminated) {
+    if (existing.creatorFp === null && opts.creatorFp) {
+      existing.creatorFp = opts.creatorFp;
+    }
     existing.lastActivity = Date.now();
     return { created: false };
   }
   sessions.set(code, {
     code,
     createdAt: new Date(),
+    creatorFp: opts.creatorFp ?? null,
     participants: new Map(),
     messages: [],
     envelopes: [],
@@ -219,6 +250,19 @@ export function provisionSession(code: string): { created: boolean } {
     lastActivity: Date.now(),
   });
   return { created: true };
+}
+
+/** The room's creator (or null when unbound). */
+export function sessionCreator(code: string): string | null {
+  return sessions.get(code)?.creatorFp ?? null;
+}
+
+/** Bind a creator to an existing room that has none (idempotent). */
+export function adoptCreator(code: string, fingerprint: string): boolean {
+  const s = sessions.get(code);
+  if (!s || s.creatorFp !== null) return false;
+  s.creatorFp = fingerprint;
+  return true;
 }
 
 export function deleteSession(code: string): boolean {
@@ -246,6 +290,12 @@ export function isTerminated(code: string): boolean {
   return sessions.get(code)?.terminated ?? false;
 }
 
+/** True when this fingerprint holds a bound slot in the room (posting gate). */
+export function isParticipant(code: string, fingerprint: string): boolean {
+  if (!FP_RE.test(fingerprint)) return false;
+  return sessions.get(code)?.participants.has(fingerprint) ?? false;
+}
+
 /**
  * Manually enforce the retention window (used by the sync route on every
  * mutation so expiry never depends on gc timing).
@@ -255,40 +305,61 @@ export function enforceTtl(code: string): void {
   if (s && !s.terminated && isExpired(s)) expireSession(s);
 }
 
+/**
+ * Register (or re-assert) a participant.
+ *
+ * M2 HARDENING — participant slots are WRITE-ONCE for key material:
+ *   - the ECDH public key and the signing public key of a slot are set by
+ *     the FIRST join only; later joins presenting different keys are denied
+ *     (the stored keys stay, the request is refused) — a hijacker can no
+ *     longer silently substitute a victim's key material. Legitimate
+ *     clients never hit this: fingerprints and keys rotate together every
+ *     reload (a fresh tab is a fresh identity).
+ *   - nickname/role come only from a verified server attestation and may
+ *     refresh freely — they are display data, not trust anchors.
+ */
 export function upsertParticipant(
   code: string,
   fingerprint: string,
   publicKey: string,
-  nickname?: string,
-  role?: string
-): boolean {
+  opts: { nickname?: string; role?: string; signPub?: string } = {}
+): { ok: boolean; reason?: "key-conflict" } {
   if (!FP_RE.test(fingerprint) || typeof publicKey !== "string" || publicKey.length === 0 || publicKey.length > 512) {
-    return false;
+    return { ok: false };
   }
   const s = getSession(code);
-  if (!s) return false;
+  if (!s) return { ok: false };
   const existing = s.participants.get(fingerprint);
   if (existing) {
-    existing.publicKey = publicKey;
-    if (typeof nickname === "string" && nickname.length > 0 && nickname.length <= 32) {
-      existing.nickname = nickname;
-      existing.role = role === "boss" ? "boss" : "member";
+    if (existing.publicKey !== publicKey) return { ok: false, reason: "key-conflict" };
+    if (opts.signPub !== undefined && existing.signPub !== null && existing.signPub !== opts.signPub) {
+      return { ok: false, reason: "key-conflict" };
+    }
+    if (existing.signPub === null && typeof opts.signPub === "string") {
+      existing.signPub = opts.signPub;
+    }
+    if (typeof opts.nickname === "string" && opts.nickname.length > 0 && opts.nickname.length <= 32) {
+      existing.nickname = opts.nickname;
+      existing.role = opts.role === "boss" ? "boss" : "member";
     }
   } else {
     s.participants.set(fingerprint, {
       publicKey,
-      nickname: typeof nickname === "string" && nickname.length > 0 ? nickname.slice(0, 32) : "",
-      role: role === "boss" ? "boss" : "member",
+      signPub: typeof opts.signPub === "string" ? opts.signPub : null,
+      nickname: typeof opts.nickname === "string" && opts.nickname.length > 0 ? opts.nickname.slice(0, 32) : "",
+      role: opts.role === "boss" ? "boss" : "member",
       joinedAt: new Date(),
     });
   }
   s.lastActivity = Date.now();
-  return true;
+  return { ok: true };
 }
 
 export type RosterEntry = {
   fingerprint: string;
   publicKey: string;
+  /** signing public key (write-once; null for pre-upgrade slots) */
+  signPub: string | null;
   nickname: string;
   role: string;
   joinedAt: string;
@@ -302,6 +373,7 @@ export function listParticipants(code: string): RosterEntry[] {
     .map(([fingerprint, p]) => ({
       fingerprint,
       publicKey: p.publicKey,
+      signPub: p.signPub,
       nickname: p.nickname,
       role: p.role,
       joinedAt: p.joinedAt.toISOString(),
@@ -335,7 +407,10 @@ export function dropPresence(code: string, fingerprint: string) {
 
 // ---------------------------------------------------------------- messages
 
-export function addMessage(code: string, blob: Omit<WireBlob, "createdAt"> & { createdAt?: string }): WireBlob | null {
+export function addMessage(
+  code: string,
+  blob: Omit<WireBlob, "createdAt"> & { createdAt?: string }
+): WireBlob | null {
   const s = getSession(code);
   if (!s) return null;
   const rec: WireBlob & { seq: number } = {
@@ -344,6 +419,7 @@ export function addMessage(code: string, blob: Omit<WireBlob, "createdAt"> & { c
     counter: blob.counter,
     iv: blob.iv,
     ciphertext: blob.ciphertext,
+    sig: typeof blob.sig === "string" && blob.sig.length > 0 ? blob.sig : undefined,
     createdAt: blob.createdAt ?? new Date().toISOString(),
     seq: nextSeq(),
   };
@@ -457,6 +533,7 @@ export const toWire = {
     counter: m.counter,
     iv: m.iv,
     ciphertext: m.ciphertext,
+    ...(m.sig ? { sig: m.sig } : {}),
     createdAt: m.createdAt,
   }),
   envelope: (e: EnvelopeBlob & { seq: number }): EnvelopeBlob & { fromFp: string } => ({

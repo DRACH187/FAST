@@ -20,6 +20,33 @@ type MemberRec = { firstSeen: number; lastSeen: number; visits: number };
 
 const MAX_MEMBERS = 50_000;
 
+/**
+ * NEW-ROW ADMISSION BUDGET (M5 hardening): at most this many brand-new
+ * digests join the roll per minute, process-wide. Beyond the budget a
+ * digest still counts as a visit if known, but cannot mint a fresh row —
+ * a flooding attacker can no longer inflate the all-time total or evict
+ * legitimate members through the coldest-row recycler.
+ */
+const NEW_ROWS_PER_MINUTE = 120;
+
+function admission(): { allowed: boolean } {
+  const g = globalThis as { __fastRollAdmission?: { minute: number; used: number } };
+  const minute = Math.floor(Date.now() / 60_000);
+  const state = g.__fastRollAdmission;
+  if (!state || state.minute !== minute) {
+    g.__fastRollAdmission = { minute, used: 0 };
+    return { allowed: true };
+  }
+  if (state.used >= NEW_ROWS_PER_MINUTE) return { allowed: false };
+  state.used += 1;
+  return { allowed: true };
+}
+
+/** Consume one unit of the new-row admission budget (call before minting). */
+export function admitBudget(): boolean {
+  return admission().allowed;
+}
+
 /** globalThis pinning keeps one roll across dev hot-reloads and route modules. */
 function roll(): Map<string, MemberRec> {
   const g = globalThis as { __fastMemberRoll?: Map<string, MemberRec> };

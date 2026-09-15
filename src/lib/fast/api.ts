@@ -17,6 +17,8 @@ export type WireMessage = {
   counter: number;
   iv: string;
   ciphertext: string;
+  /** M1: sender signature over the sealed envelope (verified by receivers) */
+  sig?: string;
   createdAt: string;
 };
 

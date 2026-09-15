@@ -2,22 +2,30 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  canonicalSignatureBytes,
   decryptMessage,
   decryptPhoto,
   encryptMessage,
   encryptPhoto,
   generateSessionKey,
+  signEnvelope,
   unwrapSessionKey,
+  verifyEnvelopeSignature,
   wrapSessionKeyFor,
+  type SignCurve,
 } from "@/lib/crypto/e2ee";
 import {
   burnPhoto,
   ensureIdentity,
+  ensureSigner,
+  getSigner,
   getSessionKey,
   hasSessionKey,
   markSeen,
   nextCounter,
   observeCounter,
+  observeSignPub,
+  peerSignPub,
   purgeSession,
   stashPending,
   stashPhoto,
@@ -25,6 +33,7 @@ import {
   takePending,
   type DecryptedMessage,
 } from "@/lib/crypto/keyvault";
+import { resetWantedKey } from "@/lib/crypto/wanted-crypto";
 import { api, type WireMessage } from "@/lib/fast/api";
 import { transport, type WireEnvelope } from "@/lib/fast/transport";
 import { toast } from "@/components/fast/toast";
@@ -197,7 +206,32 @@ export function useSessionManager() {
       if (!key) return base; // sealed: key not on this device yet
       try {
         const payload = await decryptMessage(key, code, wire);
-        return { ...base, text: payload.t, ts: payload.ts, counter: wire.counter, sealed: false };
+        // M1 sender authenticity — verify the signature BEFORE the message is
+        // considered trustworthy. States:
+        //   "signed"   — a valid signature from the sender's write-once key
+        //   "unsigned" — no signature or no known sender key (legacy/foreign)
+        //   "invalid"  — a signature was present but does NOT verify: tamper
+        let auth: DecryptedMessage["auth"] = "unsigned";
+        if (wire.sig) {
+          const stored = peerSignPub(code, wire.senderFp);
+          if (stored) {
+            const colon = stored.indexOf(":");
+            const curve = (stored.slice(0, colon) === "ed25519" ? "Ed25519" : "ECDSA-P256") as SignCurve;
+            const bytes = await canonicalSignatureBytes({
+              code,
+              senderFp: wire.senderFp,
+              counter: wire.counter,
+              id: wire.id,
+              iv: wire.iv,
+              ciphertextB64: wire.ciphertext,
+            });
+            const ok = await verifyEnvelopeSignature(curve, stored.slice(colon + 1), wire.sig, bytes);
+            auth = ok ? "signed" : "invalid";
+          } else {
+            auth = "unsigned"; // unknown sender key — cannot verify yet
+          }
+        }
+        return { ...base, text: payload.t, ts: payload.ts, counter: wire.counter, sealed: false, auth };
       } catch {
         // AEAD tag mismatch = tampered or foreign blob — never render it
         return { ...base, failed: true, sealed: false };
@@ -345,8 +379,17 @@ export function useSessionManager() {
       fingerprints: string[];
       members: Record<string, string>;
       roster: Record<string, { nickname: string; role: string }>;
+      signKeys?: { fingerprint: string; signPub: string }[];
     }) => {
       if (!CODE_RE.test(data.code)) return;
+
+      // M1: register every peer signing key we have not seen yet (write-once
+      // in the RAM vault — later conflicts are ignored, matching the server)
+      for (const sk of data.signKeys ?? []) {
+        if (typeof sk.signPub === "string" && /^[a-z0-9-]+:[A-Za-z0-9+/=]+$/.test(sk.signPub)) {
+          observeSignPub(data.code, sk.fingerprint, sk.signPub);
+        }
+      }
 
       // BOSS ENTRY ALERT — diff the LIVE presence list against the previous
       // one (members alone can't be used: the server roster keeps departed
@@ -597,10 +640,13 @@ export function useSessionManager() {
       try {
         // registers the participant + starts the sync loop (throws when the
         // room does not exist and we are not its creator); the attestation
-        // authenticates our callsign for the roster
+        // authenticates our callsign for the roster, the signing key claims
+        // our write-once identity slot (M1)
+        const signer = await ensureSigner();
         const { members } = await transport.join(code, identity.fingerprint, identity.publicB64, {
           create: opts.create,
           attestation: callsignRef.current?.token,
+          signPub: signer.publicWire,
         });
         registered.current.add(code);
         syncExpiry(code);
@@ -733,9 +779,14 @@ export function useSessionManager() {
     restoredIds.current.delete(code);
     void vault.forgetSession(code);
     purgeSession(code); // zero local keys + photo bytes immediately
-    // soft-terminate server-side; every member's next sync evicts itself
+    // soft-terminate server-side; every member's next sync evicts itself.
+    // H3: the attestation proves creator/boss authority to the server.
     try {
-      await transport.terminate(code, identity?.fingerprint ?? "00000000");
+      await transport.terminate(
+        code,
+        identity?.fingerprint ?? "00000000",
+        callsignRef.current?.token
+      );
     } catch {
       /* room may already be gone — local wipe still applies */
     }
@@ -912,7 +963,22 @@ export function useSessionManager() {
       const id = crypto.randomUUID();
       const payload = { t: trimmed, ts: Date.now() };
       const enc = await encryptMessage(key, code, identity.fingerprint, counter, id, payload);
-      const wire: WireMessage = { ...enc, senderFp: identity.fingerprint, createdAt: new Date().toISOString() };
+      // M1: sign the sealed envelope — binds (room, sender, counter, id, iv,
+      // ciphertext) to this tab's signing identity
+      const signer = getSigner();
+      let sig: string | undefined;
+      if (signer) {
+        const bytes = await canonicalSignatureBytes({
+          code,
+          senderFp: identity.fingerprint,
+          counter,
+          id,
+          iv: enc.iv,
+          ciphertextB64: enc.ciphertext,
+        });
+        sig = await signEnvelope(signer, bytes);
+      }
+      const wire: WireMessage = { ...enc, senderFp: identity.fingerprint, createdAt: new Date().toISOString(), ...(sig ? { sig } : {}) };
 
       appendMessages(code, [
         {
@@ -924,6 +990,7 @@ export function useSessionManager() {
           ts: payload.ts,
           createdAt: wire.createdAt,
           counter,
+          auth: sig ? "signed" : "unsigned",
         },
       ]);
 
@@ -938,6 +1005,7 @@ export function useSessionManager() {
             counter: wire.counter,
             iv: wire.iv,
             ciphertext: wire.ciphertext,
+            sig: wire.sig,
           },
           identity.fingerprint
         );
@@ -959,7 +1027,9 @@ export function useSessionManager() {
   const unlock = useCallback(async (passcode: string) => {
     await api.gate(passcode);
     // the passcode stays in RAM for this tab only — it seeds the WANTED-board
-    // content key (PBKDF2) and is never persisted anywhere
+    // content key (PBKDF2) and is never persisted anywhere. The board key is
+    // reset first so the derivation always uses THIS entry's passcode (v2).
+    resetWantedKey();
     stashGatePasscode(passcode);
     const identity = await ensureIdentity();
     identityRef.current = identity;
@@ -1072,8 +1142,10 @@ export function useSessionManager() {
         if (!identity) return;
         try {
           // registers + verifies the room still exists (404 -> gone for everyone)
+          const signer = await ensureSigner();
           const { members } = await transport.join(row.code, identity.fingerprint, identity.publicB64, {
             create: false,
+            signPub: signer.publicWire,
           });
           setSessions((prev) =>
             prev.some((s) => s.code === row.code)

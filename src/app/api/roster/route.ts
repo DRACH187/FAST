@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
+import { json, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import { listRoster } from "@/lib/fast/identity-store";
 
 /**
@@ -20,28 +20,26 @@ import { listRoster } from "@/lib/fast/identity-store";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const bodySchema = z.object({
-  fingerprint: z.string().regex(/^[a-f0-9]{8,64}$/),
-  token: z.string().min(8).max(1024),
-});
+const bodySchema = z
+  .object({
+    fingerprint: z.string().regex(/^[a-f0-9]{8,64}$/),
+    token: z.string().min(8).max(1024),
+  })
+  .strict();
 
 export async function POST(req: Request) {
-  const rl = rateLimit(`roster:${clientIp(req)}`, 20, 60_000);
+  const rl = await rateLimit(req, "roster", 20, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });
   }
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return json({ ok: false, error: "Malformed request" }, 400);
-  }
+  const parsed = await readJson(req, 4_096);
+  if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
 
-  const parsed = bodySchema.safeParse(raw);
-  if (!parsed.success) return json({ ok: false, error: "Invalid payload" }, 400);
+  const check = bodySchema.safeParse(parsed.body);
+  if (!check.success) return json({ ok: false, error: "Invalid payload" }, 400);
 
-  const attested = verifyAttestation(parsed.data.token, parsed.data.fingerprint);
+  const attested = verifyAttestation(check.data.token, check.data.fingerprint);
   if (!attested) {
     return json({ ok: false, error: "Attestation invalid — re-enter the gate." }, 401);
   }

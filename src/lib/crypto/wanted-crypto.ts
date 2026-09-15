@@ -33,8 +33,15 @@ function toBuf(b64: string): Uint8Array<ArrayBuffer> {
   return new Uint8Array(b64ToBuf(b64));
 }
 
-const PBKDF2_ITERATIONS = 310_000;
-const BOARD_SALT = "FAST.WANTED.BOARD.v1.aes256gcm";
+const PBKDF2_ITERATIONS = 600_000;
+/**
+ * v2 BOARD SALT (H2 hardening): the board key is now derived from the
+ * HIGH-ENTROPY gate passphrase (env-configured, never the historical
+ * 3-digit public code) with a fresh versioned salt. Old v1 ciphertext
+ * fails AEAD under the new key and simply never renders — it ages out of
+ * the 24h server retention on its own.
+ */
+const BOARD_SALT = "FAST.WANTED.BOARD.v2.aes256gcm";
 
 /** Ciphertext length buckets for the text envelopes — blunts exact-length
  *  traffic analysis (the observer sees "≤1KB case", not "213 bytes").
@@ -54,7 +61,12 @@ function padJson(obj: Record<string, unknown>): string {
 /** Content payload carried INSIDE the encrypted text envelope. */
 export type WantedStatus = "WANTED" | "ELIMINATED";
 
+/** Explicit content-format version — decrypt refuses anything else. */
+const CONTENT_VERSION = 2;
+
 export type WantedContent = {
+  /** content-format version stamped inside the sealed envelope (v2 board) */
+  wv?: number;
   title: string;
   description: string;
   alias: string;
@@ -164,7 +176,7 @@ async function encryptBytes(bytes: Uint8Array): Promise<{ iv: string; ciphertext
 
 /** Seal the text envelope + every exhibit. Throws when an exhibit is too fat. */
 export async function encryptWantedCase(
-  content: WantedContent,
+  content: Omit<WantedContent, "wv">,
   media: MediaDraft[]
 ): Promise<{ iv: string; ciphertext: string; media: WantedMediaWire[] }> {
   const key = await deriveBoardKey();
@@ -172,7 +184,7 @@ export async function encryptWantedCase(
   const ciphertext = await subtle.encrypt(
     { name: "AES-GCM", iv, tagLength: 128 },
     key,
-    te.encode(padJson(content))
+    te.encode(padJson({ ...content, wv: CONTENT_VERSION }))
   );
 
   const sealed: WantedMediaWire[] = [];
@@ -215,7 +227,10 @@ export async function decryptWantedContent(post: {
       key,
       toBuf(post.ciphertext)
     );
-    const parsed = JSON.parse(td.decode(plain)) as Partial<WantedContent>;
+    const parsed = JSON.parse(td.decode(plain)) as Partial<WantedContent> & { wv?: number };
+    // explicit versioning (spec §9): anything not v2 is refused, never
+    // rendered — old-format blobs simply never appear on the v2 board
+    if (parsed.wv !== CONTENT_VERSION) return null;
     if (typeof parsed.title !== "string" || parsed.title.length === 0) return null;
     return {
       title: String(parsed.title).slice(0, 80),

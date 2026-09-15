@@ -14,7 +14,7 @@
  *    app costs almost nothing on mobile data after the first load.
  */
 
-const VERSION = "fg-v1";
+const VERSION = "fg-v2";
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 const OFFLINE_URLS = ["/", "/manifest.webmanifest", "/fast-logo.png", "/icon-192.png", "/icon-512.png"];

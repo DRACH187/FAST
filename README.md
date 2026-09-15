@@ -18,7 +18,7 @@ runs identically self-hosted.
 
 ```
 SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
-  └─> ACCESS GATE ("187")             constant-time check, rate limited
+  └─> ACCESS GATE (passphrase)        constant-time check, rate limited, lockout
         └─> CALLSIGN LOGIN            nickname — saved/deleted permanently per device
               └─> SESSION HUB         start / join / delete sessions · ALL-TIME ROLL
                     ├─> CHAT (E2EE, multiple sessions at once, 5h auto-wipe)
@@ -64,7 +64,7 @@ SPLASH (FAST GUNS logo + 187 mark, GSAP slam)   ~3.6s — skip by tap
 |---|---|
 | 1 · Crypto | Web Crypto only: ephemeral **X25519** identity per tab (ECDH P-256 fallback), **AES-256-GCM** payloads, **HKDF-SHA256** per-message keys `HKDF(sessionKey, salt=code, info=msg|counter|senderFp)`. AEAD additional-data binds `code\|senderFp\|counter` (tamper ⇒ bubble marked *undecryptable*). |
 | 2 · Transport | **Blind HTTP sync endpoint** (`POST /api/sessions/[code]/sync`) — one serverless function carries presence, message/key/photo deltas, key requests and termination. Validates shapes and size caps; stores **only ciphertext and public material**. Works on any host: no WebSocket servers, no sticky sessions, no database. Ephemeral photos ride the same endpoint in RAM with a hard 60s TTL — forwarded and forgotten. |
-| 3 · Gate | Shared passcode (`187`) verified with `timingSafeEqual` + constant delay + sliding-window rate limit + escalating lockout. |
+| 3 · Gate | High-entropy passphrase (`GATE_PASSCODE` env — no default, fails closed) verified with `timingSafeEqual` + constant delay + sliding-window rate limit + exponentially escalating lockout. |
 | 4 · Data | Server keeps session codes, public keys, `{senderFp, counter, iv, ciphertext}` blobs and wrapped key envelopes **in process memory** (self-healing across cold starts); the all-time roll stores **irreversible salted digests only**, also in RAM. Every device additionally holds its own **ciphertext-only vault** in IndexedDB — chat history is saved locally for every participant and revealed the moment a member re-wraps the key. **Zero key material is ever persisted anywhere. Zero databases exist.** |
 | 5 · Identity | Nicknames are attested: `HMAC(fp|nickname|role|exp, server secret)` tokens ride every join/heartbeat. The reserved DRACH callsign requires the boss key, verified constant-time and never persisted. |
 | 6 · Perimeter | Security headers + strict CSP on every response (`X-Frame-Options`, `nosniff`, `no-referrer`, `Permissions-Policy: camera=(self), geolocation=()`, COOP, `frame-ancestors 'none'`, noindex at header + meta). TLS terminates at the edge in production. |
@@ -123,7 +123,7 @@ bun install
 bun run dev                       # Next.js on :3000 — nothing else to run
 ```
 
-Open the app, wait out the boot ritual, enter `187`.
+Open the app, wait out the boot ritual, enter the gate passphrase. There is no default — configure `GATE_PASSCODE` first (see SECURITY.md).
 
 ### Deploy to Vercel
 
@@ -137,9 +137,12 @@ Production standalone (any Node host): `bun run build && bun run start`.
 
 | Variable | Purpose |
 |---|---|
-| `GATE_PASSCODE` | Optional — overrides the default `187` |
-| `DRACH_KEY` | Optional — boss key for the reserved DRACH callsign (set a secret in production) |
-| `FAST_ATTEST_SECRET` | Optional — HMAC secret for nickname attestation tokens (set a secret in production) |
+| `GATE_PASSCODE` | **REQUIRED** — high-entropy front-door passphrase (≥16 chars in production; burned values rejected) |
+| `DRACH_KEY` | **REQUIRED** — boss key for the reserved DRACH callsign (≥16 chars in production) |
+| `FAST_ATTEST_SECRET` | **REQUIRED** — HMAC root for attestations + capability tokens (≥32 chars in production) |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Optional — enables cluster-wide rate limiting; keys are HMAC digests, raw IPs never leave the app |
+
+The server refuses to boot when a required secret is missing, weak, or matches a known-burned value. See SECURITY.md for the full threat model.
 
 ## Stack
 

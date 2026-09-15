@@ -96,10 +96,16 @@ export async function generateIdentity(): Promise<Identity> {
   return { curve, keyPair, publicB64, fingerprint: await fingerprintOf(publicB64) };
 }
 
-/** SHA-256 fingerprint (first 16 hex chars) of a public key. */
+/**
+ * SHA-256 fingerprint of a public key — first 16 BYTES as 32 hex chars
+ * (128-bit). The fingerprint IS the device's identity on the wire, so it
+ * doubles as a binding: no one can present a different key under a stolen
+ * fingerprint without finding a 128-bit collision. Legacy 16-hex (64-bit)
+ * fingerprints from older clients remain wire-compatible.
+ */
 export async function fingerprintOf(publicB64: string): Promise<string> {
   const digest = await subtle.digest("SHA-256", b64ToBuf(publicB64) as unknown as ArrayBuffer);
-  return Array.from(new Uint8Array(digest).slice(0, 8))
+  return Array.from(new Uint8Array(digest).slice(0, 16))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
@@ -317,6 +323,135 @@ export async function decryptMessage(
   const pt = await aesGcmOpen(key, envelope.iv, envelope.ciphertext, ad);
   const parsed = JSON.parse(td.decode(pt)) as { t: string; ts: number; p?: string };
   return { t: parsed.t, ts: parsed.ts }; // `p` filler never leaves this scope
+}
+
+// ---------------------------------------------------------------------------
+// Sender authenticity (M1) — Ed25519 with ECDSA P-256 fallback
+// ---------------------------------------------------------------------------
+
+export type SignCurve = "Ed25519" | "ECDSA-P256";
+
+/** Protocol version for the signature envelope format. */
+export const SIG_PROTOCOL = "fast.sig.v1";
+
+let cachedSignCurve: SignCurve | null = null;
+
+/** Probe the strongest signature algorithm this browser supports (once). */
+export async function detectSignCurve(): Promise<SignCurve> {
+  if (cachedSignCurve) return cachedSignCurve;
+  try {
+    const kp = await subtle.generateKey({ name: "Ed25519" } as Algorithm, true, [
+      "sign",
+      "verify",
+    ]);
+    cachedSignCurve = "Ed25519";
+    void kp;
+  } catch {
+    cachedSignCurve = "ECDSA-P256";
+  }
+  return cachedSignCurve;
+}
+
+export type SigningIdentity = {
+  curve: SignCurve;
+  keyPair: CryptoKeyPair;
+  /** wire form: "ed25519:<raw b64>" | "ecdsa-p256:<raw b64>" */
+  publicWire: string;
+};
+
+/** Generate the tab's signing identity (distinct from the ECDH identity). */
+export async function generateSigningIdentity(): Promise<SigningIdentity> {
+  const curve = await detectSignCurve();
+  const keyPair =
+    curve === "Ed25519"
+      ? ((await subtle.generateKey({ name: "Ed25519" } as Algorithm, true, [
+          "sign",
+          "verify",
+        ])) as CryptoKeyPair)
+      : ((await subtle.generateKey(
+          { name: "ECDSA", namedCurve: "P-256" },
+          true,
+          ["sign", "verify"]
+        )) as CryptoKeyPair);
+  const raw = await subtle.exportKey("raw", keyPair.publicKey);
+  return {
+    curve,
+    keyPair,
+    publicWire: `${curve === "Ed25519" ? "ed25519" : "ecdsa-p256"}:${bufToB64(raw)}`,
+  };
+}
+
+async function importSignPublic(curve: SignCurve, rawB64: string): Promise<CryptoKey> {
+  if (curve === "Ed25519") {
+    return subtle.importKey("raw", b64ToBuf(rawB64) as unknown as ArrayBuffer, { name: "Ed25519" } as Algorithm, true, [
+      "verify",
+    ]);
+  }
+  return subtle.importKey(
+    "raw",
+    b64ToBuf(rawB64) as unknown as ArrayBuffer,
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["verify"]
+  );
+}
+
+/** Canonical bytes a signature commits to (domain-separated, versioned). */
+export async function canonicalSignatureBytes(parts: {
+  code: string;
+  senderFp: string;
+  counter: number;
+  id: string;
+  iv: string;
+  ciphertextB64: string;
+}): Promise<Uint8Array> {
+  const ctHash = await subtle.digest(
+    "SHA-256",
+    b64ToBuf(parts.ciphertextB64) as unknown as ArrayBuffer
+  );
+  const canonical = `${SIG_PROTOCOL}|${parts.code}|${parts.senderFp}|${parts.counter}|${parts.id}|${parts.iv}|${bufToB64(ctHash)}`;
+  return te.encode(canonical);
+}
+
+/** Sign the canonical envelope bytes with our signing identity. */
+export async function signEnvelope(
+  signer: SigningIdentity,
+  bytes: Uint8Array
+): Promise<string> {
+  const params =
+    signer.curve === "Ed25519"
+      ? ({ name: "Ed25519" } as Algorithm)
+      : { name: "ECDSA", hash: "SHA-256" };
+  const sig = await subtle.sign(params, signer.keyPair.privateKey, bytes as unknown as ArrayBuffer);
+  return bufToB64(sig);
+}
+
+/**
+ * Verify a message signature. Every part of the binding is checked by the
+ * canonical bytes (room, sender fp, counter, id, IV, ciphertext hash) —
+ * cross-room replay, counter substitution and ciphertext stripping all fail.
+ */
+export async function verifyEnvelopeSignature(
+  signerCurve: SignCurve,
+  signerPublicB64: string,
+  signatureB64: string,
+  bytes: Uint8Array
+): Promise<boolean> {
+  try {
+    const pub = await importSignPublic(signerCurve, signerPublicB64);
+    const params =
+      signerCurve === "Ed25519"
+        ? ({ name: "Ed25519" } as Algorithm)
+        : { name: "ECDSA", hash: "SHA-256" };
+    return await subtle.verify(
+      params,
+      pub,
+      b64ToBuf(signatureB64) as unknown as ArrayBuffer,
+      bytes as unknown as ArrayBuffer
+    );
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,30 +1,46 @@
+import { z } from "zod";
 import {
+  circuitBreaker,
   clearGateFailures,
   clientIp,
   gateLockState,
   json,
   rateLimit,
+  readJson,
   registerGateFailure,
   verifyPasscode,
 } from "@/lib/server-guard";
 
 /**
  * Layer 3 slice (front door): the access gate.
- * A single shared passcode ("187") checked in constant time.
+ * A high-entropy passphrase (Tier B — spec §5) verified in constant time.
+ * There is NO default value: if GATE_PASSCODE is not configured the process
+ * fails closed at env validation, long before this route runs (C1).
  *
  * Brute-force defenses, in order:
- *   1. sliding-window rate limit (10 / minute / IP)
- *   2. escalating lockout — 8 failures inside 10 minutes hard-locks the IP
- *      for 10 minutes (success inside the window does NOT shorten it)
- *   3. constant-time comparison + a constant delay on failure
- * In a full enterprise deployment this screen is replaced by
- * Keycloak + WebAuthn passkeys — here it is the lightweight equivalent.
+ *   1. global circuit breaker (per-instance shed)
+ *   2. hard lockout check BEFORE the rate limiter
+ *   3. sliding-window rate limit keyed on the TRUSTED client IP (H1) —
+ *      client-supplied XFF values cannot mint new buckets
+ *   4. escalating lockout — 8 failures inside 10 minutes locks the source
+ *      for 10m, then 30m, 90m, 6h, 24h on repeat offenses
+ *   5. constant-time comparison + constant delay on failure
  */
+
+const bodySchema = z.object({ passcode: z.string().min(1).max(256) }).strict();
+
 export async function POST(req: Request) {
+  const breaker = circuitBreaker("gate", 600);
+  if (breaker.tripped) {
+    return json({ ok: false, error: "Too much noise. Cool down." }, 503, {
+      "Retry-After": String(Math.ceil(breaker.retryAfter)),
+    });
+  }
+
   const ip = clientIp(req);
 
-  // 1. hard lockout check runs BEFORE the rate limiter so locked IPs hear
-  //    about the lockout, not the limiter
+  // 1. hard lockout check runs BEFORE the rate limiter so locked sources
+  //    hear about the lockout, not the limiter
   const lock = gateLockState(ip);
   if (lock.locked) {
     return json({ ok: false, error: "Locked. Try again later." }, 429, {
@@ -32,26 +48,25 @@ export async function POST(req: Request) {
     });
   }
 
-  const rl = rateLimit(`gate:${ip}`, 10, 60_000);
+  const rl = await rateLimit(req, "gate", 10, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Too many attempts. Cool down." }, 429, {
       "Retry-After": String(rl.retryAfter),
     });
   }
 
-  let body: { passcode?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return json({ ok: false, error: "Malformed request" }, 400);
+  const parsed = await readJson(req, 4_096);
+  if (!parsed.ok) {
+    return json({ ok: false, error: parsed.error }, parsed.status);
   }
 
-  if (typeof body.passcode !== "string") {
+  const check = bodySchema.safeParse(parsed.body);
+  if (!check.success) {
     return json({ ok: false, error: "Missing passcode" }, 400);
   }
 
-  if (!verifyPasscode(body.passcode)) {
-    // 2. escalating lockout + small constant delay to blunt online guessing
+  if (!verifyPasscode(check.data.passcode)) {
+    // escalating lockout + small constant delay to blunt online guessing
     registerGateFailure(ip);
     await new Promise((r) => setTimeout(r, 350));
     const after = gateLockState(ip);

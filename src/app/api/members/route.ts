@@ -1,13 +1,19 @@
 import { z } from "zod";
-import { clientIp, json, rateLimit } from "@/lib/server-guard";
+import { json, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import { listLive } from "@/lib/fast/identity-store";
-import { memberTotal, registerMember } from "@/lib/fast/server-roll";
+import { registerMember, memberTotal, admitBudget } from "@/lib/fast/server-roll";
 
 /**
  * ALL-TIME MEMBER ROLL — "how many ouens have ever walked in".
  *
- *   POST { memberHash }  -> join the roll (or tick a visit), returns { total, online }
- *   GET                  -> { total, online }
+ *   POST { memberHash, token }  -> join the roll (or tick a visit), returns { total, online }
+ *   GET                         -> { total, online }
+ *
+ * HARDENING (M5): joining the roll now requires a valid server-signed
+ * callsign attestation, and the server admits at most a bounded number of
+ * NEW digests per minute globally (`admitBudget`). A flooding attacker can
+ * no longer inflate the roll or evict real members via the coldest-row
+ * recycler — repeated known digests only tick their visit counter.
  *
  * ZERO-KNOWLEDGE + ZERO-DATABASE: `memberHash` is a salted SHA-256 digest
  * computed in the browser over a persistent device id + callsign. The
@@ -19,32 +25,39 @@ export const dynamic = "force-dynamic";
 
 const HASH_RE = /^[a-f0-9]{64}$/;
 
-const postSchema = z.object({
-  memberHash: z.string().regex(HASH_RE),
-});
+const postSchema = z
+  .object({
+    memberHash: z.string().regex(HASH_RE),
+    fingerprint: z.string().regex(/^[a-f0-9]{8,64}$/),
+    token: z.string().min(8).max(1024),
+  })
+  .strict();
 
 export async function POST(req: Request) {
-  const rl = rateLimit(`members:${clientIp(req)}`, 30, 60_000);
+  const rl = await rateLimit(req, "members", 30, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Stadig af, ouen." }, 429, { "Retry-After": String(rl.retryAfter) });
   }
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return json({ ok: false, error: "Malformed request" }, 400);
+  const parsed = await readJson(req, 4_096);
+  if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
+
+  const check = postSchema.safeParse(parsed.body);
+  if (!check.success) return json({ ok: false, error: "Invalid member digest" }, 400);
+
+  // the roll counts ATTESTED members only — anonymous digests cannot mint rows
+  const attested = verifyAttestation(check.data.token, check.data.fingerprint);
+  if (!attested) {
+    return json({ ok: false, error: "Attestation invalid — re-enter the gate." }, 401);
   }
 
-  const parsed = postSchema.safeParse(raw);
-  if (!parsed.success) return json({ ok: false, error: "Invalid member digest" }, 400);
-
-  registerMember(parsed.data.memberHash);
+  const admitted = admitBudget();
+  if (admitted) registerMember(check.data.memberHash);
   return json({ ok: true, total: memberTotal(), online: listLive().length });
 }
 
 export async function GET(req: Request) {
-  const rl = rateLimit(`members-q:${clientIp(req)}`, 60, 60_000);
+  const rl = await rateLimit(req, "members-q", 60, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Stadig af, ouen." }, 429, { "Retry-After": String(rl.retryAfter) });
   }

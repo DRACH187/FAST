@@ -622,6 +622,21 @@ function Bubble({ message }: { message: DecryptedMessage }) {
       </div>
     );
   }
+  if (message.auth === "invalid") {
+    // M1: the signature does NOT verify — this blob claims another sender's
+    // identity. The text is never rendered; the tamper attempt is.
+    return (
+      <div
+        ref={ref}
+        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-4 py-3 will-change-transform"
+      >
+        <ShieldAlert className="size-4 shrink-0 text-neutral-300" aria-hidden />
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-300">
+          Vervals — handtekening pas nie
+        </span>
+      </div>
+    );
+  }
   if (message.sealed) {
     return (
       <div
@@ -647,7 +662,15 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     >
       {message.text}
       {clock && (
-        <span className="mt-1 block text-right font-mono text-[10px] tabular-nums text-neutral-400">
+        <span className="mt-1 flex items-center justify-end gap-2 font-mono text-[10px] tabular-nums text-neutral-400">
+          {!message.mine && message.auth === "unsigned" && (
+            <span
+              title="Onverifieer — geen handtekening van hierdie sender nie"
+              className="font-bold uppercase tracking-[0.14em]"
+            >
+              ongeteken
+            </span>
+          )}
           {clock}
         </span>
       )}

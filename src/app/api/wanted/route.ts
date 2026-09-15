@@ -1,35 +1,44 @@
 import { z } from "zod";
-import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
+import {
+  json,
+  mintCapability,
+  rateLimit,
+  readJson,
+  verifyAttestation,
+  verifyCapability,
+} from "@/lib/server-guard";
 
 /**
  * WANTED board — zero-knowledge encrypted CASE FILES.
  * ===================================================
- * The browser seals EVERYTHING with AES-256-GCM (key derived from the gate
- * passcode): the text envelope, every media exhibit (JPEG stills / short
- * clips) and every sakboek comment. This route stores and serves CIPHERTEXT
- * only — it can never read a post, an exhibit, a comment or an author.
+ * The browser seals EVERYTHING with AES-256-GCM (key derived client-side from
+ * the now high-entropy gate passphrase — see wanted-crypto v2). This route
+ * stores and serves CIPHERTEXT only — it can never read a post, an exhibit,
+ * a comment or an author.
+ *
+ * AUTHORIZATION (M2 hardening — capabilities, never bare fingerprints):
+ *   create  -> anyone past the gate; the server mints a MANAGE capability
+ *              (HMAC bound to case id + holder fingerprint + expiry) that
+ *              the creator stores. Knowing the creator's public fingerprint
+ *              no longer grants ANY power.
+ *   attach  -> valid MANAGE capability for that case.
+ *   delete  -> valid MANAGE capability for that case, OR a boss attestation.
+ *   comment -> returns a COMMENT capability bound to the comment id.
+ *   uncomment-> valid COMMENT capability for that comment, OR boss.
+ *   wipe    -> boss attestation required; wiped ids are tombstoned so client
+ *              vault reseed can never resurrect them.
+ *   reseed  -> ciphertext-only restore after a cold restart; tombstones and
+ *              the 24h freshness window always apply.
  *
  *   GET                            -> light list: text ciphertext + media
- *                                     DESCRIPTORS + comments (no media bytes)
- *   GET ?id=..&media=<index>       -> one sealed exhibit (keeps GET light:
- *                                     a board with clips never ships megabytes
- *                                     in one response)
- *   POST create                    -> publish the sealed text envelope
- *   POST attach                     -> upload ONE sealed exhibit (serverless
- *                                     body limits: one per request)
- *   POST comment | uncomment        -> sakboek notes on a case
- *   POST delete                     -> creator (fingerprint match) burns a case
- *   POST wipe                       -> BOSS ONLY: burn the WHOLE board; wiped
- *                                      ids are tombstoned so client vault
- *                                      reseed can never resurrect them
- *   POST reseed                     -> clients re-upload cached ciphertext
- *                                     after a cold restart (self-heal)
+ *                                     descriptors + comments (no media bytes)
+ *   GET ?id=..&media=<index>       -> one sealed exhibit
  *
  * Retention: 24h, enforced on every access + a lazy sweep. Durability:
- * process RAM only — ZERO DATABASE (project law). Client-side reseed covers
- * cold restarts.
+ * process RAM only — ZERO DATABASE (project law).
  */
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const POST_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_POSTS = 200;
@@ -39,6 +48,7 @@ const MAX_MEDIA_CHARS = 3_600_000; // b64 ceiling per exhibit (~2.6MB binary)
 const MAX_MEDIA_TOTAL_CHARS = 96_000_000; // whole-board exhibit budget
 const MAX_COMMENTS_PER_POST = 60;
 const MAX_COMMENT_CHARS = 8_000;
+const MAX_BODY_BYTES = 96_500_000; // attach rides under the board budget
 
 const B64_RE = /^[A-Za-z0-9+/=]+$/;
 const MIME_RE = /^(image\/jpeg|video\/mp4|video\/webm)$/;
@@ -49,61 +59,72 @@ const mediaItemSchema = z.object({
   ciphertext: z.string().max(MAX_MEDIA_CHARS),
   mime: z.string().regex(MIME_RE),
 });
-const legacyImageSchema = z.object({
-  imgIv: z.string().max(512).optional(),
-  imgCiphertext: z.string().max(1_400_000).optional(),
-});
 
-const createSchema = z.object({
-  action: z.literal("create"),
-  fingerprint: fpSchema,
-  post: z.object({
+const createSchema = z
+  .object({
+    action: z.literal("create"),
+    fingerprint: fpSchema,
+    post: z.object({
+      id: z.string().min(8).max(64),
+      iv: z.string().max(512),
+      ciphertext: z.string().max(12_000),
+    }),
+  })
+  .strict();
+
+const attachSchema = z
+  .object({
+    action: z.literal("attach"),
+    fingerprint: fpSchema,
     id: z.string().min(8).max(64),
-    iv: z.string().max(512),
-    ciphertext: z.string().max(12_000),
-  }),
-});
+    index: z.number().int().min(0).max(MAX_MEDIA_PER_POST - 1),
+    cap: z.string().min(8).max(1024).optional(),
+    item: mediaItemSchema,
+  })
+  .strict();
 
-const attachSchema = z.object({
-  action: z.literal("attach"),
-  fingerprint: fpSchema,
-  id: z.string().min(8).max(64),
-  index: z.number().int().min(0).max(MAX_MEDIA_PER_POST - 1),
-  item: mediaItemSchema,
-});
-
-const commentSchema = z.object({
-  action: z.literal("comment"),
-  fingerprint: fpSchema,
-  id: z.string().min(8).max(64),
-  comment: z.object({
+const commentSchema = z
+  .object({
+    action: z.literal("comment"),
+    fingerprint: fpSchema,
     id: z.string().min(8).max(64),
-    iv: z.string().max(512),
-    ciphertext: z.string().max(MAX_COMMENT_CHARS),
-  }),
-});
+    comment: z.object({
+      id: z.string().min(8).max(64),
+      iv: z.string().max(512),
+      ciphertext: z.string().max(MAX_COMMENT_CHARS),
+    }),
+  })
+  .strict();
 
-const uncommentSchema = z.object({
-  action: z.literal("uncomment"),
-  fingerprint: fpSchema,
-  id: z.string().min(8).max(64),
-  commentId: z.string().min(8).max(64),
-});
+const uncommentSchema = z
+  .object({
+    action: z.literal("uncomment"),
+    fingerprint: fpSchema,
+    id: z.string().min(8).max(64),
+    commentId: z.string().min(8).max(64),
+    cap: z.string().min(8).max(1024).optional(),
+    token: z.string().min(8).max(1024).optional(),
+  })
+  .strict();
 
-const deleteSchema = z.object({
-  action: z.literal("delete"),
-  fingerprint: fpSchema,
-  id: z.string().min(8).max(64),
-  // optional boss attestation: the DRACH callsign may burn ANY case
-  token: z.string().min(8).max(1024).optional(),
-});
+const deleteSchema = z
+  .object({
+    action: z.literal("delete"),
+    fingerprint: fpSchema,
+    id: z.string().min(8).max(64),
+    cap: z.string().min(8).max(1024).optional(),
+    token: z.string().min(8).max(1024).optional(),
+  })
+  .strict();
 
-const wipeSchema = z.object({
-  action: z.literal("wipe"),
-  fingerprint: fpSchema,
-  // boss attestation REQUIRED — nobody else may purge the whole board
-  token: z.string().min(8).max(1024),
-});
+const wipeSchema = z
+  .object({
+    action: z.literal("wipe"),
+    fingerprint: fpSchema,
+    // boss attestation REQUIRED — nobody else may purge the whole board
+    token: z.string().min(8).max(1024),
+  })
+  .strict();
 
 const reseedPostSchema = z.object({
   id: z.string().min(8).max(64),
@@ -128,11 +149,13 @@ const reseedPostSchema = z.object({
   createdAt: z.string().max(40),
 });
 
-const reseedSchema = z.object({
-  action: z.literal("reseed"),
-  fingerprint: fpSchema,
-  posts: z.array(reseedPostSchema).max(MAX_RESEED),
-});
+const reseedSchema = z
+  .object({
+    action: z.literal("reseed"),
+    fingerprint: fpSchema,
+    posts: z.array(reseedPostSchema).max(MAX_RESEED),
+  })
+  .strict();
 
 const bodySchema = z.discriminatedUnion("action", [
   createSchema,
@@ -296,7 +319,7 @@ export async function GET(req: Request) {
 
   // single sealed exhibit fetch
   if (id && mediaIndex !== null) {
-    const rl = rateLimit(`wanted-media:${clientIp(req)}`, 240, 60_000);
+    const rl = await rateLimit(req, "wanted-media", 240, 60_000);
     if (!rl.ok) {
       return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });
     }
@@ -312,7 +335,7 @@ export async function GET(req: Request) {
     return json({ ok: true, iv: item.iv, ciphertext: item.ciphertext, mime: item.mime });
   }
 
-  const rl = rateLimit(`wanted:${clientIp(req)}`, 90, 60_000);
+  const rl = await rateLimit(req, "wanted", 90, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });
   }
@@ -326,21 +349,17 @@ export async function GET(req: Request) {
 // ------------------------------------------------------------------- POST
 
 export async function POST(req: Request) {
-  const rl = rateLimit(`wanted-post:${clientIp(req)}`, 40, 60_000);
+  const rl = await rateLimit(req, "wanted-post", 40, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });
   }
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return json({ ok: false, error: "Malformed request" }, 400);
-  }
+  const parsed = await readJson(req, MAX_BODY_BYTES);
+  if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
 
-  const parsed = bodySchema.safeParse(raw);
-  if (!parsed.success) return json({ ok: false, error: "Invalid payload" }, 400);
-  const body = parsed.data;
+  const check = bodySchema.safeParse(parsed.body);
+  if (!check.success) return json({ ok: false, error: "Invalid payload" }, 400);
+  const body = check.data;
 
   if (body.action === "create") {
     sweep();
@@ -351,14 +370,17 @@ export async function POST(req: Request) {
     const now = Date.now();
     const rec = makeRec(p, body.fingerprint, now);
     memory.set(rec.id, rec);
-    return json({ ok: true, id: rec.id, expiresAt: toWire(rec).expiresAt });
+    // mint the creator's MANAGE capability — bearer token for this case only
+    const cap = mintCapability("manage", rec.id, body.fingerprint);
+    return json({ ok: true, id: rec.id, expiresAt: toWire(rec).expiresAt, cap: cap.token, capExpiresAt: cap.expiresAt });
   }
 
   if (body.action === "attach") {
     sweep();
     const rec = memory.get(body.id);
     if (!rec) return json({ ok: false, error: "Case gone." }, 404);
-    if (rec.creatorFp !== body.fingerprint) {
+    // MANAGE capability or nothing (M2: a stolen fingerprint grants nothing)
+    if (!verifyCapability(body.cap, "manage", body.id, body.fingerprint)) {
       return json({ ok: false, error: "Only the poster can build this case." }, 403);
     }
     const ok = putMedia(rec, body.index, body.item);
@@ -379,17 +401,27 @@ export async function POST(req: Request) {
       createdAt: now,
     });
     if (!ok) return json({ ok: false, error: "Sakboek is vol." }, 413);
-    return json({ ok: true });
+    // mint the author's COMMENT capability for this one note
+    const cap = mintCapability("uncomment", body.comment.id, body.fingerprint);
+    return json({ ok: true, cap: cap.token, capExpiresAt: cap.expiresAt });
   }
 
   if (body.action === "uncomment") {
     sweep();
     const rec = memory.get(body.id);
     if (!rec) return json({ ok: true, deleted: true });
+    // author capability, or an attested boss
+    const capOk = body.cap
+      ? verifyCapability(body.cap, "uncomment", body.commentId, body.fingerprint)
+      : false;
+    const bossOk = body.token
+      ? verifyAttestation(body.token, body.fingerprint)?.role === "boss"
+      : false;
+    if (!capOk && !bossOk) {
+      return json({ ok: false, error: "Not your note." }, 403);
+    }
     const before = rec.comments.length;
-    rec.comments = rec.comments.filter(
-      (c) => !(c.id === body.commentId && c.creatorFp === body.fingerprint)
-    );
+    rec.comments = rec.comments.filter((c) => c.id !== body.commentId);
     return json({ ok: true, deleted: rec.comments.length !== before });
   }
 
@@ -445,17 +477,20 @@ export async function POST(req: Request) {
     return json({ ok: true, wiped });
   }
 
-  // delete — the creator's fingerprint must match, OR the requester carries
-  // a valid BOSS attestation (DRACH moderation). Public material compare only.
+  // delete — MANAGE capability for this case, or an attested boss.
+  // (M2: the creator's fingerprint is public and grants nothing by itself.)
   const rec = memory.get(body.id);
   if (!rec) {
     return json({ ok: true, deleted: true }); // already gone — idempotent burn
   }
-  if (rec.creatorFp !== body.fingerprint) {
-    const attested = body.token ? verifyAttestation(body.token, body.fingerprint) : null;
-    if (!attested || attested.role !== "boss") {
-      return json({ ok: false, error: "Only the poster or the boss can burn this." }, 403);
-    }
+  const capOk = body.cap
+    ? verifyCapability(body.cap, "manage", body.id, body.fingerprint)
+    : false;
+  const bossOk = body.token
+    ? verifyAttestation(body.token, body.fingerprint)?.role === "boss"
+    : false;
+  if (!capOk && !bossOk) {
+    return json({ ok: false, error: "Only the poster or the boss can burn this." }, 403);
   }
   tombstone(body.id);
   for (const m of rec.media) {

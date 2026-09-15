@@ -13,7 +13,7 @@
  *    rendered as a sealed block (zero-knowledge join).
  */
 
-import type { Identity, MessageEnvelope } from "./e2ee";
+import type { Identity, MessageEnvelope, SigningIdentity } from "./e2ee";
 
 export type DecryptedMessage = {
   id: string;
@@ -28,10 +28,14 @@ export type DecryptedMessage = {
   sealed?: boolean; // arrived before this device held the session key
   kind?: "text" | "photo"; // photos are ephemeral RAM-only bullets
   photoId?: string; // key into the RAM photo store (never persisted)
+  /** M1 sender-authenticity state for display + filtering */
+  auth?: "signed" | "unsigned" | "invalid";
 };
 
 const vault = {
   identity: null as Identity | null,
+  /** M1: tab signing identity — signs every message this device sends */
+  signer: null as SigningIdentity | null,
   /**
    * The gate passcode, held in RAM for the lifetime of this tab only. It
    * seeds the WANTED-board content key (PBKDF2 client-side) so the board
@@ -52,6 +56,8 @@ const vault = {
   photoBytes: new Map<string, Uint8Array>(),
   /** code -> Set<photoId> so purgeSession can zero a session's photos */
   photosBySession: new Map<string, Set<string>>(),
+  /** code -> (fp -> signer public wire) — write-once peer signing keys */
+  signPubs: new Map<string, Map<string, string>>(),
 };
 
 // -- ephemeral photos (RAM-only, burn-after-view) -----------------------------
@@ -124,6 +130,39 @@ export async function ensureIdentity(): Promise<Identity> {
     vault.identity = await generateIdentity();
   }
   return vault.identity;
+}
+
+// -- signing identity (M1) ---------------------------------------------------
+
+/** Lazily generate the tab's signing identity (Ed25519, ECDSA fallback). */
+export async function ensureSigner(): Promise<SigningIdentity> {
+  if (!vault.signer) {
+    const { generateSigningIdentity } = await import("./e2ee");
+    vault.signer = await generateSigningIdentity();
+  }
+  return vault.signer;
+}
+
+export function getSigner(): SigningIdentity | null {
+  return vault.signer;
+}
+
+/**
+ * Record a peer's signing public key (write-once per session per fp —
+ * mirrors the server's slot semantics; conflicts never overwrite).
+ */
+export function observeSignPub(code: string, fp: string, signPubWire: string): void {
+  let room = vault.signPubs.get(code);
+  if (!room) {
+    room = new Map();
+    vault.signPubs.set(code, room);
+  }
+  if (!room.has(fp)) room.set(fp, signPubWire);
+}
+
+/** The stored signing key for a peer (or null). */
+export function peerSignPub(code: string, fp: string): string | null {
+  return vault.signPubs.get(code)?.get(fp) ?? null;
 }
 
 // -- session keys ------------------------------------------------------------
@@ -204,6 +243,7 @@ export function purgeSession(code: string) {
   vault.keyReceivedAt.delete(code);
   vault.pending.delete(code);
   vault.seen.delete(code);
+  vault.signPubs.delete(code);
   burnSessionPhotos(code);
 }
 

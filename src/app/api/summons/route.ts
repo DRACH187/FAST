@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { clientIp, json, rateLimit, verifyAttestation } from "@/lib/server-guard";
+import { json, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import { postSummons } from "@/lib/fast/summons";
 
 /**
@@ -22,29 +22,27 @@ export const runtime = "nodejs";
 const CODE_RE = /^[A-Z]{6}$/;
 const MAX_TARGETS = 100;
 
-const bodySchema = z.object({
-  fingerprint: z.string().regex(/^[a-f0-9]{8,64}$/),
-  token: z.string().min(8).max(1024),
-  code: z.string().regex(CODE_RE),
-  targets: z.array(z.string().regex(/^[a-f0-9]{8,64}$/)).min(1).max(MAX_TARGETS),
-});
+const bodySchema = z
+  .object({
+    fingerprint: z.string().regex(/^[a-f0-9]{8,64}$/),
+    token: z.string().min(8).max(1024),
+    code: z.string().regex(CODE_RE),
+    targets: z.array(z.string().regex(/^[a-f0-9]{8,64}$/)).min(1).max(MAX_TARGETS),
+  })
+  .strict();
 
 export async function POST(req: Request) {
-  const rl = rateLimit(`summons:${clientIp(req)}`, 10, 60_000);
+  const rl = await rateLimit(req, "summons", 10, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });
   }
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return json({ ok: false, error: "Malformed request" }, 400);
-  }
+  const parsed = await readJson(req, 32_768);
+  if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
 
-  const parsed = bodySchema.safeParse(raw);
-  if (!parsed.success) return json({ ok: false, error: "Invalid payload" }, 400);
-  const { fingerprint, token, code, targets } = parsed.data;
+  const check = bodySchema.safeParse(parsed.body);
+  if (!check.success) return json({ ok: false, error: "Invalid payload" }, 400);
+  const { fingerprint, token, code, targets } = check.data;
 
   const attested = verifyAttestation(token, fingerprint);
   if (!attested) {

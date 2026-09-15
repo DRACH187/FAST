@@ -63,6 +63,13 @@ import {
 import { clearVault, loadVault, saveVault, upsertWire } from "@/lib/crypto/wanted-vault";
 import { getGatePasscode } from "@/lib/crypto/keyvault";
 import {
+  forgetCase,
+  getCommentCap,
+  getManageCap,
+  storeCommentCap,
+  storeManageCap,
+} from "@/lib/fast/wanted-caps";
+import {
   WANTED_ADD_MEDIA,
   WANTED_CASE_COUNT,
   WANTED_CASE_EMPTY,
@@ -527,13 +534,20 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
         }),
         cache: "no-store",
       });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        cap?: string;
+      };
       if (!res.ok || data.ok !== true) {
         toast.error(typeof data.error === "string" ? data.error : "Kon nie plaas nie");
         return;
       }
+      // the MANAGE capability is this device's only delete/attach authority
+      if (typeof data.cap === "string") storeManageCap(id, data.cap);
       // exhibits ride one per request (serverless body limits)
       let exhibitsDropped = 0;
+      const manageCap = getManageCap(id);
       for (let i = 0; i < sealed.media.length; i++) {
         const item = sealed.media[i];
         if (item.ciphertext.length > MAX_MEDIA_CIPHER_CHARS) {
@@ -549,6 +563,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               fingerprint: myFp,
               id,
               index: i,
+              cap: manageCap,
               item: { iv: item.iv, ciphertext: item.ciphertext, mime: item.mime },
             }),
             cache: "no-store",
@@ -588,6 +603,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
               action: "delete",
               fingerprint: myFp,
               id: entry.wire.id,
+              cap: getManageCap(entry.wire.id),
               token: myToken || undefined,
             }),
           cache: "no-store",
@@ -597,6 +613,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           toast.error(typeof data.error === "string" ? data.error : "Kon nie brand nie");
           return;
         }
+        forgetCase(entry.wire.id);
         toast.success("Afgehaal — vir almal, vir goed");
         setDetailId(null);
         await fetchBoard();
@@ -617,6 +634,7 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
           by: myNickname,
           byRole: myRole,
         } satisfies WantedComment);
+      const bodyCommentId = crypto.randomUUID();
         const res = await fetch(LIST_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -624,14 +642,17 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
             action: "comment",
             fingerprint: myFp,
             id: entry.wire.id,
-            comment: { id: crypto.randomUUID(), ...sealed },
+            comment: { id: bodyCommentId, ...sealed },
           }),
           cache: "no-store",
         });
-        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; cap?: string };
         if (!res.ok || data.ok !== true) {
           toast.error(typeof data.error === "string" ? data.error : "Kon nie skryf nie");
           return;
+        }
+        if (typeof data.cap === "string" && typeof bodyCommentId === "string") {
+          storeCommentCap(bodyCommentId, data.cap);
         }
         toast.success(WANTED_COMMENT_POSTED);
         await fetchBoard();
@@ -653,6 +674,8 @@ export function WantedScreen({ open, onClose, myFp, myNickname, myRole, myToken 
             fingerprint: myFp,
             id: entry.wire.id,
             commentId,
+            cap: getCommentCap(commentId),
+            token: myToken || undefined,
           }),
           cache: "no-store",
         });

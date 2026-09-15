@@ -38,6 +38,9 @@ export type WirePhoto = {
   createdAt: string;
 };
 
+/** M1: a peer's write-once signing public key ("ed25519:..." | "ecdsa-p256:..."). */
+export type WireSignKey = { fingerprint: string; signPub: string };
+
 type Cursors = { msg: number; env: number; photo: number };
 
 export type RosterEntry = { fingerprint: string; nickname: string; role: string };
@@ -55,6 +58,7 @@ type DeltaBody = {
   presence?: string[];
   members?: { fingerprint: string; publicKey: string }[];
   roster?: RosterEntry[];
+  signKeys?: WireSignKey[];
   keyRequests?: string[];
   messages?: WireMessage[];
   envelopes?: WireEnvelope[];
@@ -70,6 +74,7 @@ export type TransportEvents = {
     fingerprints: string[];
     members: Record<string, string>;
     roster: Record<string, { nickname: string; role: string }>;
+    signKeys?: WireSignKey[];
   };
   messages: { code: string; messages: WireMessage[]; initial: boolean };
   key: { code: string; envelopes: WireEnvelope[] };
@@ -134,7 +139,14 @@ class Transport {
     code: string,
     fingerprint: string,
     publicKey: string,
-    opts: { create?: boolean; nickname?: string; role?: string; attestation?: string } = {}
+    opts: {
+      create?: boolean;
+      nickname?: string;
+      role?: string;
+      attestation?: string;
+      /** M1: this tab's signing public key (write-once slot on the server) */
+      signPub?: string;
+    } = {}
   ): Promise<{ alive: boolean; members: Record<string, string> }> {
     const body = await this.rpc(code, {
       action: "join",
@@ -142,6 +154,7 @@ class Transport {
       publicKey,
       create: opts.create === true,
       attestation: typeof opts.attestation === "string" ? opts.attestation.slice(0, 1024) : "",
+      signPub: typeof opts.signPub === "string" ? opts.signPub.slice(0, 256) : undefined,
       cursors: this.cursors.get(code) ?? { msg: 0, env: 0, photo: 0 },
     });
 
@@ -167,9 +180,15 @@ class Transport {
     }
   }
 
-  async terminate(code: string, fingerprint: string) {
+  async terminate(code: string, fingerprint: string, attestation?: string) {
     this.stop(code);
-    await this.rpc(code, { action: "terminate", fingerprint });
+    // H3: termination is creator/boss-only — the attestation rides along so
+    // the server can authorize the actor
+    await this.rpc(code, {
+      action: "terminate",
+      fingerprint,
+      attestation: typeof attestation === "string" ? attestation.slice(0, 1024) : "",
+    });
   }
 
   /** Re-pull the full transcript (used right after a key adoption so blobs
@@ -208,7 +227,18 @@ class Transport {
   // ------------------------------------------------------------- mutations
 
   async postMessage(code: string, wire: Omit<WireMessage, "createdAt">, fingerprint: string) {
-    const body = await this.rpc(code, { action: "msg", fingerprint, message: wire });
+    const body = await this.rpc(code, {
+      action: "msg",
+      fingerprint,
+      message: {
+        id: wire.id,
+        senderFp: wire.senderFp,
+        counter: wire.counter,
+        iv: wire.iv,
+        ciphertext: wire.ciphertext,
+        sig: typeof wire.sig === "string" ? wire.sig.slice(0, 1024) : undefined,
+      },
+    });
     this.dispatch(code, body);
     if (!body.alive) throw new Error("Session no longer exists (404)");
   }
@@ -341,7 +371,9 @@ class Transport {
         .join(",")}`;
       if (this.seenPresence.get(code) !== sig) {
         this.seenPresence.set(code, sig);
-        this.handlers.presence.forEach((h) => h({ code, fingerprints: presence, members, roster }));
+        this.handlers.presence.forEach((h) =>
+          h({ code, fingerprints: presence, members, roster, signKeys: body.signKeys })
+        );
       }
     }
 
@@ -381,7 +413,9 @@ class Transport {
     const data = (await res.json().catch(() => ({}))) as DeltaBody;
     if (!res.ok || data.ok !== true) {
       const message =
-        typeof data.error === "string" ? data.error : `Sync failed (${res.status})`;
+        typeof data.error === "string" && data.error.length <= 120
+          ? data.error
+          : `Sync failed (${res.status})`;
       throw new Error(message);
     }
     return data;

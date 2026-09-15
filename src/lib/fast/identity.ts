@@ -121,8 +121,9 @@ export async function registerCallsign(
     };
   }
   // All-time member ledger — every registered callsign joins the permanent
-  // roll (hashed, zero-knowledge). Fire-and-forget: never blocks the login.
-  void registerMember(data.nickname);
+  // roll (hashed, zero-knowledge, attested per M5). Fire-and-forget: never
+  // blocks the login.
+  void registerMember(data.nickname, fingerprint, data.token);
 
   return {
     ok: true,
