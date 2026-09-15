@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { z } from "zod";
 import {
   json,
+  missingConfigResponse,
   rateLimit,
   readJson,
   verifyAttestation,
@@ -130,6 +131,8 @@ function fpMatchesKey(fp: string, publicB64: string): boolean {
 }
 
 export async function POST(req: Request, { params }: Ctx) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
   const { code: rawCode } = await params;
   const code = typeof rawCode === "string" ? rawCode.toUpperCase() : "";
   if (!CODE_RE.test(code)) return json({ ok: false, error: "Bad code" }, 400);

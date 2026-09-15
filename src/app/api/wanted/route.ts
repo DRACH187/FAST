@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   json,
   mintCapability,
+  missingConfigResponse,
   rateLimit,
   readJson,
   verifyAttestation,
@@ -349,6 +350,8 @@ export async function GET(req: Request) {
 // ------------------------------------------------------------------- POST
 
 export async function POST(req: Request) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
   const rl = await rateLimit(req, "wanted-post", 40, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Slow down." }, 429, { "Retry-After": String(rl.retryAfter) });

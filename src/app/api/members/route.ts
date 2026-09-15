@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
+import { json, missingConfigResponse, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import { listLive } from "@/lib/fast/identity-store";
 import { registerMember, memberTotal, admitBudget } from "@/lib/fast/server-roll";
 
@@ -34,6 +34,8 @@ const postSchema = z
   .strict();
 
 export async function POST(req: Request) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
   const rl = await rateLimit(req, "members", 30, 60_000);
   if (!rl.ok) {
     return json({ ok: false, error: "Stadig af, ouen." }, 429, { "Retry-After": String(rl.retryAfter) });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   clientIp,
   json,
+  missingConfigResponse,
   rateLimit,
   readJson,
   signAttestation,
@@ -32,6 +33,9 @@ const postSchema = z
   .strict();
 
 export async function POST(req: Request) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
+
   // registration is rare — tight limit
   const rl = await rateLimit(req, "identity", 12, 60_000);
   if (!rl.ok) {

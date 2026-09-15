@@ -127,8 +127,20 @@ Open the app, wait out the boot ritual, enter the gate passphrase. There is no d
 
 ### Deploy to Vercel
 
-Push this repo to GitHub and import it in Vercel — zero configuration. Chat
-state lives in the sync function's memory (rooms self-heal across cold
+1. Push this repo to GitHub (e.g. `DRACH187/FAST`) — Vercel deploys on every
+   push to the connected branch.
+2. In the Vercel dashboard open the project → **Settings → Environment
+   Variables** and set the three REQUIRED values from the table below for
+   **Production** (and Preview if you use it).
+3. **Deployments → Redeploy** so the running build picks the variables up
+   (env vars are baked at build/runtime start — a redeploy is required after
+   adding them).
+4. If anything is misconfigured the API refuses to serve with one clear
+   message — `SERVER NOT CONFIGURED — set GATE_PASSCODE, DRACH_KEY and
+   FAST_ATTEST_SECRET…` (HTTP 503) — instead of an opaque 500. The exact
+   validation reason is in the deployment **Runtime Logs**.
+
+Chat state lives in the sync function's memory (rooms self-heal across cold
 starts) and each device keeps its own encrypted history vault.
 
 Production standalone (any Node host): `bun run build && bun run start`.
@@ -137,9 +149,9 @@ Production standalone (any Node host): `bun run build && bun run start`.
 
 | Variable | Purpose |
 |---|---|
-| `GATE_PASSCODE` | **REQUIRED** — high-entropy front-door passphrase (≥16 chars in production; burned values rejected) |
-| `DRACH_KEY` | **REQUIRED** — boss key for the reserved DRACH callsign (≥16 chars in production) |
-| `FAST_ATTEST_SECRET` | **REQUIRED** — HMAC root for attestations + capability tokens (≥32 chars in production) |
+| `GATE_PASSCODE` | **REQUIRED** — front-door passcode. OWNER DECISION: the house mark `187` is accepted (exact value only — see SECURITY.md §11). Any other value must pass the burned/weak/length rules (≥16 chars in production) |
+| `DRACH_KEY` | **REQUIRED** — boss key for the reserved DRACH callsign. OWNER DECISION: `BIGBOSS27` is accepted (exact value only — see SECURITY.md §11). Any other value must pass the full strength rules (≥16 chars in production) |
+| `FAST_ATTEST_SECRET` | **REQUIRED** — HMAC root for attestations + capability tokens (≥32 chars in production; no owner carve-out — use a strong random value) |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Optional — enables cluster-wide rate limiting; keys are HMAC digests, raw IPs never leave the app |
 
 The server refuses to boot when a required secret is missing, weak, or matches a known-burned value. See SECURITY.md for the full threat model.

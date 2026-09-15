@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "crypto";
-import { attestSecret, drachKey, gatePasscode, keyedDigest } from "@/lib/server-env";
+import { assertSecretsLoaded, attestSecret, drachKey, gatePasscode, keyedDigest } from "@/lib/server-env";
 
 /**
  * Layer 4/5 — server security primitives (single source of truth).
@@ -423,4 +423,29 @@ export function json(body: unknown, status = 200, headers: Record<string, string
     status,
     headers: { "Cache-Control": "no-store", ...headers },
   });
+}
+
+/**
+ * Deployment config guard — fail closed, but DIAGNOSABLY.
+ * A half-configured deployment (e.g. Vercel project without environment
+ * variables) used to surface as an opaque 500 from wherever a secret was
+ * first touched. This guard pre-flights all three secrets and turns the
+ * failure into one clear 503 instead. Security posture is unchanged: the
+ * endpoint still refuses to serve. The exact validation reason is in the
+ * server logs only — never echoed to the client.
+ */
+export function missingConfigResponse(): Response | null {
+  try {
+    assertSecretsLoaded();
+    return null;
+  } catch {
+    return json(
+      {
+        ok: false,
+        error:
+          "SERVER NOT CONFIGURED — set GATE_PASSCODE, DRACH_KEY and FAST_ATTEST_SECRET in the deployment environment (see the deployment logs for the exact validation error).",
+      },
+      503
+    );
+  }
 }

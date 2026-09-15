@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
+import { json, missingConfigResponse, rateLimit, readJson, verifyAttestation } from "@/lib/server-guard";
 import * as ids from "@/lib/fast/identity-store";
 import { takeSummons } from "@/lib/fast/summons";
 
@@ -28,6 +28,8 @@ const bodySchema = z
   .strict();
 
 export async function POST(req: Request) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
   // ~8s heartbeat cadence -> 30/min is generous headroom
   const rl = await rateLimit(req, "presence", 30, 60_000);
   if (!rl.ok) {

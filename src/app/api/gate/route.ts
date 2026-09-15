@@ -5,6 +5,7 @@ import {
   clientIp,
   gateLockState,
   json,
+  missingConfigResponse,
   rateLimit,
   readJson,
   registerGateFailure,
@@ -30,6 +31,9 @@ import {
 const bodySchema = z.object({ passcode: z.string().min(1).max(256) }).strict();
 
 export async function POST(req: Request) {
+  const missing = missingConfigResponse();
+  if (missing) return missing;
+
   const breaker = circuitBreaker("gate", 600);
   if (breaker.tripped) {
     return json({ ok: false, error: "Too much noise. Cool down." }, 503, {
