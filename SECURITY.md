@@ -246,3 +246,36 @@ It grants: DIE WERF ROL roster rights, boss summon, board wipe. It is NOT a
 crypto root and never derives keys. Implementation: explicit carve-out for
 the exact value "BIGBOSS27" on DRACH_KEY ONLY in `server-env.ts`; all other
 secrets keep the full burned/weak/length rules.
+
+**Built-in house credentials — zero-configuration deployments (owner mandate,
+second pass).** The owner has now ordered that the app must work with NO
+environment variables at all ("remove the SERVER NOT CONFIGURED wall"). From
+this release, `server-env.ts` carries OWNER_FALLBACKS: when a variable is
+missing/empty, the built-in house value is used.
+
+- `GATE_PASSCODE` → `187` (the house mark, as above)
+- `DRACH_KEY` → `BIGBOSS27` (the boss key, as above)
+- `FAST_ATTEST_SECRET` → a fixed owner-supplied random value (32 chars)
+
+Consequences, recorded honestly because the repository is PUBLIC:
+
+1. All three built-ins are PUBLIC KNOWLEDGE. Anyone who can read this repo
+   can read them. The gate and the boss key were already accepted as public
+   by earlier owner decisions; this is more of the same, not new in kind.
+2. The attestation root being public means the anti-impersonation layer
+   (HMAC callsign attestations) and the capability-token layer (WANTED board
+   manage/comment caps) are now ANTI-CASUAL-ABUSE only. A reader of the repo
+   can mint valid attestations/capabilities. What this does NOT touch:
+   message secrecy — session keys are E2EE (X25519 + HKDF + AES-GCM) and
+   never derive from any of these values. Chat content stays sealed.
+3. Residual value of the gate/attestations: rate limits, lockouts, flood
+   control, casual blinding of the WANTED board. That is the owner's stated
+   goal (a themed friends-and-family app, not a bank).
+4. Escape hatch preserved: environment variables ALWAYS override built-ins,
+   and an override that fails validation fails CLOSED (the process refuses
+   to serve with an override it considers burned/weak — it never silently
+   falls back). Setting real random values in the Vercel dashboard instantly
+   restores the stronger posture; nothing else changes.
+5. Implementation location: `OWNER_FALLBACKS` in `src/lib/server-env.ts`,
+   applied only when `process.env` is missing/empty; the 503 config guard in
+   `server-guard.ts` now only fires on genuinely invalid credentials.

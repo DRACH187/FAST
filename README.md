@@ -123,22 +123,23 @@ bun install
 bun run dev                       # Next.js on :3000 — nothing else to run
 ```
 
-Open the app, wait out the boot ritual, enter the gate passphrase. There is no default — configure `GATE_PASSCODE` first (see SECURITY.md).
+Open the app, wait out the boot ritual, enter the gate code `187`. (The house
+credentials are built in — see the Environment table and SECURITY.md §11.)
 
 ### Deploy to Vercel
 
 1. Push this repo to GitHub (e.g. `DRACH187/FAST`) — Vercel deploys on every
-   push to the connected branch.
-2. In the Vercel dashboard open the project → **Settings → Environment
-   Variables** and set the three REQUIRED values from the table below for
-   **Production** (and Preview if you use it).
-3. **Deployments → Redeploy** so the running build picks the variables up
-   (env vars are baked at build/runtime start — a redeploy is required after
-   adding them).
-4. If anything is misconfigured the API refuses to serve with one clear
-   message — `SERVER NOT CONFIGURED — set GATE_PASSCODE, DRACH_KEY and
-   FAST_ATTEST_SECRET…` (HTTP 503) — instead of an opaque 500. The exact
-   validation reason is in the deployment **Runtime Logs**.
+   push to the connected branch. **That's it.** The app ships with built-in
+   house credentials (owner mandate, SECURITY.md §11), so a fresh Vercel
+   import works with ZERO environment variables: gate `187`, boss key
+   `BIGBOSS27`, attest root built in.
+2. Optional hardening: set your OWN values for the three variables below in
+   **Settings → Environment Variables**, then **Deployments → Redeploy**.
+   Overrides must pass the strength rules; an invalid override fails closed
+   (clear 503, exact reason in the Runtime Logs).
+3. If you ever see `SERVER CONFIGURATION ERROR` (HTTP 503): the credentials
+   in play failed validation — check the deployment logs. On default
+   settings this cannot happen; it means a bad override was set.
 
 Chat state lives in the sync function's memory (rooms self-heal across cold
 starts) and each device keeps its own encrypted history vault.
@@ -149,12 +150,15 @@ Production standalone (any Node host): `bun run build && bun run start`.
 
 | Variable | Purpose |
 |---|---|
-| `GATE_PASSCODE` | **REQUIRED** — front-door passcode. OWNER DECISION: the house mark `187` is accepted (exact value only — see SECURITY.md §11). Any other value must pass the burned/weak/length rules (≥16 chars in production) |
-| `DRACH_KEY` | **REQUIRED** — boss key for the reserved DRACH callsign. OWNER DECISION: `BIGBOSS27` is accepted (exact value only — see SECURITY.md §11). Any other value must pass the full strength rules (≥16 chars in production) |
-| `FAST_ATTEST_SECRET` | **REQUIRED** — HMAC root for attestations + capability tokens (≥32 chars in production; no owner carve-out — use a strong random value) |
+| `GATE_PASSCODE` | Optional override — built-in: the house mark `187` (owner decision, SECURITY.md §11). Any other value must pass the burned/weak/length rules (≥16 chars in production). Seeds the WANTED-board content key client-side |
+| `DRACH_KEY` | Optional override — built-in: `BIGBOSS27` (owner decision). Boss key for the reserved DRACH callsign; other values need full strength (≥16 chars in production) |
+| `FAST_ATTEST_SECRET` | Optional override — built-in: a fixed owner-supplied value (public in this repo). Set your own `openssl rand -hex 32` value to restore real attestation/capability secrecy |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Optional — enables cluster-wide rate limiting; keys are HMAC digests, raw IPs never leave the app |
 
-The server refuses to boot when a required secret is missing, weak, or matches a known-burned value. See SECURITY.md for the full threat model.
+The server runs with zero configuration (built-in house credentials, owner
+decision — SECURITY.md §11). Setting overrides is optional; an override that
+is burned, weak, or too short fails closed. See SECURITY.md for the full
+threat model.
 
 ## Stack
 

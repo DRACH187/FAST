@@ -26,7 +26,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 const OVERLAY_TITLE = "DIE WERF IS TOE";
-const OVERLAY_SUB = "Jy krap aan die werf se mure, boetie. Maak dit toe of bly buite in die koue.";
+const OVERLAY_SUB = "Jy krap aan die werf se mure, boetie. Maak dit toe of gaan le saam met die res.";
 
 export function Lockdown() {
   const [devtoolsOpen, setDevtoolsOpen] = useState(false);

@@ -487,7 +487,7 @@ export function HubScreen({
             <Copy className="size-5 shrink-0 text-neutral-400" aria-hidden />
           </button>
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-bold text-neutral-300">Wie die kode het, kom in. Wie nie, kak af en bly buite.</p>
+            <p className="text-sm font-bold text-neutral-300">Wie die kode het, kom in. Wie nie, fokkof en kak af.</p>
             <p className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-500">
               Hierdie werf vee homself uit ná 5 uur
             </p>

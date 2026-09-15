@@ -426,13 +426,13 @@ export function json(body: unknown, status = 200, headers: Record<string, string
 }
 
 /**
- * Deployment config guard — fail closed, but DIAGNOSABLY.
- * A half-configured deployment (e.g. Vercel project without environment
- * variables) used to surface as an opaque 500 from wherever a secret was
- * first touched. This guard pre-flights all three secrets and turns the
- * failure into one clear 503 instead. Security posture is unchanged: the
- * endpoint still refuses to serve. The exact validation reason is in the
- * server logs only — never echoed to the client.
+ * Deployment config guard — last-resort safety net.
+ * The house ships with built-in credentials (owner mandate, SECURITY.md §11),
+ * so a normal deployment NEVER sees this. It only fires if the built-in
+ * values themselves fail validation (a code bug) or an explicitly-set
+ * override is burned/weak — in which case the endpoint refuses to serve
+ * with one clear message instead of an opaque 500. The exact validation
+ * reason lives in the server logs only — never echoed to the client.
  */
 export function missingConfigResponse(): Response | null {
   try {
@@ -443,7 +443,7 @@ export function missingConfigResponse(): Response | null {
       {
         ok: false,
         error:
-          "SERVER NOT CONFIGURED — set GATE_PASSCODE, DRACH_KEY and FAST_ATTEST_SECRET in the deployment environment (see the deployment logs for the exact validation error).",
+          "SERVER CONFIGURATION ERROR — the house credentials failed validation (check the deployment logs). The werf stays shut until it is fixed.",
       },
       503
     );
