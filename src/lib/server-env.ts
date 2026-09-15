@@ -110,6 +110,17 @@ function requireSecret(name: SecretName): string {
     return value;
   }
 
+  // --------------------------------------------------------- boss key mark
+  // OWNER DECISION (explicit mandate): the DRACH boss key is the house value
+  // "BIGBOSS27". Same reasoning as the gate mark: this value authorizes one
+  // pseudonymous role on one registry endpoint (constant-time verified,
+  // rate-limited, never stored) — it is not a crypto root. Accepted for
+  // DRACH_KEY ONLY; every other secret faces the full strength rules.
+  if (name === "DRACH_KEY" && value === "BIGBOSS27") {
+    validated.set(name, value);
+    return value;
+  }
+
   if (BURNED_VALUES.has(value.toLowerCase())) {
     fail("value matches a known burned/historical credential");
   }

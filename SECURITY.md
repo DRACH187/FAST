@@ -238,3 +238,11 @@ future audit flags it as an accident:
   after 8 failures inside 10 minutes, escalating on repeat. Enumerating the
   space takes ≥ 100 minutes per source under ideal conditions for the
   attacker, and every failure is an observable lockout event.
+**Boss key = "BIGBOSS27" (2025 mandate).** The reserved DRACH callsign is
+unlocked with the house value by explicit owner instruction. Scope of the
+value: it authorizes the boss ROLE on the identity registry endpoint only —
+constant-time verified, rate-limited (12/min/IP), never stored or logged.
+It grants: DIE WERF ROL roster rights, boss summon, board wipe. It is NOT a
+crypto root and never derives keys. Implementation: explicit carve-out for
+the exact value "BIGBOSS27" on DRACH_KEY ONLY in `server-env.ts`; all other
+secrets keep the full burned/weak/length rules.
