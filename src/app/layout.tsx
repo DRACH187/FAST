@@ -5,6 +5,18 @@ import { FastToaster } from "@/components/fast/toast";
 import { Lockdown } from "@/components/fast/lockdown";
 import { OfflineVaultRegistrar } from "@/components/fast/offline-vault";
 
+/**
+ * NONCE CSP REQUIREMENT (M3 — src/proxy.ts): the per-request nonce only
+ * reaches Next.js's own bootstrap scripts when the document is rendered
+ * PER-REQUEST. Without this export the root page is statically prerendered
+ * at build time with nonce-less inline scripts, and under 'strict-dynamic'
+ * the browser blocks every one of them (console: "Executing inline script
+ * violates ... 'script-src ... nonce-...'"). Forcing dynamic rendering is
+ * the documented prerequisite for nonce-based CSPs — and this app is fully
+ * client-side anyway, so nothing is lost.
+ */
+export const dynamic = "force-dynamic";
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],

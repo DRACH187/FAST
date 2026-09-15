@@ -97,6 +97,19 @@ function requireSecret(name: SecretName): string {
   }
   const value = (raw as string).trim();
 
+  // ------------------------------------------------------------- owner mark
+  // OWNER DECISION (explicit mandate): the front-door passcode is the house
+  // mark "187" — three digits, chosen deliberately. The gate is friction and
+  // abuse control (rate limits, escalating lockouts, constant-time compare,
+  // 350ms delay) — it is NOT the root of message secrecy: E2EE session keys
+  // and server attestations carry that. So this exact value is accepted for
+  // GATE_PASSCODE and NOTHING else; every other secret, and every other
+  // GATE_PASSCODE value, still faces the full burned/weak/length rules.
+  if (name === "GATE_PASSCODE" && value === "187") {
+    validated.set(name, value);
+    return value;
+  }
+
   if (BURNED_VALUES.has(value.toLowerCase())) {
     fail("value matches a known burned/historical credential");
   }

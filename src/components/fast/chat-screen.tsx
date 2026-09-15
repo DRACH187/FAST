@@ -35,6 +35,12 @@ import type { DecryptedMessage } from "@/lib/crypto/keyvault";
 
 gsap.registerPlugin(useGSAP);
 
+/** 1–2 letter monochrome tag for a sender chip (nickname initials). */
+function senderTag(name: string): string {
+  const clean = name.replace(/[^a-zA-Z0-9]/g, "");
+  return (clean.slice(0, 2) || "??").toUpperCase();
+}
+
 const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const dayFmt = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short" });
 
@@ -379,10 +385,10 @@ export function ChatScreen({
             </p>
           </div>
         ) : (
-          <div className="mx-auto flex max-w-md flex-col sm:max-w-lg lg:max-w-2xl">
+          <div className="mx-auto flex max-w-md flex-col gap-3 sm:max-w-lg lg:max-w-2xl">
             {sections.map((sec) => (
               <Fragment key={sec.key}>
-                <div className="my-4 flex items-center gap-3" role="separator" aria-label={sec.label}>
+                <div className="my-2 flex items-center gap-3" role="separator" aria-label={sec.label}>
                   <span className="h-px flex-1 bg-neutral-900" aria-hidden />
                   <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-neutral-600">
                     {sec.label}
@@ -392,29 +398,39 @@ export function ChatScreen({
                 {sec.groups.map((group, gi) => (
                   <div
                     key={`${group.senderFp}-${gi}`}
-                    className={`flex flex-col gap-1 ${group.mine ? "items-end" : "items-start"}`}
+                    className={`flex flex-col gap-1.5 ${group.mine ? "items-end" : "items-start"}`}
                   >
                     {!group.mine &&
                       (() => {
                         const { name, boss } = senderName(group.senderFp);
                         return boss ? (
-                          <span className="flex items-center gap-1.5 px-1">
+                          <span className="flex items-center gap-1.5 px-1.5">
                             <Crown className="size-3.5 text-neutral-300" aria-hidden />
                             <span className="drach-font text-lg leading-none text-white">{name}</span>
                           </span>
                         ) : (
-                          <span className="px-1 font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">
-                            {name}
+                          <span className="flex items-center gap-1.5 px-1">
+                            <span
+                              aria-hidden
+                              className="flex size-5 items-center justify-center rounded-md border border-neutral-800 bg-neutral-950 font-mono text-[9px] font-black uppercase leading-none text-neutral-400"
+                            >
+                              {senderTag(name)}
+                            </span>
+                            <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-400">
+                              {name}
+                            </span>
                           </span>
                         );
                       })()}
-                    {group.items.map((m) =>
-                      m.kind === "photo" ? (
+                    {group.items.map((m, mi) => {
+                      const first = mi === 0;
+                      const last = mi === group.items.length - 1;
+                      return m.kind === "photo" ? (
                         <PhotoBubble key={m.id} message={m} mine={group.mine} />
                       ) : (
-                        <Bubble key={m.id} message={m} />
-                      )
-                    )}
+                        <Bubble key={m.id} message={m} first={first} last={last} />
+                      );
+                    })}
                   </div>
                 ))}
               </Fragment>
@@ -498,7 +514,7 @@ export function ChatScreen({
               disabled={!session.hasKey}
               rows={1}
               aria-label="Message"
-              className="max-h-[120px] min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-[16px] font-semibold leading-snug text-neutral-100 outline-none placeholder:font-semibold placeholder:text-neutral-600 disabled:cursor-not-allowed"
+              className="max-h-[120px] min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-[16px] font-medium leading-snug text-neutral-100 outline-none placeholder:font-medium placeholder:text-neutral-600 disabled:cursor-not-allowed"
             />
             <button
               onClick={(e) => {
@@ -594,7 +610,15 @@ export function ChatScreen({
   );
 }
 
-function Bubble({ message }: { message: DecryptedMessage }) {
+function Bubble({
+  message,
+  first = true,
+  last = true,
+}: {
+  message: DecryptedMessage;
+  first?: boolean;
+  last?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
 
   // GSAP: every bubble pops in on mount
@@ -613,7 +637,7 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-4 py-3 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-[18px] rounded-bl-lg border border-neutral-700 bg-neutral-950 px-4 py-3 will-change-transform"
       >
         <ShieldAlert className="size-4 shrink-0 text-neutral-300" aria-hidden />
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-300">
@@ -628,7 +652,7 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-neutral-600 bg-neutral-950 px-4 py-3 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-[18px] rounded-bl-lg border border-neutral-600 bg-neutral-950 px-4 py-3 will-change-transform"
       >
         <ShieldAlert className="size-4 shrink-0 text-neutral-300" aria-hidden />
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-300">
@@ -641,7 +665,7 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 bg-transparent px-4 py-3 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-[18px] rounded-bl-lg border border-dashed border-neutral-800 bg-transparent px-4 py-3 will-change-transform"
       >
         <Lock className="size-3.5 shrink-0 text-neutral-500" aria-hidden />
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-neutral-500">
@@ -651,19 +675,25 @@ function Bubble({ message }: { message: DecryptedMessage }) {
     );
   }
   const clock = formatClock(message.ts || Date.parse(message.createdAt));
+  const mine = message.mine;
+
+  // grouped corners: the group-side edge stays tight while a run continues;
+  // the FINAL bubble of the run carries the tail
+  const shell = mine
+    ? `relative max-w-[85%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-lg ${!first ? "rounded-tr-lg" : ""} px-4 py-2.5 text-[15px] font-medium leading-[1.45] will-change-transform bg-white text-black shadow-[0_4px_18px_-2px_rgba(255,255,255,0.16)]`
+    : `relative max-w-[85%] whitespace-pre-wrap break-words rounded-[20px] rounded-bl-lg ${!first ? "rounded-tl-lg" : ""} px-4 py-2.5 text-[15px] font-medium leading-[1.45] will-change-transform border border-neutral-800 bg-neutral-900 text-neutral-50 shadow-[0_5px_16px_-4px_rgba(0,0,0,0.75)]`;
+
   return (
-    <div
-      ref={ref}
-      className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-[15px] font-semibold leading-relaxed will-change-transform ${
-        message.mine
-          ? "rounded-br-md bg-white text-black"
-          : "rounded-bl-md border border-neutral-800 bg-neutral-900 text-neutral-50"
-      }`}
-    >
+    <div ref={ref} className={shell}>
       {message.text}
+      {last && <Tail mine={mine} />}
       {clock && (
-        <span className="mt-1 flex items-center justify-end gap-2 font-mono text-[10px] tabular-nums text-neutral-400">
-          {!message.mine && message.auth === "unsigned" && (
+        <span
+          className={`mt-1 flex items-center justify-end gap-2 font-mono text-[10px] tabular-nums ${
+            mine ? "text-black/45" : "text-neutral-500"
+          }`}
+        >
+          {!mine && message.auth === "unsigned" && (
             <span
               title="Onverifieer — geen handtekening van hierdie sender nie"
               className="font-bold uppercase tracking-[0.14em]"
@@ -675,6 +705,24 @@ function Bubble({ message }: { message: DecryptedMessage }) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * The bubble tail — a small filled wedge tucked under the FINAL bubble of a
+ * run, flush with the group side, nudged 1px up so it fuses with the shell.
+ * Filled to match the bubble surface (white for yours, edge-grey for theirs)
+ * so it reads as part of the bubble, not a decoration.
+ */
+function Tail({ mine }: { mine: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 10 10"
+      aria-hidden
+      className={`absolute top-full h-2.5 w-2.5 -translate-y-px ${mine ? "right-0" : "left-0"}`}
+    >
+      {mine ? <path d="M0 0 H10 V10 Z" fill="#ffffff" /> : <path d="M10 0 H0 V10 Z" fill="#262626" />}
+    </svg>
   );
 }
 
@@ -769,7 +817,7 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
     return (
       <div
         ref={ref}
-        className="flex max-w-[85%] items-center gap-2 rounded-2xl border border-dashed border-neutral-800 px-3.5 py-2.5 will-change-transform"
+        className="flex max-w-[85%] items-center gap-2 rounded-[18px] rounded-bl-lg border border-dashed border-neutral-800 px-3.5 py-2.5 will-change-transform"
       >
         <Flame className="size-4 shrink-0 text-neutral-500" aria-hidden />
         <span className="font-mono text-[12px] font-bold uppercase tracking-wider text-neutral-500">gebrand · genulifieer</span>
@@ -780,8 +828,8 @@ function PhotoBubble({ message, mine }: { message: DecryptedMessage; mine: boole
   return (
     <div
       ref={ref}
-      className={`relative max-w-[85%] overflow-hidden rounded-2xl border will-change-transform ${
-        mine ? "rounded-br-md border-neutral-700 bg-neutral-950" : "rounded-bl-md border-neutral-800 bg-neutral-950"
+      className={`relative max-w-[85%] overflow-hidden rounded-[18px] border shadow-[0_6px_22px_-4px_rgba(0,0,0,0.75)] will-change-transform ${
+        mine ? "rounded-br-lg border-neutral-700 bg-neutral-950" : "rounded-bl-lg border-neutral-800 bg-neutral-950"
       }`}
       onContextMenu={(e) => e.preventDefault()}
     >

@@ -215,3 +215,26 @@ binding, slot conflicts, anonymous/member/creator terminate matrix, message
 posting gate, board capability forgery/deletion, AES-GCM roundtrip, AEAD
 tamper, cross-room replay, signature verify/tamper/impersonation, and nonce
 reuse across 500 seals.
+
+## 11. Owner decisions (recorded)
+
+**Gate code = the house mark "187" (2025 mandate).** The front door accepts
+the three-digit mark by explicit owner instruction. Rationale recorded so no
+future audit flags it as an accident:
+
+- The gate is friction + abuse control — rate limits, escalating lockouts
+  (10m → 24h), constant-time compare, 350ms failure delay — NOT the root of
+  message secrecy. E2EE session keys and server attestations carry that.
+- Consequence accepted: the WANTED-board content key is derived client-side
+  from this code (PBKDF2-SHA512, 600k iters). A 3-digit code space (1,000
+  keys) means board ciphertext offers no protection against a determined
+  offline attacker who captures it. Board entries self-destruct within 24h.
+  Board encryption therefore = tamper-evidence + casual-viewer blinding,
+  not strong confidentiality.
+- Implementation: `server-env.ts` grants an explicit carve-out for the exact
+  value "187" on GATE_PASSCODE ONLY. Every other secret (and any other
+  GATE_PASSCODE value) still faces the full burned/weak/length rules.
+- Brute-force surface: 999 wrong codes, 10 attempts/min/IP, hard lockout
+  after 8 failures inside 10 minutes, escalating on repeat. Enumerating the
+  space takes ≥ 100 minutes per source under ideal conditions for the
+  attacker, and every failure is an observable lockout event.

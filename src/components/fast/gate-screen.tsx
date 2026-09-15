@@ -5,23 +5,27 @@ import Image from "next/image";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { toast } from "@/components/fast/toast";
-import { useHouseLine } from "@/components/fast/motion";
-import { ScreenShell, shakeElement } from "@/components/fast/motion";
+import { useHouseLine, ScreenShell, shakeElement } from "@/components/fast/motion";
 import { GATE_BUSY, GATE_HINT, GATE_TITLE, pick } from "@/lib/fast/copy";
 
 gsap.registerPlugin(useGSAP);
 
 /**
- * Front door (Layer 3 slice — Tier B authentication, spec §5).
- * A high-entropy passphrase from the validated GATE_PASSCODE env — the old
- * public 3-digit code is retired. Constant-time verified server-side.
- * Bespoke masked input: show/hide toggle, Enter to submit, GSAP entrance
- * and shake-on-reject. Deliberately discreet: wordmark, one neutral line,
- * one field — nothing else.
+ * Front door — the house mark "187" (Layer 3 slice, spec §5).
+ * ==========================================================
+ * OWNER DECISION: the gate code is the three-digit mark 187. The gate is
+ * friction + abuse control (server-side rate limits, escalating lockouts,
+ * constant-time compare, 350ms delay) — not the root of message secrecy;
+ * E2EE session keys and server attestations carry that.
+ *
+ * UX: ONE real <input> (mobile keypads, paste, autofill all keep working)
+ * stretched invisibly over three visual cells that mirror the value. The
+ * third digit auto-submits. GSAP entrance + shake-on-reject are kept.
  */
+const CODE_LEN = 3;
+
 export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promise<void> }) {
   const [value, setValue] = useState("");
-  const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState(false);
   const fieldRef = useRef<HTMLInputElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -30,7 +34,7 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
   const hint = useHouseLine(GATE_HINT);
   const busyLine = useHouseLine(GATE_BUSY);
 
-  // GSAP: field entrance
+  // GSAP: cell entrance
   useGSAP(
     () => {
       const cells = wrapRef.current?.querySelectorAll("[data-cell]");
@@ -47,7 +51,7 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
   const submit = useCallback(
     async (code: string) => {
       if (inflight.current) return;
-      if (!code) {
+      if (code.length < CODE_LEN) {
         fieldRef.current?.focus();
         return;
       }
@@ -73,6 +77,15 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
     [onUnlock]
   );
 
+  const handleInput = useCallback(
+    (raw: string) => {
+      const next = raw.replace(/\D/g, "").slice(0, CODE_LEN);
+      setValue(next);
+      if (next.length === CODE_LEN) void submit(next); // third digit = knock
+    },
+    [submit]
+  );
+
   return (
     <ScreenShell as="main" className="fast-grain flex min-h-dvh flex-col items-center justify-center px-6">
       <div className="flex w-full max-w-xs flex-col items-center gap-10">
@@ -91,44 +104,57 @@ export function GateScreen({ onUnlock }: { onUnlock: (passcode: string) => Promi
           <h1 className="gang-font text-3xl text-neutral-100">{title}</h1>
 
           <form
-            className="flex w-full flex-col items-center gap-4"
+            className="flex w-full flex-col items-center gap-6"
             onSubmit={(e) => {
               e.preventDefault();
               void submit(value);
             }}
           >
+            {/* three cells + one invisible real input stretched over them */}
             <div className="relative w-full" data-cell>
+              <div className="pointer-events-none flex items-center justify-center gap-3" aria-hidden>
+                {Array.from({ length: CODE_LEN }).map((_, i) => {
+                  const filled = i < value.length;
+                  const active = i === value.length && !busy;
+                  return (
+                    <span
+                      key={i}
+                      className={`flex h-16 w-14 items-center justify-center rounded-xl border font-mono text-3xl font-black tabular-nums transition-colors duration-150 sm:h-[72px] sm:w-16 ${
+                        filled
+                          ? "border-neutral-300 bg-neutral-950 text-white"
+                          : active
+                            ? "border-neutral-400 bg-neutral-950 text-neutral-700"
+                            : "border-neutral-800 bg-neutral-950 text-neutral-700"
+                      }`}
+                    >
+                      {filled ? value[i] : "·"}
+                    </span>
+                  );
+                })}
+              </div>
               <input
                 ref={fieldRef}
-                type={reveal ? "text" : "password"}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={(e) => handleInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     void submit(value);
                   }
                 }}
-                autoComplete="current-password"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
+                autoFocus
                 disabled={busy}
-                aria-label="Access passphrase"
-                className="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-4 py-4 pr-14 text-center font-mono text-lg font-black tracking-[0.18em] text-neutral-100 outline-none transition-colors focus:border-neutral-300 disabled:opacity-50"
+                aria-label="Access code"
+                className="absolute inset-0 h-full w-full cursor-pointer bg-transparent text-center font-mono text-3xl text-transparent caret-transparent outline-none disabled:cursor-default"
               />
-              <button
-                type="button"
-                onClick={() => setReveal((r) => !r)}
-                aria-label={reveal ? "Hide passphrase" : "Show passphrase"}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-3 py-2 font-mono text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500 transition-colors hover:text-neutral-200"
-              >
-                {reveal ? "HIDE" : "SHOW"}
-              </button>
             </div>
             <button
               type="submit"
-              disabled={busy || value.length === 0}
+              disabled={busy || value.length < CODE_LEN}
               data-cell
               className="w-full rounded-xl border border-neutral-700 bg-neutral-100 py-4 font-mono text-sm font-black uppercase tracking-[0.3em] text-black transition-all hover:bg-white active:scale-[0.98] disabled:opacity-40"
             >
