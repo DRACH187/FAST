@@ -393,7 +393,7 @@ export function HubScreen({
                 variant="outline"
                 size="lg"
                 disabled={busy || !CODE_RE.test(joinCode)}
-                className="min-h-[56px] font-mono text-sm uppercase tracking-[0.28em] sm:w-32"
+                className="min-h-[56px] font-mono text-sm uppercase tracking-[0.28em] sm:w-40"
               >
                 {joinLabel}
               </FastButton>
